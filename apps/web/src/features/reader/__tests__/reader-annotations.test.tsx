@@ -267,9 +267,14 @@ it('clears a highlight note when the text is emptied', async () => {
   );
 
   engine.emit('highlightClick', { id: 'h1' });
+  // The shared Dialog applies the native `open` attribute in an effect; wait
+  // for it before interacting, otherwise a loaded machine can race the effect
+  // and user-event refuses to focus the still-hidden textarea.
+  const dialog = await screen.findByRole('dialog');
+  await waitFor(() => expect(dialog).toHaveAttribute('open'));
   const textarea = await screen.findByLabelText('批注内容');
   expect(textarea).toHaveValue('旧批注');
-  await userEvent.clear(textarea);
+  fireEvent.change(textarea, { target: { value: '' } });
   await userEvent.click(screen.getByRole('button', { name: '保存批注' }));
 
   await waitFor(() => expect(patched).toMatchObject({ noteText: null, revision: 2 }));
