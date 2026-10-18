@@ -63,6 +63,23 @@ it("never exposes another member's bookmark", async () => {
   expect(stored).toMatchObject({ label: 'A 的书签', deletedAt: null });
 });
 
+it('accepts a reflow locator for a PDF book', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const book = await seedBook({ uploadedBy: user.id, format: 'pdf' });
+  const reflowLocator = {
+    kind: 'reflow' as const, sourcePage: 120, percent: 0.4, blockId: 'p120-b0',
+  };
+
+  const created = await app.inject({
+    method: 'POST', url: `/api/books/${book.id}/bookmarks`,
+    headers: await authHeader(user), payload: { locator: reflowLocator, label: '重排位置' },
+  });
+  expect(created.statusCode).toBe(201);
+  expect(created.json().bookmark.locator).toEqual(reflowLocator);
+});
+
 it('rejects a locator from the wrong engine and a trashed book', async () => {
   await resetDb();
   const app = await buildTestApp();

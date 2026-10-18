@@ -77,6 +77,29 @@ it('keeps the previous note text when an edit conflicts', async () => {
   expect(history.map((entry) => entry.noteText)).toEqual(['第一版', '第二版']);
 });
 
+it('accepts a reflow locator for a PDF book', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const book = await seedBook({ uploadedBy: user.id, format: 'pdf' });
+  const reflowLocator = {
+    kind: 'reflow' as const,
+    sourcePage: 120,
+    percent: 0.4,
+    blockId: 'p120-b0',
+    charRange: [0, 12] as [number, number],
+    ranges: [{ blockId: 'p120-b0', charRange: [0, 12] as [number, number] }],
+  };
+
+  const created = await app.inject({
+    method: 'POST', url: `/api/books/${book.id}/annotations`,
+    headers: await authHeader(user),
+    payload: { ...highlight, locator: reflowLocator },
+  });
+  expect(created.statusCode).toBe(201);
+  expect(created.json().annotation.locator).toEqual(reflowLocator);
+});
+
 it('rejects a locator from the wrong engine and hides deleted annotations', async () => {
   await resetDb();
   const app = await buildTestApp();

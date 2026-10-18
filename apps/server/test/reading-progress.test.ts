@@ -52,6 +52,23 @@ it('upserts one row and records the issuing device', async () => {
   expect(rows[0]).toMatchObject({ percent: 0.8, deviceId: user.deviceId });
 });
 
+it('accepts a reflow locator for a PDF book', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const book = await seedBook({ uploadedBy: user.id, format: 'pdf' });
+  const reflowLocator = {
+    kind: 'reflow' as const, sourcePage: 120, percent: 0.4, blockId: 'p120-b0',
+  };
+
+  const put = await app.inject({
+    method: 'PUT', url: `/api/books/${book.id}/progress`,
+    headers: await authHeader(user), payload: { locator: reflowLocator },
+  });
+  expect(put.statusCode).toBe(200);
+  expect(put.json().progress.locator).toEqual(reflowLocator);
+});
+
 it('rejects a locator of the wrong engine and a trashed book', async () => {
   await resetDb();
   const app = await buildTestApp();
@@ -70,6 +87,31 @@ it('rejects a locator of the wrong engine and a trashed book', async () => {
     headers: await authHeader(user), payload: { locator: pdfLocator },
   });
   expect(refused.statusCode).toBe(404);
+});
+
+it('rejects reflow locators for EPUB and epub locators for PDF', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const headers = await authHeader(user);
+  const reflowLocator = { kind: 'reflow' as const, sourcePage: 2, percent: 0.1 };
+  const epubLocator = { kind: 'epub' as const, cfi: 'epubcfi(/6/4!/2)', percent: 0.1 };
+
+  const epub = await seedBook({ uploadedBy: user.id, format: 'epub' });
+  const epubReflow = await app.inject({
+    method: 'PUT', url: `/api/books/${epub.id}/progress`,
+    headers, payload: { locator: reflowLocator },
+  });
+  expect(epubReflow.statusCode).toBe(400);
+  expect(epubReflow.json().error.details).toEqual({ expectedKind: 'epub' });
+
+  const pdf = await seedBook({ uploadedBy: user.id, format: 'pdf' });
+  const pdfEpub = await app.inject({
+    method: 'PUT', url: `/api/books/${pdf.id}/progress`,
+    headers, payload: { locator: epubLocator },
+  });
+  expect(pdfEpub.statusCode).toBe(400);
+  expect(pdfEpub.json().error.details).toEqual({ expectedKind: 'pdf' });
 });
 
 it('orders recent books by the viewer last read, falling back to import time', async () => {
