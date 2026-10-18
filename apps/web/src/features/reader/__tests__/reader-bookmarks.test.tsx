@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import { ReaderPage } from '../ReaderPage';
+import { bookmarkTitle } from '../BookmarksPanel';
 import { setTokens } from '../../../api/client';
 import { renderWithProviders, server } from '../../../../test/setup';
 import { createFakeEngine } from './fake-engine';
@@ -157,4 +158,24 @@ it('sends a null label when the bookmark note is blank', async () => {
   await userEvent.click(screen.getByRole('button', { name: '保存书签' }));
 
   await waitFor(() => expect(posted).toMatchObject({ locator: LOCATOR, label: null }));
+});
+
+it('labels bookmarks by page for PDF and reflow, by percent for EPUB', () => {
+  const base = {
+    id: 'bookmark-title',
+    bookId: BOOK_ID,
+    label: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  expect(bookmarkTitle({ ...base, locator: { kind: 'pdf', page: 3, percent: 0.3 } })).toBe(
+    '第 3 页',
+  );
+  expect(
+    bookmarkTitle({ ...base, locator: { kind: 'reflow', sourcePage: 5, percent: 0.4 } }),
+  ).toBe('第 5 页');
+  expect(
+    bookmarkTitle({ ...base, locator: { kind: 'epub', cfi: 'epubcfi(/6/2)', percent: 0.426 } }),
+  ).toBe('位置 43%');
 });

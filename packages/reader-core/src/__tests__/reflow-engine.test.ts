@@ -1,6 +1,7 @@
 import type { Locator, ReflowBlock, ReflowLocator, ReflowPack } from '@bookr/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { ReflowReaderEngine } from '../reflow/engine';
+import { pdfLocatorFor } from '../reflow/mapping';
 import { renderReflowDocument } from '../reflow/render';
 import { DEFAULT_READER_SETTINGS } from '../settings';
 import type { ReaderHighlight, ReaderSelection } from '../types';
@@ -94,6 +95,58 @@ function makeLongPack(pageCount = 300): ReflowPack {
   };
 }
 
+function fallbackBlock(id: string): ReflowBlock {
+  return { id, type: 'fallback', rect: { x: 0, y: 0, w: 1, h: 1 } };
+}
+
+/** Two pages with one distinct text block each. */
+function makeTwoPagePack(): ReflowPack {
+  return {
+    schemaVersion: 1,
+    source: { sha256: 'c'.repeat(64), pageCount: 2 },
+    generatedAt: '2026-10-18T08:00:00.000Z',
+    tool: { name: 'bookr-preprocess', version: '1.0.0' },
+    quality: {
+      pages: 2,
+      textBlocks: 2,
+      fallbackPages: [],
+      ocrPages: [],
+      avgConfidence: null,
+      warnings: [],
+    },
+    toc: [],
+    pages: [
+      { page: 1, width: 600, height: 800, blocks: [paragraph('p1-b0', 0.1)] },
+      { page: 2, width: 600, height: 800, blocks: [paragraph('p2-b0', 0.1)] },
+    ],
+  };
+}
+
+/** Every page holds a single full-page fallback block and no text at all. */
+function makeVisualOnlyPack(pageCount: number): ReflowPack {
+  return {
+    schemaVersion: 1,
+    source: { sha256: 'd'.repeat(64), pageCount },
+    generatedAt: '2026-10-18T08:00:00.000Z',
+    tool: { name: 'bookr-preprocess', version: '1.0.0' },
+    quality: {
+      pages: pageCount,
+      textBlocks: 0,
+      fallbackPages: Array.from({ length: pageCount }, (_, index) => index + 1),
+      ocrPages: [],
+      avgConfidence: null,
+      warnings: [],
+    },
+    toc: [],
+    pages: Array.from({ length: pageCount }, (_, index) => ({
+      page: index + 1,
+      width: 600,
+      height: 800,
+      blocks: [fallbackBlock(`p${index + 1}-visual`)],
+    })),
+  };
+}
+
 function scrollMetrics(host: HTMLElement, scrollHeight = 1500, clientHeight = 500): void {
   let top = 0;
   Object.defineProperty(host, 'scrollHeight', { configurable: true, get: () => scrollHeight });
@@ -114,6 +167,16 @@ function stackTextBlocks(container: HTMLElement, step = 200): void {
     '[data-block-type="heading"], [data-block-type="paragraph"]',
   )) {
     // Capture per element: a shared getter would report the final offset for all.
+    const top = offset;
+    Object.defineProperty(element, 'offsetTop', { configurable: true, get: () => top });
+    offset += step;
+  }
+}
+
+/** jsdom has no layout; stack every block offset so visual blocks count too. */
+function stackBlocks(container: HTMLElement, step = 200): void {
+  let offset = 0;
+  for (const element of container.querySelectorAll<HTMLElement>('[data-block-id]')) {
     const top = offset;
     Object.defineProperty(element, 'offsetTop', { configurable: true, get: () => top });
     offset += step;
@@ -360,6 +423,44 @@ describe('reflow engine', () => {
       sourcePage: 3,
       blockId: 'p3-b0',
     });
+    await engine.destroy();
+  });
+
+  it('anchors a page whose only block is visual and tracks the page after it', async () => {
+    const pack = makePack();
+    // A scanned page: one fallback block covering the whole source page.
+    pack.pages[1]!.blocks = [fallbackBlock('p2-visual')];
+    pack.quality.fallbackPages = [2];
+    const { engine, container, host } = await openWith(pack);
+    scrollMetrics(host);
+    stackBlocks(container);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 2, percent: 1 / 3 });
+
+    // Page 1 holds three blocks, so the fallback sits at 600 and is anchored
+    // on the focus line; a percent-only jump would land inside page 1.
+    expect(host.scrollTop).toBe(600 - 165);
+    expect(engine.currentLocator()).toMatchObject({ kind: 'reflow', sourcePage: 2 });
+
+    // Page 3's first block starts at 800; scrolling there must report page 3.
+    host.scrollTop = 800 - 165;
+    expect(engine.currentLocator()).toMatchObject({ kind: 'reflow', sourcePage: 3 });
+    await engine.destroy();
+  });
+
+  it('reports the last page of a book made only of visual blocks', async () => {
+    const pack = makeVisualOnlyPack(7);
+    const { engine, container, host } = await openWith(pack);
+    scrollMetrics(host);
+    stackBlocks(container);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 7, percent: 6 / 7 });
+
+    const locator = engine.currentLocator();
+    expect(locator).toMatchObject({ kind: 'reflow', sourcePage: 7, blockId: 'p7-visual' });
+    expect(pdfLocatorFor(locator, pack)).toMatchObject({ kind: 'pdf', page: 7 });
     await engine.destroy();
   });
 
@@ -809,6 +910,38 @@ describe('reflow selection', () => {
     }
   });
 
+  it('reports the page of the element selected when a block id repeats', async () => {
+    const pack = makeTwoPagePack();
+    // Ids only have to be unique within a page; reuse page 1's id on page 2.
+    pack.pages[1]!.blocks[0]!.id = 'p1-b0';
+    const { engine, container } = await openWith(pack);
+    const secondPageBlock = blockElement(container, 'p1-b0', 2);
+    const events: Array<ReaderSelection | null> = [];
+    engine.on('selection', (payload) => events.push(payload));
+
+    vi.useFakeTimers();
+    try {
+      selectRange(
+        secondPageBlock.firstChild as Node,
+        0,
+        secondPageBlock.firstChild as Node,
+        2,
+      );
+      document.dispatchEvent(new Event('selectionchange'));
+      vi.advanceTimersByTime(60);
+
+      expect(events[0]?.locator).toMatchObject({
+        kind: 'reflow',
+        sourcePage: 2,
+        blockId: 'p1-b0',
+      });
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      vi.useRealTimers();
+      await engine.destroy();
+    }
+  });
+
   it('emits null when the selection falls outside the reflow root', async () => {
     const { engine } = await openWith(makePack());
     const outside = document.createElement('p');
@@ -955,6 +1088,56 @@ describe('reflow highlights', () => {
     expect(thirdPageBlock.querySelector('mark')).toBeNull();
 
     await engine.destroy();
+  });
+
+  it('paints a unique block id even when the locator page disagrees', async () => {
+    const { engine, container } = await openWith(makePack());
+    // The id exists only on page 3, so the element is the authority.
+    const block = blockElement(container, 'p3-b1', 3);
+
+    engine.setHighlights([{
+      id: 'mismatch',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p3-b1', charRange: [0, 2] },
+      color: 'blue',
+      hasNote: false,
+    }]);
+
+    expect(block.querySelector('mark[data-highlight-id="mismatch"]')).not.toBeNull();
+    await engine.destroy();
+  });
+
+  it('paints both halves of a cross-page selection', async () => {
+    const { engine, container } = await openWith(makeTwoPagePack());
+    const first = blockElement(container, 'p1-b0', 1);
+    const second = blockElement(container, 'p2-b0', 2);
+    const events: Array<ReaderSelection | null> = [];
+    engine.on('selection', (payload) => events.push(payload));
+
+    vi.useFakeTimers();
+    try {
+      // Drag from the middle of page 1's block to the middle of page 2's.
+      selectRange(first.firstChild as Node, 2, second.firstChild as Node, 2);
+      document.dispatchEvent(new Event('selectionchange'));
+      vi.advanceTimersByTime(60);
+
+      const locator = events[0]?.locator;
+      expect(locator).toBeDefined();
+      engine.setHighlights([{
+        id: 'cross',
+        locator: locator!,
+        color: 'yellow',
+        hasNote: false,
+      }]);
+
+      // Every range inherits the locator's page, but each block id is unique,
+      // so both halves must paint.
+      expect(first.querySelector('mark[data-highlight-id="cross"]')).not.toBeNull();
+      expect(second.querySelector('mark[data-highlight-id="cross"]')).not.toBeNull();
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      vi.useRealTimers();
+      await engine.destroy();
+    }
   });
 
   it('applies highlights that were set before open', async () => {

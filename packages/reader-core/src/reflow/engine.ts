@@ -45,8 +45,8 @@ interface VisualBlockSlot {
   noteShown: boolean;
 }
 
-/** One text block's cached vertical position, in document order. */
-interface TextBlockMetric {
+/** One block's cached vertical position, in document order. */
+interface BlockMetric {
   element: HTMLElement;
   offsetTop: number;
 }
@@ -141,21 +141,24 @@ export class ReflowReaderEngine implements ReaderEngine {
   private container: HTMLElement | null = null;
   private pack: ReflowPack | null = null;
   private rendered: RenderedReflowDocument | null = null;
+  /** Text blocks only; visual blocks carry no text and receive no marks. */
   private textElements: HTMLElement[] = [];
+  /** Every block in document order; the anchors for position tracking. */
+  private blockElements: HTMLElement[] = [];
   /** Whether a block's rendered marks already match its highlights. */
   private markSignatures = new WeakMap<HTMLElement, string>();
   /** Original block text, captured before marks wrap it. */
   private blockTexts = new WeakMap<HTMLElement, string>();
-  /** First text element per block id, used to resolve a selection's page. */
-  private textBlocksById = new Map<string, HTMLElement>();
-  /** First text element per source page, the anchor for page-only jumps. */
-  private firstTextByPage = new Map<number, HTMLElement>();
+  /** Text elements per block id, in document order (ids repeat across pages). */
+  private textElementsById = new Map<string, HTMLElement[]>();
+  /** First block per source page, the anchor for page-only jumps. */
+  private firstBlockByPage = new Map<number, HTMLElement>();
   private visualBlocks: VisualBlockSlot[] = [];
   private painter: SourcePagePainterLike | null = null;
   private visualObserver: IntersectionObserver | null = null;
   private selectionTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Cached text-block offsets; the scroll hot path binary-searches this. */
-  private textMetrics: TextBlockMetric[] = [];
+  /** Cached block offsets; the scroll hot path binary-searches this. */
+  private blockMetrics: BlockMetric[] = [];
   private settings: ReaderSettings | null = null;
   private highlights: ReaderHighlight[] = [];
   private listenerAbort: AbortController | null = null;
@@ -205,27 +208,39 @@ export class ReflowReaderEngine implements ReaderEngine {
           '[data-block-type="heading"], [data-block-type="paragraph"]',
         ),
       );
+      // Visual blocks anchor position tracking too: a page may contain only
+      // figures (scanned pages, fallback pages with OCR disabled).
+      this.blockElements = Array.from(
+        rendered.article.querySelectorAll<HTMLElement>('[data-block-id]'),
+      );
       this.blockTexts = new WeakMap();
       this.markSignatures = new WeakMap();
-      this.textBlocksById = new Map();
-      this.firstTextByPage = new Map();
+      this.textElementsById = new Map();
+      this.firstBlockByPage = new Map();
       for (const element of this.textElements) {
         this.blockTexts.set(element, element.textContent ?? '');
         // A freshly rendered block is plain text, i.e. it carries no marks.
         this.markSignatures.set(element, '');
         const blockId = element.dataset.blockId;
-        if (blockId && !this.textBlocksById.has(blockId)) {
-          this.textBlocksById.set(blockId, element);
-        }
-        const sourcePage = Number(element.dataset.sourcePage);
-        if (Number.isFinite(sourcePage) && sourcePage >= 1) {
-          const page = Math.floor(sourcePage);
-          if (!this.firstTextByPage.has(page)) {
-            this.firstTextByPage.set(page, element);
+        if (blockId) {
+          const group = this.textElementsById.get(blockId);
+          if (group) {
+            group.push(element);
+          } else {
+            this.textElementsById.set(blockId, [element]);
           }
         }
       }
-      this.measureTextBlocks();
+      for (const element of this.blockElements) {
+        const sourcePage = Number(element.dataset.sourcePage);
+        if (Number.isFinite(sourcePage) && sourcePage >= 1) {
+          const page = Math.floor(sourcePage);
+          if (!this.firstBlockByPage.has(page)) {
+            this.firstBlockByPage.set(page, element);
+          }
+        }
+      }
+      this.measureBlocks();
       this.attachListeners(rendered.host, rendered.article);
       this.applyHighlights();
       this.attachVisualBlocks(rendered, options);
@@ -279,9 +294,9 @@ export class ReflowReaderEngine implements ReaderEngine {
       ? this.findBlockElement(mapped.blockId, mapped.sourcePage)
       : null;
     // A page jump without a block (or a stale block id) anchors the page's
-    // first text block on the focus line, so `currentLocator` reports exactly
-    // the requested source page instead of whatever page the percent hits.
-    const target = element ?? this.firstTextElementOnPage(mapped.sourcePage);
+    // first block on the focus line, so `currentLocator` reports exactly the
+    // requested source page instead of whatever page the percent hits.
+    const target = element ?? this.firstBlockOnPage(mapped.sourcePage);
     if (target) {
       this.scrollElementToFocus(target);
       if (options.flash) {
@@ -330,7 +345,7 @@ export class ReflowReaderEngine implements ReaderEngine {
     // browser keeps the scroll offset the reader is sitting at.
     applyReflowStyles(rendered.article, settings);
     // Applying styles reflows the article; cached offsets are stale now.
-    this.measureTextBlocks();
+    this.measureBlocks();
 
     if (anchorElement) {
       // A settings object that leaves the layout alone must not move the
@@ -341,7 +356,7 @@ export class ReflowReaderEngine implements ReaderEngine {
       this.scrollElementToFocus(anchorElement);
       return;
     }
-    // The anchor block is gone (or the page has no text): keep the old spot.
+    // The anchor block is gone (or the page has no blocks): keep the old spot.
     rendered.host.scrollTop = clamp(anchor.percent, 0, 1) * this.maxScroll(rendered.host);
   }
 
@@ -364,12 +379,16 @@ export class ReflowReaderEngine implements ReaderEngine {
       if (!blockId) {
         continue;
       }
-      // Block ids repeat across pages; only marks anchored on this block's
-      // source page may paint here. Cross-page ranges stay page-approximate.
+      // Block ids repeat across pages. When this id resolves to a single text
+      // element, that element is the authority: a cross-page highlight stores
+      // every range under one locator page, so filtering by page would hide
+      // the other page's half. Only a duplicated id needs the page filter.
       const sourcePage = Number(element.dataset.sourcePage);
-      const marks = (marksByBlock.get(blockId) ?? []).filter(
-        (mark) => mark.sourcePage === sourcePage,
-      );
+      const candidates = this.textElementsById.get(blockId) ?? [];
+      const blockMarks = marksByBlock.get(blockId) ?? [];
+      const marks = candidates.length <= 1
+        ? blockMarks
+        : blockMarks.filter((mark) => mark.sourcePage === sourcePage);
       const signature = marksSignature(marks);
       if (this.markSignatures.get(element) === signature) {
         continue;
@@ -425,7 +444,7 @@ export class ReflowReaderEngine implements ReaderEngine {
     if (typeof ResizeObserver !== 'undefined') {
       // The article's height changes when typography or fonts reflow the text;
       // the scroll host keeps a fixed size and would never report that.
-      const observer = new ResizeObserver(() => this.measureTextBlocks());
+      const observer = new ResizeObserver(() => this.measureBlocks());
       observer.observe(article);
       this.resizeObserver = observer;
     }
@@ -597,16 +616,22 @@ export class ReflowReaderEngine implements ReaderEngine {
       return;
     }
 
+    // Each ref knows the page of the element it came from, which is the only
+    // reliable answer when the same block id exists on several pages. Older
+    // callers that do not fill it fall back to the first matching element.
     const primary = result.refs[0] as ReflowRangeRef;
-    const element = this.textBlocksById.get(primary.blockId) ?? null;
-    const rawPage = Number(element?.dataset.sourcePage);
-    const sourcePage = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
-    const percent = this.percentFromScroll(rendered.host);
-
+    let sourcePage = primary.sourcePage;
+    if (sourcePage === undefined) {
+      const element = this.textElementsById.get(primary.blockId)?.[0] ?? null;
+      const rawPage = Number(element?.dataset.sourcePage);
+      if (Number.isFinite(rawPage) && rawPage >= 1) {
+        sourcePage = Math.floor(rawPage);
+      }
+    }
     const locator: ReflowLocator = {
       kind: 'reflow',
-      sourcePage,
-      percent,
+      sourcePage: sourcePage ?? 1,
+      percent: this.percentFromScroll(rendered.host),
       blockId: primary.blockId,
       charRange: [primary.charRange[0], primary.charRange[1]],
     };
@@ -658,9 +683,10 @@ export class ReflowReaderEngine implements ReaderEngine {
     this.pack = null;
     this.rendered = null;
     this.textElements = [];
-    this.textMetrics = [];
-    this.textBlocksById = new Map();
-    this.firstTextByPage = new Map();
+    this.blockElements = [];
+    this.blockMetrics = [];
+    this.textElementsById = new Map();
+    this.firstBlockByPage = new Map();
     this.blockTexts = new WeakMap();
     this.markSignatures = new WeakMap();
     this.visualBlocks = [];
@@ -675,28 +701,28 @@ export class ReflowReaderEngine implements ReaderEngine {
   }
 
   /**
-   * Snapshots every text block's document offset. Called after render and then
+   * Snapshots every block's document offset. Called after render and then
    * only when layout can change (settings, resize), so the scroll hot path
    * never touches `offsetTop` and stays O(log n).
    */
-  private measureTextBlocks(): void {
-    this.textMetrics = this.textElements.map((element) => ({
+  private measureBlocks(): void {
+    this.blockMetrics = this.blockElements.map((element) => ({
       element,
       offsetTop: element.offsetTop,
     }));
   }
 
   private readonly handleLayoutChange = (): void => {
-    this.measureTextBlocks();
+    this.measureBlocks();
   };
 
   private maxScroll(host: HTMLElement): number {
     return Math.max(0, host.scrollHeight - host.clientHeight);
   }
 
-  /** First text block rendered for a source page, or null for image-only pages. */
-  private firstTextElementOnPage(sourcePage: number): HTMLElement | null {
-    return this.firstTextByPage.get(sourcePage) ?? null;
+  /** First block rendered for a source page, or null for an empty page. */
+  private firstBlockOnPage(sourcePage: number): HTMLElement | null {
+    return this.firstBlockByPage.get(sourcePage) ?? null;
   }
 
   /**
@@ -718,7 +744,7 @@ export class ReflowReaderEngine implements ReaderEngine {
   private locatorNow(): ReflowLocator {
     const host = this.rendered?.host ?? null;
     const percent = host ? this.percentFromScroll(host) : 0;
-    const element = this.visibleTextElement(host);
+    const element = this.visibleBlockElement(host);
     if (!element) {
       return { kind: 'reflow', sourcePage: 1, percent };
     }
@@ -741,12 +767,12 @@ export class ReflowReaderEngine implements ReaderEngine {
   }
 
   /**
-   * Last text block above the reading focus line, falling back to the first.
+   * Last block above the reading focus line, falling back to the first.
    * Offsets are cached in document order, so a binary search finds the block
    * without walking a book that may contain hundreds of thousands of blocks.
    */
-  private visibleTextElement(host: HTMLElement | null): HTMLElement | null {
-    const metrics = this.textMetrics;
+  private visibleBlockElement(host: HTMLElement | null): HTMLElement | null {
+    const metrics = this.blockMetrics;
     const first = metrics[0];
     if (!first) {
       return null;

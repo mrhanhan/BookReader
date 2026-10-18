@@ -18,6 +18,7 @@ export function bookmarkTitle(bookmark: BookmarkDto): string {
   if (bookmark.label) return bookmark.label;
   const locator = bookmark.locator;
   if (locator.kind === 'pdf') return `第 ${locator.page} 页`;
+  if (locator.kind === 'reflow') return `第 ${locator.sourcePage} 页`;
   return `位置 ${Math.round(locator.percent * 100)}%`;
 }
 

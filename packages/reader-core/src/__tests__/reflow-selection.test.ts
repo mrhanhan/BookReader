@@ -78,6 +78,22 @@ describe('selectionToReflow', () => {
     );
   });
 
+  it('tags each cross-page ref with the page of its own element', () => {
+    const { root, first, second } = makeFixture();
+    first.dataset.sourcePage = '4';
+    second.dataset.sourcePage = '5';
+    const range = rangeBetween(
+      first.firstChild as Node,
+      2,
+      second.firstChild as Node,
+      2,
+    );
+
+    const result = selectionToReflow(selectionOf(range), root);
+
+    expect(result?.refs.map((ref) => ref.sourcePage)).toEqual([4, 5]);
+  });
+
   it('returns a single ref for a selection inside one block', () => {
     const { root, first } = makeFixture();
     const range = rangeBetween(first.firstChild as Node, 1, first.firstChild as Node, 4);

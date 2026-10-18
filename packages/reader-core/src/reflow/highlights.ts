@@ -9,9 +9,11 @@ export interface ReflowMark {
   blockId: string;
   /**
    * Source page the highlight was anchored on. Block ids are only unique per
-   * page, so rendering must not apply a page 1 mark to a same-id block on
-   * another page. Cross-page `ranges` are best-effort: every range inherits
-   * the locator's `sourcePage` because the schema stores no page per range.
+   * page, so a block id with several rendered elements (the same id repeated
+   * on another page) is painted only on the elements of this page. When the id
+   * resolves to a single element, that element is painted regardless of this
+   * page: cross-page `ranges` all inherit the locator's `sourcePage` because
+   * the schema stores no page per range.
    */
   sourcePage: number;
   charRange: [number, number];
