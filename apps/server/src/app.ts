@@ -1,10 +1,10 @@
 import cors from '@fastify/cors';
-import { ERROR_CODES, type ApiErrorBody } from '@bookr/shared';
+import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import type { AppConfig } from './config';
 import type { Database } from './db/client';
-import { AppError } from './errors';
+import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
 import type { StorageService } from './storage/types';
 
@@ -43,6 +43,30 @@ const LOG_REDACT_PATHS = [
   '*.*.token',
   '*.*.refreshToken',
 ];
+
+const CLIENT_ERROR_CODES: Partial<Record<number, ErrorCode>> = {
+  400: ERROR_CODES.VALIDATION_FAILED,
+  401: ERROR_CODES.UNAUTHORIZED,
+  403: ERROR_CODES.FORBIDDEN,
+  404: ERROR_CODES.NOT_FOUND,
+  409: ERROR_CODES.CONFLICT,
+  413: ERROR_CODES.VALIDATION_FAILED,
+  415: ERROR_CODES.VALIDATION_FAILED,
+  422: ERROR_CODES.VALIDATION_FAILED,
+  429: ERROR_CODES.RATE_LIMITED,
+};
+
+function clientErrorCode(statusCode: number): ErrorCode {
+  return CLIENT_ERROR_CODES[statusCode] ?? ERROR_CODES.VALIDATION_FAILED;
+}
+
+function statusCodeOf(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('statusCode' in error)) {
+    return undefined;
+  }
+  const value = (error as { statusCode?: unknown }).statusCode;
+  return typeof value === 'number' ? value : undefined;
+}
 
 function validationErrorBody(error: ZodError): ApiErrorBody {
   return {
@@ -84,6 +108,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
     if (error instanceof ZodError) {
       reply.status(400).send(validationErrorBody(error));
+      return;
+    }
+    const statusCode = statusCodeOf(error);
+    if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+      // Fastify's own 4xx errors (bad JSON, payload too large, rate limit)
+      // already carry a status; keep it and expose only a generic message.
+      const code = clientErrorCode(statusCode);
+      reply.status(statusCode).send({ error: { code, message: defaultMessageFor(code) } });
       return;
     }
     // Log the error class only: messages from parsers may contain book text.

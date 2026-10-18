@@ -13,3 +13,15 @@ it('wraps unknown routes in the error envelope', async () => {
   expect(res.statusCode).toBe(404);
   expect(res.json().error.code).toBe('NOT_FOUND');
 });
+it('preserves Fastify 4xx errors instead of masking them as 500', async () => {
+  const app = await buildTestApp();
+  app.post('/api/echo', async (request) => request.body);
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/echo',
+    headers: { 'content-type': 'application/json' },
+    payload: '{"broken":',
+  });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error.code).toBe('VALIDATION_FAILED');
+});

@@ -15,6 +15,11 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ERROR_CODES.INTERNAL]: 'Internal server error',
 };
 
+/** Default user-facing message for an error code. */
+export function defaultMessageFor(code: ErrorCode): string {
+  return DEFAULT_MESSAGES[code];
+}
+
 /** An expected API failure that maps directly onto the error envelope. */
 export class AppError extends Error {
   readonly statusCode: number;
