@@ -279,26 +279,41 @@ it('rejects more than 100 changes', async () => {
   expect(response.statusCode).toBe(400);
 });
 
-it("never reports another user's changes in the caller's cursor", async () => {
+it('keeps each user on their own pull cursor', async () => {
   const { app, user, bookId } = await setup();
   const other = await seedUser('member', 'other');
   const otherBook = await seedBook({ uploadedBy: other.id, format: 'pdf' });
 
-  const response = await push(app, user, [progressChange(bookId, T1)]);
-  const body = response.json();
+  const own = await push(app, user, [progressChange(bookId, T1)]);
+  const ownRevision = own.json().applied[0].revision as number;
+
   await push(app, other, [progressChange(otherBook.id, T1)]);
 
-  expect(body.cursor).toBe(await maxRevision(testDb, user.id));
-  expect(body.cursor).toBeLessThan(await maxRevision(testDb, other.id));
+  // The push acknowledgement reports this caller's change, not the global tip.
+  expect(own.json().cursor).toBe(ownRevision);
 
   const pulled = await app.inject({
     method: 'GET',
     url: '/api/sync/pull?since=0',
     headers: await authHeader(user),
   });
+  expect(pulled.json().cursor).toBe(ownRevision);
   expect(
     pulled.json().changes.map((change: { entityId: string }) => change.entityId),
   ).toEqual([bookId]);
+
+  // A newer revision from another user never advances this caller's cursor.
+  const again = await app.inject({
+    method: 'GET',
+    url: `/api/sync/pull?since=${ownRevision}`,
+    headers: await authHeader(user),
+  });
+  expect(again.json()).toEqual({
+    changes: [],
+    cursor: ownRevision,
+    hasMore: false,
+    reset: false,
+  });
 });
 
 it('stores reader settings under the user id as entity id', async () => {
@@ -383,4 +398,169 @@ it('normalizes pushed tags and blank bookmark labels', async () => {
   expect(annotation?.tags).toEqual(['重复', '有效']);
   const [bookmark] = await testDb.select().from(bookmarks);
   expect(bookmark?.label).toBeNull();
+});
+
+it('keeps a replayed batch idempotent when the client clock runs ahead', async () => {
+  const { app, user, bookId } = await setup();
+  const future = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const batch: SyncPushChange[] = [
+    progressChange(bookId, future),
+    annotationChange(newId(), bookId, future, '超前'),
+    bookmarkChange(newId(), bookId, future, '超前书签'),
+  ];
+
+  const first = await push(app, user, batch);
+  expect(first.json().applied).toHaveLength(3);
+
+  const replay = await push(app, user, batch);
+  expect(replay.json().applied).toEqual([]);
+  expect(replay.json().skipped).toHaveLength(3);
+
+  const { rows } = await testDb.$client.query<{ count: string }>(
+    'select count(*) from sync_changes where user_id = $1',
+    [user.id],
+  );
+  expect(Number(rows[0]?.count)).toBe(3);
+});
+
+it('applies an equal timestamp when the payload changed', async () => {
+  const { app, user, bookId } = await setup();
+  const annotationId = newId();
+
+  await push(app, user, [annotationChange(annotationId, bookId, T1, '第一版')]);
+  const changed = await push(app, user, [annotationChange(annotationId, bookId, T1, '另一版')]);
+
+  expect(changed.json().applied).toHaveLength(1);
+  const history = await testDb.select().from(annotationHistory);
+  expect(history.map((entry) => entry.noteText)).toEqual(['第一版']);
+  const [row] = await testDb.select().from(annotations);
+  expect(row).toMatchObject({ noteText: '另一版', revision: 2 });
+});
+
+it('rejects deletes of progress and settings', async () => {
+  const { app, user, bookId } = await setup();
+
+  const progressDelete = await push(app, user, [
+    { entityType: 'reading_progress', entityId: bookId, op: 'delete', clientUpdatedAt: T1 },
+  ]);
+  expect(progressDelete.json().rejected).toEqual([
+    { key: syncKey('reading_progress', bookId), reason: 'unsupported_op' },
+  ]);
+
+  const settingsDelete = await push(app, user, [
+    { entityType: 'reader_settings', entityId: user.id, op: 'delete', clientUpdatedAt: T1 },
+  ]);
+  expect(settingsDelete.json().rejected).toEqual([
+    { key: syncKey('reader_settings', user.id), reason: 'unsupported_op' },
+  ]);
+});
+
+it('propagates a bookmark delete as a tombstone that a newer upsert resurrects', async () => {
+  const { app, user, bookId } = await setup();
+  const bookmarkId = newId();
+
+  await push(app, user, [bookmarkChange(bookmarkId, bookId, T1, '删除我')]);
+  const deleted = await push(app, user, [
+    { entityType: 'bookmark', entityId: bookmarkId, op: 'delete', clientUpdatedAt: T2 },
+  ]);
+  expect(deleted.json().applied[0]).toMatchObject({
+    entityType: 'bookmark',
+    entityId: bookmarkId,
+    op: 'delete',
+    payload: { label: '删除我' },
+  });
+
+  const list = await app.inject({
+    method: 'GET',
+    url: `/api/books/${bookId}/bookmarks`,
+    headers: await authHeader(user),
+  });
+  expect(list.json().items).toEqual([]);
+
+  await push(app, user, [bookmarkChange(bookmarkId, bookId, T3, '复活')]);
+  const [row] = await testDb.select().from(bookmarks);
+  expect(row).toMatchObject({ label: '复活', deletedAt: null });
+
+  const relisted = await app.inject({
+    method: 'GET',
+    url: `/api/books/${bookId}/bookmarks`,
+    headers: await authHeader(user),
+  });
+  expect(relisted.json().items).toHaveLength(1);
+});
+
+it('rejects pushes without a token', async () => {
+  const { app, bookId } = await setup();
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/sync/push',
+    payload: { changes: [progressChange(bookId, T1)] },
+  });
+  expect(response.statusCode).toBe(401);
+});
+
+it('skips older reader settings', async () => {
+  const { app, user } = await setup();
+
+  await push(app, user, [
+    {
+      entityType: 'reader_settings',
+      entityId: user.id,
+      op: 'upsert',
+      clientUpdatedAt: T2,
+      payload: { settings: { theme: 'dark' } },
+    },
+  ]);
+  const stale = await push(app, user, [
+    {
+      entityType: 'reader_settings',
+      entityId: user.id,
+      op: 'upsert',
+      clientUpdatedAt: T1,
+      payload: { settings: { theme: 'light' } },
+    },
+  ]);
+
+  expect(stale.json().skipped).toEqual([syncKey('reader_settings', user.id)]);
+  const [row] = await testDb.select().from(userSettings);
+  expect(row?.payload).toEqual({ theme: 'dark' });
+});
+
+it('rejects a missing book for annotations and bookmarks', async () => {
+  const { app, user } = await setup();
+  const missingBookId = newId();
+  const annotationId = newId();
+  const bookmarkId = newId();
+
+  const annotation = await push(app, user, [
+    annotationChange(annotationId, missingBookId, T1, '无书'),
+  ]);
+  expect(annotation.json().rejected).toEqual([
+    { key: syncKey('annotation', annotationId), reason: 'unknown_entity' },
+  ]);
+
+  const bookmark = await push(app, user, [bookmarkChange(bookmarkId, missingBookId, T1, '无书')]);
+  expect(bookmark.json().rejected).toEqual([
+    { key: syncKey('bookmark', bookmarkId), reason: 'unknown_entity' },
+  ]);
+});
+
+it('rejects a locator of the wrong kind for annotations and bookmarks', async () => {
+  const { app, user } = await setup();
+  const epub = await seedBook({ uploadedBy: user.id, format: 'epub' });
+  const annotationId = newId();
+  const bookmarkId = newId();
+
+  const annotation = await push(app, user, [
+    annotationChange(annotationId, epub.id, T1, '错位'),
+  ]);
+  expect(annotation.json().rejected).toEqual([
+    { key: syncKey('annotation', annotationId), reason: 'invalid_payload' },
+  ]);
+
+  const bookmark = await push(app, user, [bookmarkChange(bookmarkId, epub.id, T1, '错位')]);
+  expect(bookmark.json().rejected).toEqual([
+    { key: syncKey('bookmark', bookmarkId), reason: 'invalid_payload' },
+  ]);
 });

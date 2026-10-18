@@ -220,6 +220,7 @@ export async function applyPush(
     }
   }
 
-  const cursor = await maxRevision(deps.db, actor.id);
+  // An acknowledgement marker, not a pull cursor: 0 means nothing was applied.
+  const cursor = appliedChanges.at(-1)?.revision ?? 0;
   return { applied: appliedChanges, skipped, rejected, cursor };
 }

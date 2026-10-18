@@ -62,6 +62,11 @@ export interface SyncPushResult {
   applied: SyncChangeEnvelope[];
   skipped: string[];
   rejected: Array<{ key: string; reason: SyncRejectReason }>;
+  /**
+   * Revision of the last change applied in this batch, or 0 when nothing was
+   * applied. This is an acknowledgement marker, not a pull cursor: clients
+   * advance their pull cursor from `SyncPullResult.cursor`.
+   */
   cursor: number;
 }
 

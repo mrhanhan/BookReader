@@ -5,6 +5,7 @@ import {
   syncBookmarkPayloadSchema,
   syncProgressPayloadSchema,
   syncSettingsPayloadSchema,
+  type Locator,
   type SyncChangeEnvelope,
   type SyncPushChange,
   type SyncRejectReason,
@@ -57,21 +58,60 @@ export function effectiveClientTime(
   return { time: clientUpdatedAt, clockSkew: false };
 }
 
-/** Deterministic JSON for comparing payloads regardless of key insertion order. */
-function stableJson(value: unknown): string {
+/** Deterministic JSON. Payloads arrive through JSON, so cycles are a bug, not input. */
+function stableJson(value: unknown, seen: Set<object> = new Set()): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value) ?? 'null';
   }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(',')}]`;
+  if (seen.has(value)) {
+    throw new Error('Cannot compare a cyclic payload');
   }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort();
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableJson(item, seen)).join(',')}]`;
+    }
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key], seen)}`).join(',')}}`;
+  } finally {
+    seen.delete(value);
+  }
 }
 
 function samePayload(left: unknown, right: unknown): boolean {
   return stableJson(left) === stableJson(right);
+}
+
+/** Parsed, normalized write fields plus the times they are applied at. */
+interface ApplyContext {
+  clientTime: Date;
+  clockSkew: boolean;
+  now: Date;
+}
+
+/**
+ * Rejects changes whose book is missing or whose locator belongs to another
+ * reading engine. Returns undefined when the change may proceed.
+ */
+async function invalidBookOrLocator(
+  deps: AppDeps,
+  bookId: string,
+  locator: Locator,
+): Promise<ApplyResult | undefined> {
+  const book = await findBookById(deps.db, bookId, { includeDeleted: false });
+  if (!book) {
+    return rejected('unknown_entity');
+  }
+  try {
+    assertLocatorKind(book, locator);
+  } catch (error) {
+    if (error instanceof AppError) {
+      return rejected('invalid_payload');
+    }
+    throw error;
+  }
+  return undefined;
 }
 
 function rejected(reason: SyncRejectReason): ApplyResult {
@@ -91,24 +131,18 @@ function storedTimeOf(row: { clientUpdatedAt: Date | null; updatedAt: Date }): D
   return row.clientUpdatedAt ?? row.updatedAt;
 }
 
-/** The write fields a client pushes for an annotation. */
+/** The write fields an annotation upsert actually stores. */
 function annotationWritePayload(row: AnnotationRow): Record<string, unknown> {
   return {
-    bookId: row.bookId,
-    type: row.type,
     color: row.color,
-    locator: row.locator,
-    selectedText: row.selectedText,
     noteText: row.noteText,
     tags: row.tags,
   };
 }
 
-/** The write fields a client pushes for a bookmark. */
+/** The write field a bookmark upsert actually stores. */
 function bookmarkWritePayload(row: BookmarkRow): Record<string, unknown> {
   return {
-    bookId: row.bookId,
-    locator: row.locator,
     label: row.label,
   };
 }
@@ -124,17 +158,22 @@ export async function applyChange(
   incoming: SyncPushChange,
 ): Promise<ApplyResult> {
   const now = deps.clock.now();
-  const { time } = effectiveClientTime(new Date(incoming.clientUpdatedAt), now);
+  const effective = effectiveClientTime(new Date(incoming.clientUpdatedAt), now);
+  const context: ApplyContext = {
+    clientTime: effective.time,
+    clockSkew: effective.clockSkew,
+    now,
+  };
 
   switch (incoming.entityType) {
     case 'reading_progress':
-      return applyProgressChange(deps, actor, incoming, time, now);
+      return applyProgressChange(deps, actor, incoming, context);
     case 'annotation':
-      return applyAnnotationChange(deps, actor, incoming, time, now);
+      return applyAnnotationChange(deps, actor, incoming, context);
     case 'bookmark':
-      return applyBookmarkChange(deps, actor, incoming, time, now);
+      return applyBookmarkChange(deps, actor, incoming, context);
     case 'reader_settings':
-      return applySettingsChange(deps, actor, incoming, time, now);
+      return applySettingsChange(deps, actor, incoming, context);
     default:
       return rejected('unknown_entity');
   }
@@ -144,9 +183,9 @@ async function applyProgressChange(
   deps: AppDeps,
   actor: ReadingActor,
   incoming: SyncPushChange,
-  clientTime: Date,
-  now: Date,
+  context: ApplyContext,
 ): Promise<ApplyResult> {
+  const { clientTime, clockSkew, now } = context;
   if (incoming.op !== 'upsert') {
     return rejected('unsupported_op');
   }
@@ -160,17 +199,9 @@ async function applyProgressChange(
     return rejected('invalid_payload');
   }
 
-  const book = await findBookById(deps.db, bookId, { includeDeleted: false });
-  if (!book) {
-    return rejected('unknown_entity');
-  }
-  try {
-    assertLocatorKind(book, locator);
-  } catch (error) {
-    if (error instanceof AppError) {
-      return rejected('invalid_payload');
-    }
-    throw error;
+  const invalid = await invalidBookOrLocator(deps, bookId, locator);
+  if (invalid !== undefined) {
+    return invalid;
   }
 
   return deps.db.transaction(async (tx) => {
@@ -183,16 +214,18 @@ async function applyProgressChange(
       .for('update');
 
     if (stored) {
+      const write = { locator };
+      // A clamped clock cannot order retries, so an identical payload wins.
+      if (clockSkew && samePayload(write, { locator: stored.locator })) {
+        return skipped();
+      }
       const storedTime = storedTimeOf(stored);
       if (clientTime.getTime() < storedTime.getTime()) {
         return skipped();
       }
       if (
         clientTime.getTime() === storedTime.getTime() &&
-        samePayload(
-          { bookId, locator },
-          { bookId: stored.bookId, locator: stored.locator },
-        )
+        samePayload(write, { locator: stored.locator })
       ) {
         return skipped();
       }
@@ -225,76 +258,66 @@ async function applyAnnotationChange(
   deps: AppDeps,
   actor: ReadingActor,
   incoming: SyncPushChange,
-  clientTime: Date,
-  now: Date,
+  context: ApplyContext,
 ): Promise<ApplyResult> {
+  if (incoming.op === 'delete') {
+    return applyAnnotationDelete(deps, actor, incoming, context);
+  }
+  return applyAnnotationUpsert(deps, actor, incoming, context);
+}
+
+async function applyAnnotationUpsert(
+  deps: AppDeps,
+  actor: ReadingActor,
+  incoming: SyncPushChange,
+  context: ApplyContext,
+): Promise<ApplyResult> {
+  const { clientTime, clockSkew, now } = context;
+  const parsed = syncAnnotationPayloadSchema.safeParse(incoming.payload);
+  if (!parsed.success) {
+    return rejected('invalid_payload');
+  }
+  const write = {
+    bookId: parsed.data.bookId,
+    type: parsed.data.type,
+    color: parsed.data.color,
+    locator: parsed.data.locator,
+    selectedText: parsed.data.selectedText,
+    noteText: parsed.data.noteText,
+    tags: normalizeTags(parsed.data.tags),
+  };
+  const invalid = await invalidBookOrLocator(deps, write.bookId, write.locator);
+  if (invalid !== undefined) {
+    return invalid;
+  }
+
+  // Only these fields are written by an upsert; locator and selected text are
+  // immutable for an existing annotation and must not defeat idempotency.
+  const fields = {
+    color: write.color,
+    noteText: write.noteText,
+    tags: write.tags,
+  };
+
   return deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const stored = await findAnnotationRowById(tx, incoming.entityId);
-
-    if (incoming.op === 'delete') {
-      if (!stored) {
-        return skipped();
-      }
-      if (stored.userId !== actor.id) {
-        return rejected('not_allowed');
-      }
-      if (stored.deletedAt !== null) {
-        return skipped();
-      }
-      if (clientTime.getTime() < storedTimeOf(stored).getTime()) {
-        return skipped();
-      }
-
-      const deleted = await softDeleteAnnotation(
-        tx,
-        stored.id,
-        stored.bookId,
-        actor.id,
-        now,
-        clientTime,
-      );
-      if (!deleted) {
-        return skipped();
-      }
-      const change = await appendChange(tx, {
-        userId: actor.id,
-        entityType: 'annotation',
-        entityId: stored.id,
-        op: 'delete',
-        payload: annotationChangePayload(toAnnotationDto(deleted), clientTime),
-        clientUpdatedAt: clientTime,
-        serverUpdatedAt: now,
-        deviceId: actor.deviceId ?? null,
-      });
-      return applied(change);
-    }
-
-    const parsed = syncAnnotationPayloadSchema.safeParse(incoming.payload);
-    if (!parsed.success) {
-      return rejected('invalid_payload');
-    }
-    const write = {
-      bookId: parsed.data.bookId,
-      type: parsed.data.type,
-      color: parsed.data.color,
-      locator: parsed.data.locator,
-      selectedText: parsed.data.selectedText,
-      noteText: parsed.data.noteText,
-      tags: normalizeTags(parsed.data.tags),
-    };
 
     if (stored && stored.userId !== actor.id) {
       return rejected('not_allowed');
     }
     if (stored) {
+      // A clamped clock cannot order retries, so an identical payload wins.
+      if (clockSkew && samePayload(fields, annotationWritePayload(stored))) {
+        return skipped();
+      }
       const storedTime = storedTimeOf(stored);
       if (clientTime.getTime() < storedTime.getTime()) {
         return skipped();
       }
       if (
         clientTime.getTime() === storedTime.getTime() &&
-        samePayload(write, annotationWritePayload(stored))
+        samePayload(fields, annotationWritePayload(stored))
       ) {
         return skipped();
       }
@@ -353,77 +376,112 @@ async function applyAnnotationChange(
   });
 }
 
+async function applyAnnotationDelete(
+  deps: AppDeps,
+  actor: ReadingActor,
+  incoming: SyncPushChange,
+  context: ApplyContext,
+): Promise<ApplyResult> {
+  const { clientTime, now } = context;
+
+  return deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
+    const stored = await findAnnotationRowById(tx, incoming.entityId);
+
+    if (!stored) {
+      return skipped();
+    }
+    if (stored.userId !== actor.id) {
+      return rejected('not_allowed');
+    }
+    if (stored.deletedAt !== null) {
+      return skipped();
+    }
+    if (clientTime.getTime() < storedTimeOf(stored).getTime()) {
+      return skipped();
+    }
+
+    const deleted = await softDeleteAnnotation(
+      tx,
+      stored.id,
+      stored.bookId,
+      actor.id,
+      now,
+      clientTime,
+    );
+    if (!deleted) {
+      return skipped();
+    }
+    const change = await appendChange(tx, {
+      userId: actor.id,
+      entityType: 'annotation',
+      entityId: stored.id,
+      op: 'delete',
+      payload: annotationChangePayload(toAnnotationDto(deleted), clientTime),
+      clientUpdatedAt: clientTime,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return applied(change);
+  });
+}
+
 async function applyBookmarkChange(
   deps: AppDeps,
   actor: ReadingActor,
   incoming: SyncPushChange,
-  clientTime: Date,
-  now: Date,
+  context: ApplyContext,
 ): Promise<ApplyResult> {
+  if (incoming.op === 'delete') {
+    return applyBookmarkDelete(deps, actor, incoming, context);
+  }
+  return applyBookmarkUpsert(deps, actor, incoming, context);
+}
+
+async function applyBookmarkUpsert(
+  deps: AppDeps,
+  actor: ReadingActor,
+  incoming: SyncPushChange,
+  context: ApplyContext,
+): Promise<ApplyResult> {
+  const { clientTime, clockSkew, now } = context;
+  const parsed = syncBookmarkPayloadSchema.safeParse(incoming.payload);
+  if (!parsed.success) {
+    return rejected('invalid_payload');
+  }
+  const label = parsed.data.label === null || parsed.data.label === '' ? null : parsed.data.label;
+  const write = {
+    bookId: parsed.data.bookId,
+    locator: parsed.data.locator,
+    label,
+  };
+  const invalid = await invalidBookOrLocator(deps, write.bookId, write.locator);
+  if (invalid !== undefined) {
+    return invalid;
+  }
+
+  // Only the label is written when a bookmark already exists.
+  const fields = { label };
+
   return deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const stored = await findBookmarkRowById(tx, incoming.entityId);
-
-    if (incoming.op === 'delete') {
-      if (!stored) {
-        return skipped();
-      }
-      if (stored.userId !== actor.id) {
-        return rejected('not_allowed');
-      }
-      if (stored.deletedAt !== null) {
-        return skipped();
-      }
-      if (clientTime.getTime() < storedTimeOf(stored).getTime()) {
-        return skipped();
-      }
-
-      const deleted = await softDeleteBookmark(
-        tx,
-        stored.id,
-        stored.bookId,
-        actor.id,
-        now,
-        clientTime,
-      );
-      if (!deleted) {
-        return skipped();
-      }
-      const change = await appendChange(tx, {
-        userId: actor.id,
-        entityType: 'bookmark',
-        entityId: stored.id,
-        op: 'delete',
-        payload: bookmarkChangePayload(toBookmarkDto(deleted), clientTime),
-        clientUpdatedAt: clientTime,
-        serverUpdatedAt: now,
-        deviceId: actor.deviceId ?? null,
-      });
-      return applied(change);
-    }
-
-    const parsed = syncBookmarkPayloadSchema.safeParse(incoming.payload);
-    if (!parsed.success) {
-      return rejected('invalid_payload');
-    }
-    const label = parsed.data.label === null || parsed.data.label === '' ? null : parsed.data.label;
-    const write = {
-      bookId: parsed.data.bookId,
-      locator: parsed.data.locator,
-      label,
-    };
 
     if (stored && stored.userId !== actor.id) {
       return rejected('not_allowed');
     }
     if (stored) {
+      // A clamped clock cannot order retries, so an identical payload wins.
+      if (clockSkew && samePayload(fields, bookmarkWritePayload(stored))) {
+        return skipped();
+      }
       const storedTime = storedTimeOf(stored);
       if (clientTime.getTime() < storedTime.getTime()) {
         return skipped();
       }
       if (
         clientTime.getTime() === storedTime.getTime() &&
-        samePayload(write, bookmarkWritePayload(stored))
+        samePayload(fields, bookmarkWritePayload(stored))
       ) {
         return skipped();
       }
@@ -463,13 +521,63 @@ async function applyBookmarkChange(
   });
 }
 
+async function applyBookmarkDelete(
+  deps: AppDeps,
+  actor: ReadingActor,
+  incoming: SyncPushChange,
+  context: ApplyContext,
+): Promise<ApplyResult> {
+  const { clientTime, now } = context;
+
+  return deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
+    const stored = await findBookmarkRowById(tx, incoming.entityId);
+
+    if (!stored) {
+      return skipped();
+    }
+    if (stored.userId !== actor.id) {
+      return rejected('not_allowed');
+    }
+    if (stored.deletedAt !== null) {
+      return skipped();
+    }
+    if (clientTime.getTime() < storedTimeOf(stored).getTime()) {
+      return skipped();
+    }
+
+    const deleted = await softDeleteBookmark(
+      tx,
+      stored.id,
+      stored.bookId,
+      actor.id,
+      now,
+      clientTime,
+    );
+    if (!deleted) {
+      return skipped();
+    }
+    const change = await appendChange(tx, {
+      userId: actor.id,
+      entityType: 'bookmark',
+      entityId: stored.id,
+      op: 'delete',
+      payload: bookmarkChangePayload(toBookmarkDto(deleted), clientTime),
+      clientUpdatedAt: clientTime,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return applied(change);
+  });
+}
+
 async function applySettingsChange(
   deps: AppDeps,
   actor: ReadingActor,
   incoming: SyncPushChange,
-  clientTime: Date,
-  now: Date,
+  context: ApplyContext,
 ): Promise<ApplyResult> {
+  const { clientTime, clockSkew, now } = context;
   if (incoming.op !== 'upsert') {
     return rejected('unsupported_op');
   }
@@ -482,6 +590,8 @@ async function applySettingsChange(
     return rejected('invalid_payload');
   }
 
+  const write = { settings: parsed.data.settings };
+
   return deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const [stored] = await tx
@@ -492,12 +602,16 @@ async function applySettingsChange(
       .for('update');
 
     if (stored) {
+      // A clamped clock cannot order retries, so an identical payload wins.
+      if (clockSkew && samePayload(write, { settings: stored.payload })) {
+        return skipped();
+      }
       if (clientTime.getTime() < stored.clientUpdatedAt.getTime()) {
         return skipped();
       }
       if (
         clientTime.getTime() === stored.clientUpdatedAt.getTime() &&
-        samePayload({ settings: parsed.data.settings }, { settings: stored.payload })
+        samePayload(write, { settings: stored.payload })
       ) {
         return skipped();
       }
