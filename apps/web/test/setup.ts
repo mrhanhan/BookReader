@@ -35,7 +35,7 @@ const reader: MeDto = {
   displayName: '读者',
   role: 'member',
   timezone: 'Asia/Shanghai',
-  aiEnabled: false,
+  aiEnabled: true,
   uploadUsedBytes: 0,
   uploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
   libraryUsedBytes: 0,

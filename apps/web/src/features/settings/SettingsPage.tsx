@@ -36,7 +36,11 @@ function AiSettingsSection() {
   const usageQuery = useQuery({ queryKey: ['ai-usage'], queryFn: fetchAiUsage });
   const toggle = useMutation({
     mutationFn: setAiEnabled,
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
+      // Keep the server-confirmed value even if the usage refetch fails.
+      queryClient.setQueryData<AiUsageDto>(['ai-usage'], (old) =>
+        old ? { ...old, enabled: saved } : old,
+      );
       // The server stored the switch already; a failed profile refresh must
       // not report the save as failed or leave the quota stale.
       try {
@@ -55,9 +59,7 @@ function AiSettingsSection() {
 
   return (
     <section
-      // Naming the region only once the snapshot exists keeps assistive tech
-      // from announcing a section that is still loading.
-      aria-labelledby={usage ? 'settings-ai-title' : undefined}
+      aria-labelledby="settings-ai-title"
       className="rounded-lg border border-border bg-surface/80 p-5"
     >
       <h2 id="settings-ai-title" className="font-serif text-lg text-ink">

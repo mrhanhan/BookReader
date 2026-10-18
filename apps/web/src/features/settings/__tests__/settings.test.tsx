@@ -351,7 +351,7 @@ it('shows AI usage, the privacy note and saves the AI toggle', async () => {
   renderSettings(createEngine().engine);
 
   const section = await screen.findByRole('region', { name: 'AI 伴读' });
-  expect(within(section).getByText(/今日 1,000 \/ 100,000 tokens/)).toBeInTheDocument();
+  expect(await within(section).findByText(/今日 1,000 \/ 100,000 tokens/)).toBeInTheDocument();
   expect(within(section).getByText(/不会发送整本书/)).toBeInTheDocument();
 
   const toggle = within(section).getByRole('checkbox', { name: '启用 AI 伴读' });
@@ -377,6 +377,53 @@ it('explains when AI is not configured', async () => {
 
   renderSettings(createEngine().engine);
   const section = await screen.findByRole('region', { name: 'AI 伴读' });
-  expect(within(section).getByText('AI 尚未配置，请联系管理员')).toBeInTheDocument();
+  expect(await within(section).findByText('AI 尚未配置，请联系管理员')).toBeInTheDocument();
   expect(within(section).getByRole('checkbox', { name: '启用 AI 伴读' })).toBeDisabled();
+});
+
+it('restores the AI switch and reports a failed save', async () => {
+  server.use(
+    http.get('/api/ai/usage', () =>
+      HttpResponse.json({
+        enabled: true,
+        configured: true,
+        fakeProvider: false,
+        model: 'deepseek-chat',
+        daily: { used: 0, reserved: 0, limit: 100_000 },
+        monthly: { used: 0, reserved: 0, limit: 1_000_000 },
+      }),
+    ),
+    http.patch('/api/me/ai', () =>
+      HttpResponse.json({ error: { code: 'INTERNAL', message: 'boom' } }, { status: 500 }),
+    ),
+  );
+
+  renderSettings(createEngine().engine);
+  const section = await screen.findByRole('region', { name: 'AI 伴读' });
+  const toggle = await within(section).findByRole('checkbox', { name: '启用 AI 伴读' });
+  expect(toggle).toBeChecked();
+
+  await userEvent.click(toggle);
+  expect(await within(section).findByText('AI 开关保存失败，请重试')).toBeInTheDocument();
+  await waitFor(() => expect(toggle).toBeChecked());
+});
+
+it('shows the exhausted suffix and the fake-provider notice', async () => {
+  server.use(
+    http.get('/api/ai/usage', () =>
+      HttpResponse.json({
+        enabled: true,
+        configured: true,
+        fakeProvider: true,
+        model: 'fake-chat',
+        daily: { used: 100_000, reserved: 0, limit: 100_000 },
+        monthly: { used: 0, reserved: 0, limit: 1_000_000 },
+      }),
+    ),
+  );
+
+  renderSettings(createEngine().engine);
+  const section = await screen.findByRole('region', { name: 'AI 伴读' });
+  expect(await within(section).findByText(/额度已用尽/)).toBeInTheDocument();
+  expect(within(section).getByText('当前使用本地假提供方（仅用于测试）')).toBeInTheDocument();
 });

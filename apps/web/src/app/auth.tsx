@@ -174,8 +174,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const refreshUser = useCallback(async () => {
-    // Failures are handed back to the caller and never end the session here:
-    // the next verified request decides whether the account is still valid.
+    // Failures are handed back to the caller. Transport/5xx failures keep the
+    // session; an explicit 401/403 from the API client still ends it.
     const me = await fetchCurrentUser();
     writeCachedUser(me);
     setUser(me);
