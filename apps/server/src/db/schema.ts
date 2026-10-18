@@ -1,15 +1,18 @@
 import {
   MEMBER_UPLOAD_QUOTA_BYTES,
   newId,
+  type AnnotationColor,
   type BookConversionStatus,
   type BookFormat,
   type BookStatus,
+  type Locator,
   type Role,
 } from '@bookr/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -195,3 +198,89 @@ export type BookRow = typeof books.$inferSelect;
 
 /** Fields accepted when inserting a book. */
 export type NewBook = typeof books.$inferInsert;
+
+export const readingProgress = pgTable(
+  'reading_progress',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bookId: uuid('book_id')
+      .notNull()
+      .references(() => books.id, { onDelete: 'cascade' }),
+    locator: jsonb('locator').$type<Locator>().notNull(),
+    percent: doublePrecision('percent').notNull(),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.bookId] }),
+    index('reading_progress_book_id_idx').on(table.bookId),
+  ],
+);
+
+export const annotations = pgTable(
+  'annotations',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bookId: uuid('book_id')
+      .notNull()
+      .references(() => books.id, { onDelete: 'cascade' }),
+    type: text('type').$type<'highlight' | 'note'>().notNull(),
+    color: text('color').$type<AnnotationColor>().notNull(),
+    locator: jsonb('locator').$type<Locator>().notNull(),
+    selectedText: text('selected_text').notNull(),
+    noteText: text('note_text'),
+    tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+    revision: integer('revision').notNull().default(1),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('annotations_user_book_updated_idx').on(table.userId, table.bookId, table.updatedAt),
+  ],
+);
+
+export const annotationHistory = pgTable('annotation_history', {
+  id: uuid('id').primaryKey().$defaultFn(newId),
+  annotationId: uuid('annotation_id')
+    .notNull()
+    .references(() => annotations.id, { onDelete: 'cascade' }),
+  noteText: text('note_text'),
+  editedAt: timestamp('edited_at', { withTimezone: true }).notNull().defaultNow(),
+  deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+});
+
+export const bookmarks = pgTable(
+  'bookmarks',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bookId: uuid('book_id')
+      .notNull()
+      .references(() => books.id, { onDelete: 'cascade' }),
+    locator: jsonb('locator').$type<Locator>().notNull(),
+    label: text('label'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('bookmarks_user_book_created_idx').on(table.userId, table.bookId, table.createdAt),
+  ],
+);
+
+/** A reading progress row as stored in Postgres. */
+export type ReadingProgressRow = typeof readingProgress.$inferSelect;
+
+/** An annotation row as stored in Postgres. */
+export type AnnotationRow = typeof annotations.$inferSelect;
+
+/** A bookmark row as stored in Postgres. */
+export type BookmarkRow = typeof bookmarks.$inferSelect;

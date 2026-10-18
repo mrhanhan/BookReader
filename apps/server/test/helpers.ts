@@ -2,10 +2,12 @@ import {
   LIBRARY_QUOTA_BYTES,
   MEMBER_UPLOAD_QUOTA_BYTES,
   newId,
+  type AnnotationColor,
   type AuthTokens,
   type BookConversionStatus,
   type BookFormat,
   type BookStatus,
+  type Locator,
   type Role,
 } from '@bookr/shared';
 import { eq } from 'drizzle-orm';
@@ -22,13 +24,19 @@ import { createDb } from '../src/db/client';
 import { assertTestDatabase } from '../src/db/guard';
 import { migrate } from '../src/db/migrate';
 import {
+  annotations,
+  bookmarks,
   books,
   invites,
   libraries,
+  readingProgress,
   uploadSessions,
   users,
+  type AnnotationRow,
+  type BookmarkRow,
   type BookRow,
   type MetadataStatus,
+  type ReadingProgressRow,
 } from '../src/db/schema';
 import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
@@ -190,6 +198,112 @@ export async function seedBook(input: SeedBookInput): Promise<BookRow> {
     throw new Error('seedBook could not insert a book');
   }
   return book;
+}
+
+/** Fields accepted by `seedProgress`; everything but the ids has a default. */
+export interface SeedProgressInput {
+  userId: string;
+  bookId: string;
+  locator?: Locator;
+  percent?: number;
+  page?: number;
+  deviceId?: string | null;
+  updatedAt?: Date;
+}
+
+/**
+ * Upserts a user's reading progress for one book. The composite primary key
+ * means a repeated call replaces the row instead of inserting a duplicate.
+ */
+export async function seedProgress(input: SeedProgressInput): Promise<ReadingProgressRow> {
+  const percent = input.percent ?? 0;
+  const locator = input.locator ?? { kind: 'pdf', page: input.page ?? 1, percent };
+  const deviceId = input.deviceId ?? null;
+  const updatedAt = input.updatedAt ?? new Date();
+
+  const [row] = await testDb
+    .insert(readingProgress)
+    .values({ userId: input.userId, bookId: input.bookId, locator, percent, deviceId, updatedAt })
+    .onConflictDoUpdate({
+      target: [readingProgress.userId, readingProgress.bookId],
+      set: { locator, percent, deviceId, updatedAt },
+    })
+    .returning();
+
+  if (!row) {
+    throw new Error('seedProgress could not upsert reading progress');
+  }
+  return row;
+}
+
+/** Fields accepted by `seedAnnotation`; everything but the ids has a default. */
+export interface SeedAnnotationInput {
+  userId: string;
+  bookId: string;
+  type?: 'highlight' | 'note';
+  color?: AnnotationColor;
+  locator?: Locator;
+  selectedText?: string;
+  noteText?: string | null;
+  tags?: string[];
+  revision?: number;
+  deletedAt?: Date | null;
+  updatedAt?: Date;
+}
+
+/** Inserts an annotation directly, defaulting to a yellow note. */
+export async function seedAnnotation(input: SeedAnnotationInput): Promise<AnnotationRow> {
+  const [row] = await testDb
+    .insert(annotations)
+    .values({
+      userId: input.userId,
+      bookId: input.bookId,
+      type: input.type ?? 'note',
+      color: input.color ?? 'yellow',
+      locator: input.locator ?? { kind: 'pdf', page: 1, percent: 0 },
+      selectedText: input.selectedText ?? '引用',
+      noteText: input.noteText ?? null,
+      tags: input.tags ?? [],
+      revision: input.revision ?? 1,
+      deletedAt: input.deletedAt ?? null,
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
+    })
+    .returning();
+
+  if (!row) {
+    throw new Error('seedAnnotation could not insert an annotation');
+  }
+  return row;
+}
+
+/** Fields accepted by `seedBookmark`; everything but the ids has a default. */
+export interface SeedBookmarkInput {
+  userId: string;
+  bookId: string;
+  locator?: Locator;
+  label?: string | null;
+  deletedAt?: Date | null;
+  createdAt?: Date;
+}
+
+/** Inserts a bookmark directly, defaulting to the start of a PDF. */
+export async function seedBookmark(input: SeedBookmarkInput): Promise<BookmarkRow> {
+  const [row] = await testDb
+    .insert(bookmarks)
+    .values({
+      userId: input.userId,
+      bookId: input.bookId,
+      locator: input.locator ?? { kind: 'pdf', page: 1, percent: 0 },
+      label: input.label ?? null,
+      deletedAt: input.deletedAt ?? null,
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    })
+    .returning();
+
+  if (!row) {
+    throw new Error('seedBookmark could not insert a bookmark');
+  }
+  return row;
 }
 
 /** Reads the storage key of an upload session created through the API. */
