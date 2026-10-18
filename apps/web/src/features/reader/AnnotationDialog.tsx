@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 import { HIGHLIGHT_HEX } from '@bookr/reader-core';
+import { normalizeTags } from '@bookr/shared';
 import type { AnnotationColor, AnnotationDto, Locator } from '@bookr/shared';
 import { Button, Dialog, Input } from '@bookr/ui';
 import {
@@ -7,6 +8,7 @@ import {
   deleteAnnotation,
   updateAnnotation,
 } from '../../api/reading';
+import type { UpdateAnnotationInput } from '../../api/reading';
 import { messageForApiError } from '../../lib/errorMessages';
 import { ANNOTATION_COLOR_OPTIONS } from './colors';
 
@@ -31,22 +33,20 @@ export interface AnnotationDialogProps {
 }
 
 const CONFLICT_MESSAGE = '已在其他设备更新，旧版本已保留';
+const TAG_LIMIT_MESSAGE = '标签最多 20 个，每个不超过 30 字';
+const MAX_TAGS = 20;
+const MAX_TAG_LENGTH = 30;
 
 const textareaClass =
   'w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink ' +
   'placeholder:text-muted/60 focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none';
 
-/** Splits a comma-separated tag string, trimming and de-duplicating entries. */
-export function parseTags(raw: string): string[] {
-  const tags: string[] = [];
-  const seen = new Set<string>();
-  for (const part of raw.split(/[,，]/)) {
-    const tag = part.trim();
-    if (tag === '' || seen.has(tag)) continue;
-    seen.add(tag);
-    tags.push(tag);
-  }
-  return tags;
+/** Splits a comma-separated tag string; `normalizeTags` trims and dedupes. */
+function splitTags(raw: string): string[] {
+  return raw
+    .split(/[,，]/)
+    .map((tag) => tag.trim())
+    .filter((tag) => tag !== '');
 }
 
 /**
@@ -68,30 +68,57 @@ export function AnnotationDialog({
   const [noteText, setNoteText] = useState(initial?.noteText ?? '');
   const [tagsText, setTagsText] = useState(initial?.tags.join('，') ?? '');
   const [color, setColor] = useState<AnnotationColor>(initial?.color ?? draft?.color ?? 'yellow');
+  const [revision, setRevision] = useState(initial?.revision ?? 1);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const trimmed = noteText.trim();
-  const canSave = trimmed.length > 0 && !busy;
+  // Notes always need text. A plain highlight has no note to clear, so its
+  // color and tags stay editable while the textarea is empty.
+  const isEditableHighlight = mode === 'edit' && initial?.type === 'highlight';
+  const canSave = !busy && (trimmed.length > 0 || isEditableHighlight);
 
   function notify(message: string): void {
+    setNotice(message);
     onNotice?.(message);
   }
 
   async function handleSave(): Promise<void> {
     if (!canSave) return;
+    setNotice(null);
+
+    const rawTags = splitTags(tagsText);
+    if (rawTags.length > MAX_TAGS || rawTags.some((tag) => tag.length > MAX_TAG_LENGTH)) {
+      notify(TAG_LIMIT_MESSAGE);
+      return;
+    }
+    const tags = normalizeTags(rawTags);
+
     setBusy(true);
     try {
       if (mode === 'edit' && initial) {
-        const result = await updateAnnotation(bookId, initial.id, {
-          revision: initial.revision,
-          noteText: trimmed,
+        const patch: UpdateAnnotationInput = {
+          revision,
           color,
-          tags: parseTags(tagsText),
-        });
-        if (result.conflict) notify(CONFLICT_MESSAGE);
+          tags,
+        };
+        // Omitting noteText keeps a highlight's null note intact; an existing
+        // note is always non-empty here because its Save button requires text.
+        if (trimmed.length > 0) patch.noteText = trimmed;
+        const result = await updateAnnotation(bookId, initial.id, patch);
         // A stale edit still lands, so the returned annotation is authoritative.
         onSaved(result.annotation);
+        setRevision(result.annotation.revision);
+        if (result.conflict) {
+          notify(CONFLICT_MESSAGE);
+          // Adopt the server copy into the open form so the next save is based
+          // on the latest revision and text.
+          setNoteText(result.annotation.noteText ?? '');
+          setTagsText(result.annotation.tags.join('，'));
+          setColor(result.annotation.color);
+          return;
+        }
       } else if (draft) {
         const created = await createAnnotation(bookId, {
           type: 'note',
@@ -99,7 +126,7 @@ export function AnnotationDialog({
           locator: draft.locator,
           selectedText: draft.selectedText,
           noteText: trimmed,
-          tags: parseTags(tagsText),
+          tags,
         });
         onSaved(created);
       }
@@ -113,6 +140,7 @@ export function AnnotationDialog({
 
   async function handleDelete(): Promise<void> {
     if (!initial) return;
+    setNotice(null);
     setBusy(true);
     try {
       await deleteAnnotation(bookId, initial.id);
@@ -184,6 +212,15 @@ export function AnnotationDialog({
       }
     >
       <div className="flex flex-col gap-4">
+        {notice ? (
+          <p
+            role="alert"
+            className="rounded-md border border-highlight/30 bg-highlight/10 px-3 py-2 text-sm text-highlight"
+          >
+            {notice}
+          </p>
+        ) : null}
+
         {initial?.selectedText ?? draft?.selectedText ? (
           <blockquote className="border-l-2 border-border pl-3 text-sm leading-6 text-muted">
             {initial?.selectedText ?? draft?.selectedText}

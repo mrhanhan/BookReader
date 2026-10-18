@@ -1,6 +1,6 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import { ReaderPage } from '../ReaderPage';
@@ -28,6 +28,20 @@ const seededNote = {
   noteText: '我的批注',
   tags: ['历史'],
   revision: 1,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+const seededHighlight = {
+  id: 'h1',
+  bookId: BOOK_ID,
+  type: 'highlight' as const,
+  color: 'yellow' as const,
+  locator: { kind: 'pdf' as const, page: 3, percent: 0.25 },
+  selectedText: '一段原文',
+  noteText: null,
+  tags: ['重点'],
+  revision: 2,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
@@ -162,6 +176,8 @@ it('creates a note from the selection menu with the chosen color and normalized 
 
 it('copies the selection and shows a confirmation toast', async () => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, 'writeText');
   const { engine } = renderReader();
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
 
@@ -170,25 +186,84 @@ it('copies the selection and shows a confirmation toast', async () => {
     locator: { kind: 'pdf', page: 2, percent: 0.2 },
     rect: { left: 30, top: 200, width: 120, height: 20 },
   });
-  await userEvent.click(await screen.findByRole('button', { name: '复制' }));
+  await user.click(await screen.findByRole('button', { name: '复制' }));
 
+  expect(writeText).toHaveBeenCalledWith('要复制的段落');
   expect(await screen.findByText('已复制')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '用黄色划线' })).not.toBeInTheDocument();
+  writeText.mockRestore();
 });
 
-it('shows the conflict toast when an edit loses the revision race', async () => {
+it('recolors a pure highlight without sending a blank note', async () => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
   let patched: Record<string, unknown> | null = null;
+  const items = [{ ...seededHighlight }];
   server.use(
     http.get(`/api/books/${BOOK_ID}/file`, pdfFile),
-    http.get(`/api/books/${BOOK_ID}/annotations`, () =>
-      HttpResponse.json({ items: [{ ...seededNote }] }),
-    ),
+    http.get(`/api/books/${BOOK_ID}/annotations`, () => HttpResponse.json({ items })),
     http.patch(`/api/books/${BOOK_ID}/annotations/:annotationId`, async ({ request }) => {
       patched = (await request.json()) as Record<string, unknown>;
+      const updated = {
+        ...seededHighlight,
+        color: (patched.color as typeof seededHighlight.color) ?? 'yellow',
+        revision: seededHighlight.revision + 1,
+      };
+      items[0] = updated;
+      return HttpResponse.json({ annotation: updated, conflict: false });
+    }),
+  );
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(engine.setHighlights).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'h1', color: 'yellow', hasNote: false }),
+    ]),
+  );
+
+  engine.emit('highlightClick', { id: 'h1' });
+  expect(await screen.findByLabelText('批注内容')).toHaveValue('');
+  await userEvent.click(screen.getByRole('button', { name: '颜色：绿色' }));
+  await userEvent.click(screen.getByRole('button', { name: '保存批注' }));
+
+  await waitFor(() =>
+    expect(patched).toMatchObject({ color: 'green', revision: 2, tags: ['重点'] }),
+  );
+  expect(patched).not.toHaveProperty('noteText');
+  await waitFor(() =>
+    expect(engine.setHighlights).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'h1', color: 'green', hasNote: false }),
+    ]),
+  );
+});
+
+it('adopts the server copy when an edit loses the revision race', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  const conflictText = '已在其他设备更新，旧版本已保留';
+  const patches: Array<Record<string, unknown>> = [];
+  const items = [{ ...seededNote }];
+  let calls = 0;
+  server.use(
+    http.get(`/api/books/${BOOK_ID}/file`, pdfFile),
+    http.get(`/api/books/${BOOK_ID}/annotations`, () => HttpResponse.json({ items })),
+    http.patch(`/api/books/${BOOK_ID}/annotations/:annotationId`, async ({ request }) => {
+      const body = (await request.json()) as Record<string, unknown>;
+      patches.push(body);
+      const current = items[0]!;
+      calls += 1;
+
+      // The first save races with an edit made elsewhere: the server keeps the
+      // newer text at revision 3 and reports the conflict.
+      if (calls === 1) {
+        const updated = { ...current, noteText: '服务器上的批注', revision: 3 };
+        items[0] = updated;
+        return HttpResponse.json({ annotation: updated, conflict: true });
+      }
+
+      const updated = { ...current, revision: current.revision + 1 };
+      items[0] = updated;
       return HttpResponse.json({
-        annotation: { ...seededNote, noteText: '服务器上的批注', revision: 3 },
-        conflict: true,
+        annotation: updated,
+        conflict: body.revision !== current.revision,
       });
     }),
   );
@@ -208,11 +283,22 @@ it('shows the conflict toast when an edit loses the revision race', async () => 
   await userEvent.click(screen.getByRole('button', { name: '保存批注' }));
 
   await waitFor(() =>
-    expect(patched).toMatchObject({ noteText: '本地修改', color: 'blue', revision: 1 }),
+    expect(patches[0]).toMatchObject({ noteText: '本地修改', color: 'blue', revision: 1 }),
   );
-  expect(
-    await screen.findByText('已在其他设备更新，旧版本已保留'),
-  ).toBeInTheDocument();
+  // Both the inline notice (visible above a modal) and the page toast report it.
+  expect(await screen.findByRole('alert')).toHaveTextContent(conflictText);
+  expect(screen.getAllByText(conflictText)).toHaveLength(2);
+
+  // The dialog stays open with the server copy, so the next save is based on
+  // the latest revision rather than replaying the stale one.
+  expect(screen.getByLabelText('批注内容')).toHaveValue('服务器上的批注');
+  await userEvent.click(screen.getByRole('button', { name: '保存批注' }));
+  await waitFor(() =>
+    expect(patches[1]).toMatchObject({ noteText: '服务器上的批注', revision: 3 }),
+  );
+
+  await userEvent.click(screen.getByRole('button', { name: '笔记' }));
+  expect(await screen.findByText('服务器上的批注')).toBeInTheDocument();
   await waitFor(() =>
     expect(engine.setHighlights).toHaveBeenLastCalledWith([
       expect.objectContaining({ id: 'n1', hasNote: true }),
@@ -238,7 +324,7 @@ it('deletes an annotation after confirmation', async () => {
 
   await userEvent.click(await screen.findByRole('button', { name: '笔记' }));
   await screen.findByText('我的批注');
-  await userEvent.click(screen.getByRole('button', { name: '删除' }));
+  await userEvent.click(screen.getByRole('button', { name: /^删除：/ }));
   await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
   await waitFor(() => expect(deletedId).toBe('n1'));
@@ -246,4 +332,58 @@ it('deletes an annotation after confirmation', async () => {
     expect(screen.queryByTestId('annotation-item')).not.toBeInTheDocument(),
   );
   expect(await screen.findByText('还没有划线和批注')).toBeInTheDocument();
+});
+
+it('dismisses the selection menu on outside input, Escape or a cleared selection', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  const selection = {
+    text: '待处理的选中文本',
+    locator: { kind: 'pdf' as const, page: 2, percent: 0.2 },
+    rect: { left: 30, top: 200, width: 120, height: 20 },
+  };
+  const yellow = () => screen.queryByRole('button', { name: '用黄色划线' });
+
+  engine.emit('selection', selection);
+  expect(await screen.findByRole('button', { name: '用黄色划线' })).toBeInTheDocument();
+  fireEvent.pointerDown(document.body);
+  await waitFor(() => expect(yellow()).not.toBeInTheDocument());
+
+  engine.emit('selection', selection);
+  expect(await screen.findByRole('button', { name: '用黄色划线' })).toBeInTheDocument();
+  await userEvent.keyboard('{Escape}');
+  await waitFor(() => expect(yellow()).not.toBeInTheDocument());
+
+  engine.emit('selection', selection);
+  expect(await screen.findByRole('button', { name: '用黄色划线' })).toBeInTheDocument();
+  engine.emit('selection', null);
+  await waitFor(() => expect(yellow()).not.toBeInTheDocument());
+});
+
+it('shows an API error toast when a highlight cannot be saved', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  server.use(
+    http.get(`/api/books/${BOOK_ID}/file`, pdfFile),
+    http.get(`/api/books/${BOOK_ID}/annotations`, () => HttpResponse.json({ items: [] })),
+    http.post(`/api/books/${BOOK_ID}/annotations`, () =>
+      HttpResponse.json(
+        { error: { code: 'INTERNAL', message: 'boom' } },
+        { status: 500 },
+      ),
+    ),
+  );
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  engine.emit('selection', {
+    text: '无法保存的选中文本',
+    locator: { kind: 'pdf', page: 2, percent: 0.2 },
+    rect: { left: 30, top: 200, width: 120, height: 20 },
+  });
+  await userEvent.click(await screen.findByRole('button', { name: '用绿色划线' }));
+
+  expect(await screen.findByText('服务器出了点问题，请稍后重试')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '用绿色划线' })).not.toBeInTheDocument();
 });

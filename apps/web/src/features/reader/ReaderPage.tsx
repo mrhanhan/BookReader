@@ -122,14 +122,15 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Writes text to the clipboard. The async Clipboard API is unavailable in some
- * hosts, so a hidden textarea plus `execCommand('copy')` is the fallback.
+ * Writes text to the clipboard and reports whether it landed. The async
+ * Clipboard API is unavailable in some hosts, so a hidden textarea plus
+ * `execCommand('copy')` is the fallback.
  */
-async function copyText(text: string): Promise<void> {
+async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
-      return;
+      return true;
     }
   } catch {
     // Permission or feature policy refused; try the legacy path.
@@ -144,10 +145,11 @@ async function copyText(text: string): Promise<void> {
     area.style.opacity = '0';
     document.body.appendChild(area);
     area.select();
-    document.execCommand?.('copy');
+    const copied = document.execCommand ? document.execCommand('copy') : false;
     area.remove();
+    return copied;
   } catch {
-    // Copying is best-effort; the selection stays untouched.
+    return false;
   }
 }
 
@@ -234,6 +236,10 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const [bookmarkDialog, setBookmarkDialog] = useState<BookmarkDialogState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
+  const dialogOpen = annotationDialog !== null || bookmarkDialog !== null;
+  const dialogOpenRef = useRef(dialogOpen);
+  dialogOpenRef.current = dialogOpen;
+
   const queryClient = useQueryClient();
   const annotationsQuery = useQuery({
     queryKey: annotationsQueryKey(bookId ?? ''),
@@ -253,6 +259,16 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   const showToast = useCallback((message: string) => setToast(message), []);
   const dismissToast = useCallback(() => setToast(null), []);
+
+  // Closing a dialog also drops any selection so a stale menu cannot reappear.
+  const closeAnnotationDialog = useCallback(() => {
+    setAnnotationDialog(null);
+    setSelection(null);
+  }, []);
+  const closeBookmarkDialog = useCallback(() => {
+    setBookmarkDialog(null);
+    setSelection(null);
+  }, []);
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   const readyRef = useRef(false);
@@ -489,7 +505,12 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   useEffect(() => {
     if (!engine) return;
-    return engine.on('selection', (payload) => setSelection(payload));
+    return engine.on('selection', (payload) => {
+      // A dialog owns the screen; selections made under it are ignored so a
+      // stale menu cannot pile up behind the modal.
+      if (dialogOpenRef.current) return;
+      setSelection(payload);
+    });
   }, [engine]);
 
   useEffect(() => {
@@ -498,7 +519,10 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       const list =
         queryClient.getQueryData<AnnotationDto[]>(annotationsQueryKey(bookId)) ?? [];
       const found = list.find((annotation) => annotation.id === id);
-      if (found) setAnnotationDialog({ mode: 'edit', annotation: found });
+      if (found) {
+        setSelection(null);
+        setAnnotationDialog({ mode: 'edit', annotation: found });
+      }
     });
   }, [bookId, engine, queryClient]);
 
@@ -628,8 +652,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const copySelection = useCallback(async () => {
     const text = selection?.text ?? '';
     setSelection(null);
-    await copyText(text);
-    showToast('已复制');
+    const copied = await copyText(text);
+    showToast(copied ? '已复制' : '复制失败，请手动选择复制');
   }, [selection, showToast]);
 
   const openNoteDialog = useCallback(
@@ -665,7 +689,6 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   // Outside interactions dismiss the selection menu, but never while a dialog
   // is open (the dialog's own controls count as outside taps).
-  const dialogOpen = annotationDialog !== null || bookmarkDialog !== null;
   useEffect(() => {
     if (!selection || dialogOpen) return;
 
@@ -744,6 +767,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         case 'b':
         case 'B':
           event.preventDefault();
+          // Never swap an in-progress edit or queue a dialog over another one.
+          if (status !== 'ready' || dialogOpenRef.current) break;
           revealChrome();
           openBookmarkDialog();
           break;
@@ -753,13 +778,16 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           toggleFullscreen();
           break;
         case 'Escape':
+          // A modal dialog handles its own Escape; do not also close the panel
+          // behind it.
+          if (dialogOpenRef.current) break;
           setPanel(null);
           break;
         default:
           break;
       }
     },
-    [goNext, goPrevious, openBookmarkDialog, revealChrome, togglePanel],
+    [goNext, goPrevious, openBookmarkDialog, revealChrome, status, togglePanel],
   );
 
   useEffect(() => {
@@ -1029,7 +1057,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
                     }
                   : undefined
               }
-              onClose={() => setAnnotationDialog(null)}
+              onClose={closeAnnotationDialog}
               onSaved={upsertAnnotation}
               onDeleted={forgetAnnotation}
               onNotice={showToast}
@@ -1049,7 +1077,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               initial={
                 bookmarkDialog.mode === 'edit' ? bookmarkDialog.bookmark : undefined
               }
-              onClose={() => setBookmarkDialog(null)}
+              onClose={closeBookmarkDialog}
               onSaved={upsertBookmark}
               onNotice={showToast}
             />

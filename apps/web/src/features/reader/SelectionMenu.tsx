@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { HIGHLIGHT_HEX } from '@bookr/reader-core';
 import type { ReaderSelection } from '@bookr/reader-core';
 import type { AnnotationColor } from '@bookr/shared';
@@ -11,26 +12,36 @@ export interface SelectionMenuProps {
   onDismiss: () => void;
 }
 
-/** Approximate menu box used to keep the floating bar inside the viewport. */
-const MENU_WIDTH = 300;
-const MENU_HEIGHT = 46;
+/** First-render estimate, replaced by the measured box in a layout effect. */
+const FALLBACK_SIZE = { width: 300, height: 46 };
 const MENU_GAP = 8;
 
-function menuPosition(rect: ReaderSelection['rect']): { left: number; top: number } {
+interface MenuSize {
+  width: number;
+  height: number;
+}
+
+function menuPosition(
+  rect: ReaderSelection['rect'],
+  size: MenuSize,
+): { left: number; top: number } {
   const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
   const viewportHeight = typeof window === 'undefined' ? 768 : window.innerHeight;
 
-  const centered = rect.left + rect.width / 2 - MENU_WIDTH / 2;
-  const maxLeft = Math.max(MENU_GAP, viewportWidth - MENU_WIDTH - MENU_GAP);
+  const centered = rect.left + rect.width / 2 - size.width / 2;
+  const maxLeft = Math.max(MENU_GAP, viewportWidth - size.width - MENU_GAP);
   const left = Math.min(Math.max(MENU_GAP, centered), maxLeft);
 
   // Prefer the space above the selection; flip below when it would be clipped.
-  const above = rect.top - MENU_HEIGHT - MENU_GAP;
+  const above = rect.top - size.height - MENU_GAP;
   const below = rect.top + rect.height + MENU_GAP;
   const top =
     above >= MENU_GAP
       ? above
-      : Math.min(Math.max(MENU_GAP, below), Math.max(MENU_GAP, viewportHeight - MENU_HEIGHT - MENU_GAP));
+      : Math.min(
+          Math.max(MENU_GAP, below),
+          Math.max(MENU_GAP, viewportHeight - size.height - MENU_GAP),
+        );
 
   return { left, top };
 }
@@ -46,10 +57,25 @@ export function SelectionMenu({
   onCopy,
   onDismiss,
 }: SelectionMenuProps) {
-  const { left, top } = menuPosition(selection.rect);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState<MenuSize>(FALLBACK_SIZE);
+
+  // Measure the real toolbar (its width depends on fonts and labels) so the
+  // viewport clamp and the top flip use actual dimensions.
+  useLayoutEffect(() => {
+    const element = menuRef.current;
+    if (!element) return;
+    const measured = element.getBoundingClientRect();
+    if (measured.width > 0 && measured.height > 0) {
+      setSize({ width: measured.width, height: measured.height });
+    }
+  }, [selection]);
+
+  const { left, top } = menuPosition(selection.rect, size);
 
   return (
     <div
+      ref={menuRef}
       className="reader-selection-menu"
       role="toolbar"
       aria-label="选中文字操作"

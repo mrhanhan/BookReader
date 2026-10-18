@@ -198,6 +198,8 @@ function createFixtureState() {
     // keep seeing empty lists until a test seeds or creates its own.
     annotations: [] as AnnotationDto[],
     bookmarks: [] as BookmarkDto[],
+    // Monotonic ids: deleting an item must not let its id be reused.
+    nextIds: { annotation: 0, bookmark: 0 },
   };
 }
 
@@ -373,14 +375,18 @@ export const handlers = [
       tags?: string[];
     };
     const now = new Date().toISOString();
+    if (input.type === 'note' && (input.noteText ?? '').trim() === '') {
+      return error(400, 'VALIDATION_FAILED', 'noteText is required for a note');
+    }
+    fixtures.nextIds.annotation += 1;
     const created: AnnotationDto = {
-      id: `annotation-${fixtures.annotations.length + 1}`,
+      id: `annotation-${fixtures.nextIds.annotation}`,
       bookId: String(params.id),
       type: input.type ?? 'highlight',
       color: input.color ?? 'yellow',
       locator: input.locator as Locator,
       selectedText: input.selectedText ?? '',
-      noteText: input.noteText ?? null,
+      noteText: input.noteText && input.noteText.trim() !== '' ? input.noteText.trim() : null,
       tags: input.tags ?? [],
       revision: 1,
       createdAt: now,
@@ -401,9 +407,22 @@ export const handlers = [
     );
     if (!found) return error(404, 'NOT_FOUND', 'Annotation not found');
 
+    // Mirrors the server: a note can never be patched to a blank note text.
+    if (
+      found.type === 'note' &&
+      input.noteText !== undefined &&
+      (input.noteText === null || input.noteText.trim() === '')
+    ) {
+      return error(400, 'VALIDATION_FAILED', 'noteText is required for a note');
+    }
+
     const conflict = input.revision !== undefined && input.revision !== found.revision;
     if (input.color !== undefined) found.color = input.color;
-    if (input.noteText !== undefined) found.noteText = input.noteText;
+    if (input.noteText !== undefined) {
+      found.noteText = input.noteText === null || input.noteText.trim() === ''
+        ? null
+        : input.noteText.trim();
+    }
     if (input.tags !== undefined) found.tags = input.tags;
     found.revision += 1;
     found.updatedAt = new Date().toISOString();
@@ -427,8 +446,9 @@ export const handlers = [
   http.post('/api/books/:id/bookmarks', async ({ params, request }) => {
     const input = (await request.json()) as { locator?: Locator; label?: string | null };
     const now = new Date().toISOString();
+    fixtures.nextIds.bookmark += 1;
     const created: BookmarkDto = {
-      id: `bookmark-${fixtures.bookmarks.length + 1}`,
+      id: `bookmark-${fixtures.nextIds.bookmark}`,
       bookId: String(params.id),
       locator: input.locator as Locator,
       label: input.label ?? null,

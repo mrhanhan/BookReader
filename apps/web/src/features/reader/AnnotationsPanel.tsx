@@ -17,6 +17,11 @@ function excerpt(text: string, max = 120): string {
   return compact.length <= max ? compact : `${compact.slice(0, max)}…`;
 }
 
+/** Short name used to make each row's action buttons distinguishable. */
+function subject(annotation: AnnotationDto): string {
+  return excerpt(annotation.noteText ?? annotation.selectedText, 24);
+}
+
 /** The reader's own highlights and notes, newest edit first. */
 export function AnnotationsPanel({
   annotations,
@@ -86,13 +91,25 @@ export function AnnotationsPanel({
                     {formatDate(annotation.updatedAt)}
                   </time>
                   <div className="reader-annotation-actions">
-                    <button type="button" onClick={() => onJump(annotation)}>
+                    <button
+                      type="button"
+                      aria-label={`跳转：${subject(annotation)}`}
+                      onClick={() => onJump(annotation)}
+                    >
                       跳转
                     </button>
-                    <button type="button" onClick={() => onEdit(annotation)}>
+                    <button
+                      type="button"
+                      aria-label={`编辑：${subject(annotation)}`}
+                      onClick={() => onEdit(annotation)}
+                    >
                       编辑
                     </button>
-                    <button type="button" onClick={() => setDeleting(annotation)}>
+                    <button
+                      type="button"
+                      aria-label={`删除：${subject(annotation)}`}
+                      onClick={() => setDeleting(annotation)}
+                    >
                       删除
                     </button>
                   </div>

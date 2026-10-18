@@ -68,13 +68,25 @@ export function BookmarksPanel({
               <div className="reader-bookmark-meta">
                 <time dateTime={bookmark.createdAt}>{formatDate(bookmark.createdAt)}</time>
                 <div className="reader-bookmark-actions">
-                  <button type="button" onClick={() => onJump(bookmark)}>
+                  <button
+                    type="button"
+                    aria-label={`跳转：${bookmarkTitle(bookmark)}`}
+                    onClick={() => onJump(bookmark)}
+                  >
                     跳转
                   </button>
-                  <button type="button" onClick={() => onRename(bookmark)}>
+                  <button
+                    type="button"
+                    aria-label={`重命名：${bookmarkTitle(bookmark)}`}
+                    onClick={() => onRename(bookmark)}
+                  >
                     重命名
                   </button>
-                  <button type="button" onClick={() => setDeleting(bookmark)}>
+                  <button
+                    type="button"
+                    aria-label={`删除：${bookmarkTitle(bookmark)}`}
+                    onClick={() => setDeleting(bookmark)}
+                  >
                     删除
                   </button>
                 </div>

@@ -28,9 +28,16 @@ export function BookmarkDialog({
 }: BookmarkDialogProps) {
   const [label, setLabel] = useState(initial?.label ?? '');
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  function notify(message: string): void {
+    setNotice(message);
+    onNotice?.(message);
+  }
 
   async function handleSave(): Promise<void> {
     if (busy) return;
+    setNotice(null);
     setBusy(true);
     const trimmed = label.trim();
     try {
@@ -43,7 +50,7 @@ export function BookmarkDialog({
       onSaved(saved);
       onClose();
     } catch (error) {
-      onNotice?.(messageForApiError(error));
+      notify(messageForApiError(error));
     } finally {
       setBusy(false);
     }
@@ -69,12 +76,22 @@ export function BookmarkDialog({
         </>
       }
     >
-      <Input
-        label="书签备注"
-        value={label}
-        onChange={(event) => setLabel(event.target.value)}
-        placeholder="给这一页起个名字（可选）"
-      />
+      <div className="flex flex-col gap-3">
+        {notice ? (
+          <p
+            role="alert"
+            className="rounded-md border border-highlight/30 bg-highlight/10 px-3 py-2 text-sm text-highlight"
+          >
+            {notice}
+          </p>
+        ) : null}
+        <Input
+          label="书签备注"
+          value={label}
+          onChange={(event) => setLabel(event.target.value)}
+          placeholder="给这一页起个名字（可选）"
+        />
+      </div>
     </Dialog>
   );
 }

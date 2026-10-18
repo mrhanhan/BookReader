@@ -92,7 +92,7 @@ it('renames a bookmark from the panel', async () => {
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
 
   await userEvent.click(await screen.findByRole('button', { name: '书签' }));
-  await userEvent.click(await screen.findByRole('button', { name: '重命名' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^重命名：/ }));
   const input = screen.getByLabelText('书签备注');
   expect(input).toHaveValue('开篇');
   await userEvent.clear(input);
@@ -121,10 +121,40 @@ it('deletes a bookmark after confirmation', async () => {
 
   await userEvent.click(await screen.findByRole('button', { name: '书签' }));
   await screen.findByText('开篇');
-  await userEvent.click(screen.getByRole('button', { name: '删除' }));
+  await userEvent.click(screen.getByRole('button', { name: /^删除：/ }));
   await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
 
   await waitFor(() => expect(deletedId).toBe('bm1'));
   await waitFor(() => expect(screen.queryByTestId('bookmark-item')).not.toBeInTheDocument());
   expect(await screen.findByText('还没有书签')).toBeInTheDocument();
+});
+
+it('sends a null label when the bookmark note is blank', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  let posted: Record<string, unknown> | null = null;
+  const items: Array<Record<string, unknown>> = [];
+  server.use(
+    http.get(`/api/books/${BOOK_ID}/file`, pdfFile),
+    http.get(`/api/books/${BOOK_ID}/bookmarks`, () => HttpResponse.json({ items })),
+    http.post(`/api/books/${BOOK_ID}/bookmarks`, async ({ request }) => {
+      posted = (await request.json()) as Record<string, unknown>;
+      const bookmark = {
+        id: 'bookmark-blank',
+        bookId: BOOK_ID,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        ...posted,
+      };
+      items.unshift(bookmark);
+      return HttpResponse.json({ bookmark }, { status: 201 });
+    }),
+  );
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  await userEvent.click(await screen.findByRole('button', { name: '书签' }));
+  await userEvent.click(await screen.findByRole('button', { name: '添加书签' }));
+  await userEvent.click(screen.getByRole('button', { name: '保存书签' }));
+
+  await waitFor(() => expect(posted).toMatchObject({ locator: LOCATOR, label: null }));
 });
