@@ -30,6 +30,9 @@ function quotaLine(usage: AiUsageDto): string {
 function AiSettingsSection() {
   const { refreshUser } = useAuth();
   const queryClient = useQueryClient();
+  // The checkbox flips immediately; the server value replaces the local one
+  // once the refetch lands. A failed save restores the previous state.
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null);
   const usageQuery = useQuery({ queryKey: ['ai-usage'], queryFn: fetchAiUsage });
   const toggle = useMutation({
     mutationFn: setAiEnabled,
@@ -42,10 +45,13 @@ function AiSettingsSection() {
         // The next verified profile fetch will catch up.
       }
       await queryClient.invalidateQueries({ queryKey: ['ai-usage'] });
+      setPendingEnabled(null);
     },
+    onError: () => setPendingEnabled(null),
   });
 
   const usage = usageQuery.data;
+  const enabled = pendingEnabled ?? usage?.enabled ?? false;
 
   return (
     <section
@@ -71,9 +77,13 @@ function AiSettingsSection() {
             <input
               type="checkbox"
               aria-label="启用 AI 伴读"
-              checked={usage.enabled}
+              checked={enabled}
               disabled={toggle.isPending || !usage.configured}
-              onChange={(event) => toggle.mutate(event.target.checked)}
+              onChange={(event) => {
+                const next = event.target.checked;
+                setPendingEnabled(next);
+                toggle.mutate(next);
+              }}
               className="size-4 rounded border-border accent-accent"
             />
             启用 AI 伴读
