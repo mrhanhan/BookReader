@@ -236,6 +236,7 @@ async function settleWindow(
 /**
  * Swaps the held estimate for the tokens actually consumed. Any surplus hold is
  * dropped, so a provider error can be released with zero actual usage.
+ * The returned snapshot reads its limits from the user's `ai_*_token_limit` columns.
  */
 export async function settleQuota(
   db: Database,

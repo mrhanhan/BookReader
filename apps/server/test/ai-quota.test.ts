@@ -45,6 +45,7 @@ it('serialises concurrent reservations and rejects the one that would exceed the
 
   const quota = await readQuota(testDb, { userId: user.id, timezone: 'Asia/Shanghai', limits, now });
   expect(quota.daily.reserved).toBe(60_000);
+  expect(quota.monthly.reserved).toBe(60_000);
 });
 
 it('starts a fresh window after the user-local day rolls over', async () => {
@@ -62,6 +63,23 @@ it('starts a fresh window after the user-local day rolls over', async () => {
   expect(quota.daily.used).toBe(0);
   // The month window still carries the usage.
   expect(quota.monthly.used).toBe(1_000);
+});
+
+it('starts a fresh window after the user-local month rolls over', async () => {
+  await resetDb();
+  const user = await seedUser('member');
+  const lastOfMonth = new Date('2026-10-31T09:00:00.000Z');
+  const reservation = await reserveQuota(testDb, {
+    userId: user.id, timezone: 'UTC', estimate: 1_000, limits, now: lastOfMonth,
+  });
+  await settleQuota(testDb, reservation, { promptTokens: 900, completionTokens: 100 }, lastOfMonth);
+
+  const firstOfMonth = new Date('2026-11-01T09:00:00.000Z');
+  const quota = await readQuota(testDb, {
+    userId: user.id, timezone: 'UTC', limits, now: firstOfMonth,
+  });
+  expect(quota.daily.used).toBe(0);
+  expect(quota.monthly.used).toBe(0);
 });
 
 it('keeps reserved and used non-negative and releases a failed request', async () => {
