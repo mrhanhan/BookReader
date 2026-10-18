@@ -96,6 +96,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         censor: '[REDACTED]',
       },
     },
+    trustProxy: deps.config.trustProxy,
     genReqId: () => deps.ids.newId(),
   });
 

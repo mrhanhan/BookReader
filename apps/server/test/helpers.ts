@@ -68,6 +68,7 @@ const fakeJobQueue = new FakeJobQueue();
 const DEFAULT_CONFIG: AppConfig = {
   port: 3000,
   host: '0.0.0.0',
+  trustProxy: false,
   databaseUrl: TEST_DATABASE_URL,
   s3: {
     endpoint: 'http://localhost:9000',

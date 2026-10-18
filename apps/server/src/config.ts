@@ -7,6 +7,13 @@ import { z } from 'zod';
 export interface AppConfig {
   port: number;
   host: string;
+  /**
+   * Whether Fastify trusts `X-Forwarded-For` from the reverse proxy. Docker
+   * Compose deployed behind Caddy must set `TRUST_PROXY=true`, otherwise every
+   * request carries Caddy's address and login rate limiting keys on it instead
+   * of the real client IP.
+   */
+  trustProxy: boolean;
   databaseUrl: string;
   s3: {
     endpoint: string;
@@ -25,6 +32,10 @@ export interface AppConfig {
 const configSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().min(1).default('0.0.0.0'),
+  TRUST_PROXY: z
+    .enum(['true', 'false', '1', '0'])
+    .default('false')
+    .transform((value) => value === 'true' || value === '1'),
   DATABASE_URL: z.string().min(1),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().min(1).default('us-east-1'),
@@ -73,6 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port: parsed.PORT,
     host: parsed.HOST,
+    trustProxy: parsed.TRUST_PROXY,
     databaseUrl: parsed.DATABASE_URL,
     s3: {
       endpoint: parsed.S3_ENDPOINT,
