@@ -308,3 +308,28 @@ it('removes a thread and opens the next one when the active thread is deleted', 
   expect(result.current.threads.map((item) => item.id)).toEqual(['thread-2']);
   await waitFor(() => expect(result.current.activeThread?.id).toBe('thread-2'));
 });
+
+it('recovers usage and threads after connectivity returns', async () => {
+  const fetchUsage = vi
+    .fn<() => Promise<AiUsageDto>>()
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue(usage);
+  const api = apiWith({
+    fetchUsage,
+    fetchThreads: vi.fn(async () => [thread]),
+    fetchThread: vi.fn(async () => ({ thread, messages: [] })),
+  });
+  const { result, rerender } = renderHook(
+    ({ offline }: { offline: boolean }) =>
+      useAiChat({ bookId: 'book-1', offline, context, api }),
+    { initialProps: { offline: true } },
+  );
+
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.disabledReason).toBe('offline');
+
+  rerender({ offline: false });
+  await waitFor(() => expect(result.current.usage).toEqual(usage));
+  await waitFor(() => expect(result.current.threads).toHaveLength(1));
+  expect(result.current.error).toBeNull();
+});

@@ -210,6 +210,34 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
     }
   }
 
+  // A reader opened offline cannot load usage or threads. Once connectivity
+  // returns, retry the initial snapshot instead of leaving the panel stuck.
+  const wasOffline = useRef(offline);
+  useEffect(() => {
+    const cameOnline = wasOffline.current && !offline;
+    wasOffline.current = offline;
+    if (!cameOnline || bookId === '') return;
+    if (latest.current.usage !== null && latest.current.threads.length > 0) return;
+
+    void refreshUsage();
+    void (async () => {
+      try {
+        const list = await apiRef.current.fetchThreads(bookId);
+        if (list.length === 0) return;
+        applyThreads(list);
+        const first = list[0];
+        if (!first) return;
+        applyThread(first);
+        const result = await apiRef.current.fetchThread(first.id);
+        applyThread(result.thread);
+        setMessages(result.messages);
+      } catch {
+        // The next reconnect or book open retries.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs carry the latest values
+  }, [offline, bookId]);
+
   useEffect(() => {
     tokenRef.current += 1;
     abortRef.current?.abort();
@@ -637,6 +665,7 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
   async function refreshUsage(): Promise<void> {
     try {
       applyUsage(await apiRef.current.fetchUsage());
+      setError((previous) => (previous === USAGE_ERROR ? null : previous));
     } catch {
       setError(USAGE_ERROR);
     }

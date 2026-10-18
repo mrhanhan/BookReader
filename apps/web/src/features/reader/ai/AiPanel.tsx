@@ -127,6 +127,7 @@ export function AiPanel({
         streaming={controller.streaming}
         onSend={handleSend}
         onStop={() => controller.stop()}
+        onClose={onClose}
       />
 
       {controller.usage ? (

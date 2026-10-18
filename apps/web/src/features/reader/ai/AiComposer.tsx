@@ -7,6 +7,7 @@ export interface AiComposerProps {
   /** Resolves true when the exchange completed and the input can be cleared. */
   onSend(question: string): Promise<boolean>;
   onStop(): void;
+  onClose?(): void;
 }
 
 /** The question box: Enter sends, Shift+Enter starts a new line. */
@@ -15,6 +16,7 @@ export function AiComposer({
   streaming,
   onSend,
   onStop,
+  onClose,
 }: AiComposerProps): JSX.Element {
   const [value, setValue] = useState('');
   const trimmed = value.trim();
@@ -36,6 +38,11 @@ export function AiComposer({
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onClose?.();
+            return;
+          }
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();
             submit();

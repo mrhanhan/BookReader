@@ -1175,14 +1175,18 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     const { text, locator } = selection;
     setSelection(null);
     setPanel('ai');
-    void ai.explain({ text, locator });
-  }, [ai, selection]);
+    void ai.explain({ text, locator }).then((sent) => {
+      if (!sent && !ai.streaming) showToast('AI 正在准备，请稍候');
+    });
+  }, [ai, selection, showToast]);
 
   const summarizePage = useCallback(() => {
     setSelection(null);
     setPanel('ai');
-    void ai.summarize('page');
-  }, [ai]);
+    void ai.summarize('page').then((sent) => {
+      if (!sent && !ai.streaming) showToast('AI 正在准备，请稍候');
+    });
+  }, [ai, showToast]);
 
   const askAboutSelection = useCallback(() => {
     if (!selection) return;
