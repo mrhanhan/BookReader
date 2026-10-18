@@ -86,6 +86,11 @@ const RECONNECT_DELAYS = [1000, 2000, 5000, 15000, 30000];
 const HEARTBEAT_MS = 60_000;
 const SYNC_ERRORS_PREFIX = 'syncErrors:';
 const BOOTSTRAP_PREFIX = 'bootstrapped:';
+const SNAPSHOT_DEFERRED_PREFIX = 'snapshotDeferred:';
+/** Snapshot attempts postponed for pending writes before one is forced. */
+const MAX_SNAPSHOT_DEFERRALS = 5;
+/** A deferral record older than this forces the next snapshot. */
+const SNAPSHOT_DEFER_WINDOW_MS = 5 * 60 * 1000;
 /** Upper bound for the exponential push retry delay. */
 const MAX_PUSH_BACKOFF_MS = 5 * 60 * 1000;
 
@@ -286,9 +291,10 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     }
 
     await pushAll();
-    if ((await repo.pendingCount(userId)) > 0) {
+    if (await shouldDeferSnapshot()) {
       // A write the server never acknowledged would be erased by the
-      // snapshot; leave the bootstrap for the next sync instead.
+      // snapshot; leave the bootstrap for the next sync instead. The deferral
+      // counter bounds how long that can last.
       return true;
     }
 
@@ -301,6 +307,33 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     await refreshPending();
     publish();
     return true;
+  }
+
+  /**
+   * Whether a snapshot must wait for queued writes. Deferrals are counted per
+   * user and bounded by both a count and a time window, so a write that cannot
+   * be pushed (for example while permanently rejected by the server) cannot
+   * keep the local store stale forever. The outbox itself is never cleared by
+   * a snapshot, so the pending payload survives for the next push.
+   */
+  async function shouldDeferSnapshot(): Promise<boolean> {
+    const key = `${SNAPSHOT_DEFERRED_PREFIX}${userId}`;
+    if ((await repo.pendingCount(userId)) === 0) {
+      await db.meta.delete(key);
+      return false;
+    }
+
+    return db.transaction('rw', db.meta, async () => {
+      const record = readSnapshotDeferral((await db.meta.get(key))?.value);
+      const count = (record?.count ?? 0) + 1;
+      const since = record?.since ?? now();
+      if (count >= MAX_SNAPSHOT_DEFERRALS || now() - since >= SNAPSHOT_DEFER_WINDOW_MS) {
+        await db.meta.delete(key);
+        return false;
+      }
+      await db.meta.put({ key, value: { count, since } });
+      return true;
+    });
   }
 
   async function pushAll(): Promise<void> {
@@ -460,8 +493,9 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       if (page.reset) {
         // A snapshot replaces every local row. While queued writes remain
         // (possibly backing off) it would hide them from the UI, so postpone
-        // it: the next sync pushes first and retries the snapshot.
-        if ((await repo.pendingCount(userId)) > 0) {
+        // it: the next sync pushes first and retries the snapshot. The
+        // deferral counter forces one eventually.
+        if (await shouldDeferSnapshot()) {
           return;
         }
         const snapshot = await api.snapshot();
@@ -590,6 +624,13 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     if (stopped) {
       return Promise.resolve();
     }
+    // A host may never deliver the `online` event (embedded WebViews, some
+    // proxies). Trust the connectivity probe on the next requested sync so
+    // the engine does not stay offline until a reload.
+    if (offlineNotified && online()) {
+      offlineNotified = false;
+      void connectStream();
+    }
     if (running !== null) {
       rerunRequested = true;
       return running;
@@ -678,9 +719,9 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       return;
     }
     try {
-      if ((await repo.pendingCount(userId)) > 0) {
+      if (await shouldDeferSnapshot()) {
         // Keep queued local rows visible; the next sync pushes them before it
-        // retries the rebuild.
+        // retries the rebuild. The deferral counter forces one eventually.
         return;
       }
       const snapshot = await api.snapshot();
@@ -874,4 +915,15 @@ function clearTimer(timer: ReturnType<typeof setInterval> | null): null {
     clearInterval(timer);
   }
   return null;
+}
+
+/** Reads the persisted snapshot-deferral counter; malformed values start over. */
+function readSnapshotDeferral(value: unknown): { count: number; since: number } | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const record = value as { count?: unknown; since?: unknown };
+  return typeof record.count === 'number' && typeof record.since === 'number'
+    ? { count: record.count, since: record.since }
+    : null;
 }

@@ -894,6 +894,62 @@ describe('SyncEngine', () => {
     expect(await repo.pendingCount(USER)).toBe(0);
   });
 
+  it('recovers on the next sync when the online event never arrives', async () => {
+    const api = createFakeApi();
+    let networkUp = true;
+    engine = testEngine(api, {
+      online: () => networkUp,
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(api.pull).toHaveBeenCalledTimes(1));
+
+    networkUp = false;
+    window.dispatchEvent(new Event('offline'));
+    await vi.waitFor(() => expect(engine?.getState().status).toBe('offline'));
+
+    // The host never dispatches `online`; the probe is authoritative again.
+    networkUp = true;
+    await engine.syncNow('recover');
+
+    expect(engine.getState().status).toBe('synced');
+    expect(api.pull).toHaveBeenCalledTimes(2);
+  });
+
+  it('forces a snapshot after repeated deferrals while writes stay pending', async () => {
+    const api = createFakeApi();
+    // Nothing is acknowledged, so the local write stays queued across syncs.
+    api.push = vi.fn(async () => emptyPush);
+    api.pull = vi.fn(async (since: number) => ({
+      changes: [],
+      cursor: since,
+      hasMore: false,
+      reset: true,
+    }));
+    api.snapshot = vi.fn(async () => ({
+      cursor: 6,
+      progress: [],
+      annotations: [],
+      bookmarks: [],
+      settings: null,
+    }));
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api);
+
+    // Each sync offers two snapshot decisions (bootstrap, then the reset
+    // pull); five deferrals are reached during the third sync.
+    await engine.syncNow();
+    await engine.syncNow();
+    expect(api.snapshot).not.toHaveBeenCalled();
+
+    await engine.syncNow();
+
+    expect(api.snapshot).toHaveBeenCalledTimes(1);
+    // The snapshot never clears the outbox; the payload is retried later.
+    expect(await repo.pendingCount(USER)).toBe(1);
+  });
+
   it('postpones a reset snapshot while the outbox still has pending writes', async () => {
     const api = createFakeApi();
     // Nothing is acknowledged, so the local write stays queued.
