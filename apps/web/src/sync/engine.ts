@@ -68,11 +68,15 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   let lastSyncedAt: number | null = null;
   let lastError = false;
   let conflicts = 0;
+  /** Bumped whenever pending/lastSyncedAt are written, so a stale refresh cannot win. */
+  let stateEpoch = 0;
 
   let running: Promise<void> | null = null;
   let rerunRequested = false;
 
   let stream: EventSourceLike | null = null;
+  let connecting = false;
+  let streamQueue: Promise<void> = Promise.resolve();
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectIndex = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -119,11 +123,24 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
 
   async function refreshPending(): Promise<void> {
     pending = await repo.pendingCount(userId);
+    stateEpoch += 1;
   }
 
+  /**
+   * Loads persisted state, but only when nothing newer has written these fields
+   * while the reads were in flight (`start()` races the first sync).
+   */
   async function refreshState(): Promise<void> {
-    pending = await repo.pendingCount(userId);
-    lastSyncedAt = await repo.getLastSyncedAt(userId);
+    const epoch = stateEpoch;
+    const [pendingValue, lastValue] = await Promise.all([
+      repo.pendingCount(userId),
+      repo.getLastSyncedAt(userId),
+    ]);
+    if (epoch !== stateEpoch) {
+      return;
+    }
+    pending = pendingValue;
+    lastSyncedAt = lastValue;
     publish();
   }
 
@@ -142,6 +159,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       await pullAll();
       lastError = false;
       lastSyncedAt = now();
+      stateEpoch += 1;
       await repo.setLastSyncedAt(userId, lastSyncedAt);
       await refreshPending();
     } catch {
@@ -174,32 +192,19 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       const result = await api.push(changes);
       const rowsByKey = groupRowsByKey(rows);
       const acknowledged = new Set<string>();
+      const skippedKeys: string[] = [];
       let rejected = 0;
 
       for (const envelope of result.applied) {
-        // The server clamps client clocks that run ahead, so the echo may be
-        // older than the local row; force it in or `dirty` would never clear.
-        const outcome = await repo.applyServerChange(userId, envelope, { force: true });
         for (const row of rowsByKey.get(syncKey(envelope.entityType, envelope.entityId)) ?? []) {
           acknowledged.add(row.id);
-        }
-        if (outcome === 'applied') {
-          publish({ type: 'applied', entityType: envelope.entityType });
-        } else {
-          conflicts += 1;
-          publish({ type: 'conflict', entityType: envelope.entityType });
         }
       }
 
       for (const key of result.skipped) {
-        const skippedRows = rowsByKey.get(key) ?? [];
-        for (const row of skippedRows) {
+        skippedKeys.push(key);
+        for (const row of rowsByKey.get(key) ?? []) {
           acknowledged.add(row.id);
-        }
-        const entityType = skippedRows[0]?.entityType;
-        if (entityType !== undefined) {
-          conflicts += 1;
-          publish({ type: 'conflict', entityType });
         }
       }
 
@@ -210,10 +215,33 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         rejected += 1;
       }
 
+      // Confirm the batch *before* applying the echoes. Writes made while the
+      // push was in flight are still queued, so last-write-wins protects them;
+      // if nothing newer was written, the echo applies because no pending row
+      // is left to compare against.
       await acknowledgeOutbox(db, [...acknowledged]);
       if (rejected > 0) {
         await recordRejected(rejected);
       }
+
+      for (const envelope of result.applied) {
+        const outcome = await repo.applyServerChange(userId, envelope);
+        if (outcome === 'applied') {
+          publish({ type: 'applied', entityType: envelope.entityType });
+        }
+      }
+
+      for (const key of skippedKeys) {
+        const skippedRows = rowsByKey.get(key) ?? [];
+        const first = skippedRows[0];
+        if (first === undefined) {
+          continue;
+        }
+        conflicts += 1;
+        await markLocalClean(first.entityType, first.entityId);
+        publish({ type: 'conflict', entityType: first.entityType });
+      }
+
       if (acknowledged.size === 0) {
         // Nothing in the batch could be matched to a response; stop instead of
         // re-pushing the same rows forever.
@@ -236,6 +264,15 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         return;
       }
 
+      if (page.changes.length === 0) {
+        // No progress: advance to the head only when the server says the log is
+        // complete, otherwise return instead of spinning on the same page.
+        if (!page.hasMore && page.cursor > since) {
+          await repo.setCursor(userId, page.cursor);
+        }
+        return;
+      }
+
       let cursor = since;
       for (const change of page.changes) {
         const outcome = await repo.applyServerChange(userId, change);
@@ -249,11 +286,63 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         }
       }
 
-      if (page.cursor > cursor) {
-        cursor = page.cursor;
-        await repo.setCursor(userId, cursor);
+      if (cursor <= since) {
+        return;
       }
+
       if (!page.hasMore) {
+        // Only the final page may jump to the log head: with more pages the
+        // server cursor is ahead of this page and would skip its remaining rows.
+        if (page.cursor > cursor) {
+          await repo.setCursor(userId, page.cursor);
+        }
+        return;
+      }
+    }
+  }
+
+  async function hasPendingRows(entityType: SyncEntityType, entityId: string): Promise<boolean> {
+    const count = await db.outbox
+      .where('userId')
+      .equals(userId)
+      .filter((row) => row.entityType === entityType && row.entityId === entityId)
+      .count();
+    return count > 0;
+  }
+
+  /** A server-skipped push leaves no work behind, so its local row is clean. */
+  async function markLocalClean(entityType: SyncEntityType, entityId: string): Promise<void> {
+    if (await hasPendingRows(entityType, entityId)) {
+      return;
+    }
+
+    switch (entityType) {
+      case 'reading_progress': {
+        const row = await db.progress.get([userId, entityId]);
+        if (row?.dirty === true && row.userId === userId) {
+          await db.progress.update([userId, entityId], { dirty: false });
+        }
+        return;
+      }
+      case 'annotation': {
+        const row = await db.annotations.get(entityId);
+        if (row?.dirty === true && row.userId === userId) {
+          await db.annotations.update(entityId, { dirty: false });
+        }
+        return;
+      }
+      case 'bookmark': {
+        const row = await db.bookmarks.get(entityId);
+        if (row?.dirty === true && row.userId === userId) {
+          await db.bookmarks.update(entityId, { dirty: false });
+        }
+        return;
+      }
+      case 'reader_settings': {
+        const row = await db.settings.get(userId);
+        if (row?.dirty === true) {
+          await db.settings.update(userId, { dirty: false });
+        }
         return;
       }
     }
@@ -300,31 +389,52 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     return running;
   }
 
+  function handleStreamOpen(): void {
+    reconnectIndex = 0;
+  }
+
   function handleStreamMessage(event: MessageEvent): void {
+    if (stopped) {
+      return;
+    }
     // A delivered frame proves the stream is healthy; restart the backoff ladder.
     reconnectIndex = 0;
-    void applyStreamChange(event);
+    streamQueue = streamQueue.then(() => applyStreamChange(event)).catch(() => undefined);
   }
 
   async function applyStreamChange(event: MessageEvent): Promise<void> {
+    if (stopped) {
+      return;
+    }
+
     let change: SyncChangeEnvelope;
     try {
       change = JSON.parse(String(event.data)) as SyncChangeEnvelope;
     } catch {
       return;
     }
-    if (typeof change?.revision !== 'number') {
+    if (typeof change?.revision !== 'number' || typeof change.entityType !== 'string') {
       return;
     }
 
     try {
-      const outcome = await repo.applyServerChange(userId, change);
       const cursor = await repo.getCursor(userId);
-      if (change.revision > cursor) {
+      if (stopped || change.revision <= cursor) {
+        return;
+      }
+
+      const outcome = await repo.applyServerChange(userId, change);
+      if (stopped) {
+        return;
+      }
+      if (change.revision > (await repo.getCursor(userId))) {
         await repo.setCursor(userId, change.revision);
       }
       if (outcome === 'applied') {
         await refreshPending();
+        if (stopped) {
+          return;
+        }
         publish({ type: 'applied', entityType: change.entityType });
       }
     } catch {
@@ -334,16 +444,31 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   }
 
   function handleStreamReset(): void {
+    if (stopped) {
+      return;
+    }
     reconnectIndex = 0;
-    void rebuildFromSnapshot();
+    streamQueue = streamQueue.then(() => rebuildFromSnapshot()).catch(() => undefined);
   }
 
   async function rebuildFromSnapshot(): Promise<void> {
+    if (stopped) {
+      return;
+    }
     try {
       const snapshot = await api.snapshot();
+      if (stopped) {
+        return;
+      }
       await repo.applySnapshot(userId, snapshot);
+      if (stopped) {
+        return;
+      }
       await repo.setCursor(userId, snapshot.cursor);
       await refreshPending();
+      if (stopped) {
+        return;
+      }
       publish();
     } catch {
       // Leave the cursor untouched so the next sync retries the snapshot.
@@ -351,6 +476,9 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   }
 
   function handleStreamError(): void {
+    if (stopped) {
+      return;
+    }
     stream?.close();
     stream = null;
     scheduleReconnect();
@@ -370,10 +498,11 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   }
 
   async function connectStream(): Promise<void> {
-    if (stopped || !online() || eventSourceFactory === undefined || stream !== null) {
+    if (stopped || !online() || eventSourceFactory === undefined || stream !== null || connecting) {
       return;
     }
 
+    connecting = true;
     try {
       const { token } = await api.streamToken();
       if (stopped || !online() || eventSourceFactory === undefined || stream !== null) {
@@ -381,14 +510,23 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       }
 
       const since = await repo.getCursor(userId);
+      if (stopped || !online()) {
+        return;
+      }
+
       const source = eventSourceFactory(syncStreamUrl(token, since));
       stream = source;
+      source.addEventListener('open', handleStreamOpen);
       source.addEventListener('message', handleStreamMessage);
       source.addEventListener('change', handleStreamMessage);
       source.addEventListener('reset', handleStreamReset);
       source.addEventListener('error', handleStreamError);
     } catch {
-      scheduleReconnect();
+      if (!stopped) {
+        scheduleReconnect();
+      }
+    } finally {
+      connecting = false;
     }
   }
 

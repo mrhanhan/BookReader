@@ -154,7 +154,8 @@ function appliedEcho(changes: SyncPushChange[]): SyncPushResult {
   };
 }
 
-describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox', async () => {
+describe('SyncEngine', () => {
+  it('pushes queued changes and clears the outbox', async () => {
     const api = createFakeApi();
     api.push = vi.fn(async (changes: SyncPushChange[]) => appliedEcho(changes));
     await repo.saveProgress(USER, BOOK, locator);
@@ -173,7 +174,7 @@ describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox'
     });
   });
 
-  it('force-applies the pushed echo when the client clock runs ahead', async () => {
+  it('applies the pushed echo after clearing the batch when the client clock runs ahead', async () => {
     const api = createFakeApi();
     const clamped = new Date(NOW).toISOString();
     api.push = vi.fn(async (changes: SyncPushChange[]) => ({
@@ -210,21 +211,46 @@ describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox'
     expect(await repo.pendingCount(USER)).toBe(0);
   });
 
+  it('keeps a local write made while the push was in flight', async () => {
+    const api = createFakeApi();
+    let calls = 0;
+    api.push = vi.fn(async (changes: SyncPushChange[]) => {
+      calls += 1;
+      if (calls === 1) {
+        // The user edits again while the first batch is on the wire.
+        await repo.saveProgress(USER, BOOK, laterLocator, NOW + 1000);
+        return appliedEcho(changes);
+      }
+      return { applied: [], skipped: [], rejected: [], cursor: 0 };
+    });
+    await repo.saveProgress(USER, BOOK, locator, NOW);
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    const row = await repo.progressFor(USER, BOOK);
+    expect(row?.locator).toEqual(laterLocator);
+    expect(row?.clientUpdatedAt).toBe(new Date(NOW + 1000).toISOString());
+    expect(row?.dirty).toBe(true);
+    expect(await repo.pendingCount(USER)).toBe(1);
+  });
+
   it('pulls to the end and advances the cursor', async () => {
     const api = createFakeApi();
-    const first = bookmarkChange(1);
-    const second = bookmarkChange(2);
+    const first = bookmarkChange(5);
+    const second = bookmarkChange(9);
     api.pull = vi
       .fn()
-      .mockResolvedValueOnce({ changes: [first], cursor: 1, hasMore: true, reset: false })
-      .mockResolvedValueOnce({ changes: [second], cursor: 2, hasMore: false, reset: false });
+      // With more pages the cursor is the log head, not this page's last row.
+      .mockResolvedValueOnce({ changes: [first], cursor: 9, hasMore: true, reset: false })
+      .mockResolvedValueOnce({ changes: [second], cursor: 9, hasMore: false, reset: false });
     engine = testEngine(api);
 
     await engine.syncNow();
 
     expect(api.pull).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(api.pull).mock.calls[1]?.[0]).toBe(1);
-    expect(await repo.getCursor(USER)).toBe(2);
+    expect(vi.mocked(api.pull).mock.calls[1]?.[0]).toBe(5);
+    expect(await repo.getCursor(USER)).toBe(9);
     const bookmarks = await repo.listBookmarks(USER, BOOK);
     expect(bookmarks.map((row) => row.id)).toEqual([first.entityId, second.entityId]);
   });
@@ -274,7 +300,121 @@ describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox'
     await vi.waitFor(async () => {
       expect(await repo.listBookmarks(USER, BOOK)).toHaveLength(1);
     });
+
+    // Frames at or below the cursor are ignored, even if they arrive late.
+    source?.emit(
+      'change',
+      bookmarkChange(3, {
+        entityId: change.entityId,
+        payload: { ...(change.payload as Record<string, unknown>), label: '旧帧' },
+      }),
+    );
+    source?.emit('change', bookmarkChange(6));
+    await vi.waitFor(async () => {
+      expect(await repo.getCursor(USER)).toBe(6);
+    });
+    const rows = await repo.listBookmarks(USER, BOOK);
+    expect(rows.find((row) => row.id === change.entityId)?.label).toBeNull();
     expect(engine.getState().status).toBe('synced');
+  });
+
+  it('rebuilds from a snapshot when the stream reports reset', async () => {
+    const api = createFakeApi();
+    api.snapshot = vi.fn(async () => ({
+      cursor: 12,
+      progress: [
+        { bookId: BOOK, locator, percent: locator.percent, updatedAt: T1, clientUpdatedAt: T1 },
+      ],
+      annotations: [],
+      bookmarks: [],
+      settings: null,
+    }));
+    engine = testEngine(api, {
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    FakeEventSource.instances[0]?.emit('reset');
+
+    await vi.waitFor(async () => {
+      expect(await repo.getCursor(USER)).toBe(12);
+    });
+    expect((await repo.progressFor(USER, BOOK))?.locator).toEqual(locator);
+  });
+
+  it('syncs when the browser comes online or the page becomes visible', async () => {
+    const api = createFakeApi();
+    let pulls = 0;
+    api.pull = vi.fn(async (since: number) => {
+      pulls += 1;
+      return emptyPull(since);
+    });
+    engine = testEngine(api);
+
+    engine.start();
+    await vi.waitFor(() => expect(pulls).toBe(1));
+
+    window.dispatchEvent(new Event('online'));
+    await vi.waitFor(() => expect(pulls).toBe(2));
+
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.waitFor(() => expect(pulls).toBe(3));
+  });
+
+  it('waits for an in-flight sync when stopping', async () => {
+    const api = createFakeApi();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pushed = false;
+    api.push = vi.fn(async () => {
+      await gate;
+      pushed = true;
+      return { applied: [], skipped: [], rejected: [], cursor: 0 };
+    });
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api);
+
+    const sync = engine.syncNow();
+    await vi.waitFor(() => expect(api.push).toHaveBeenCalled());
+
+    let stopResolved = false;
+    const stopping = engine.stop().then(() => {
+      stopResolved = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stopResolved).toBe(false);
+
+    release?.();
+    await stopping;
+    await sync;
+    expect(pushed).toBe(true);
+    expect(stopResolved).toBe(true);
+  });
+
+  it('does not let a stale state refresh overwrite a completed sync', async () => {
+    const api = createFakeApi();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slowRepo: LocalRepository = {
+      ...repo,
+      getLastSyncedAt: async () => {
+        await gate;
+        return 999;
+      },
+    };
+    engine = testEngine(api, { repo: slowRepo });
+
+    engine.start();
+    await vi.waitFor(() => expect(engine?.getState().lastSyncedAt).toBe(NOW));
+
+    release?.();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(engine.getState().lastSyncedAt).toBe(NOW);
   });
 
   it('reconnects with backoff after a stream error', async () => {
@@ -319,6 +459,35 @@ describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox'
     });
     runReconnect(5000);
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(4));
+
+    delaySpy.mockRestore();
+  });
+
+  it('resets the reconnect backoff when the stream opens', async () => {
+    const delaySpy = vi.spyOn(globalThis, 'setTimeout');
+    const api = createFakeApi();
+    engine = testEngine(api, {
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+    const countDelay = (delay: number): number =>
+      delaySpy.mock.calls.filter((entry) => typeof entry[0] === 'function' && entry[1] === delay)
+        .length;
+
+    FakeEventSource.instances[0]?.emit('error');
+    await vi.waitFor(() => expect(countDelay(1000)).toBe(1));
+    const reconnect = [...delaySpy.mock.calls]
+      .reverse()
+      .find((entry) => typeof entry[0] === 'function' && entry[1] === 1000);
+    (reconnect?.[0] as (() => void) | undefined)?.();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+
+    FakeEventSource.instances[1]?.emit('open');
+    FakeEventSource.instances[1]?.emit('error');
+    await vi.waitFor(() => expect(countDelay(1000)).toBe(2));
 
     delaySpy.mockRestore();
   });
@@ -368,6 +537,41 @@ describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox'
 
     expect(calls).toBe(2);
     expect(maxActive).toBe(1);
+  });
+
+  it('marks a server-skipped change clean and drops its outbox row', async () => {
+    const api = createFakeApi();
+    api.push = vi.fn(async (changes: SyncPushChange[]) => ({
+      applied: [],
+      skipped: changes.map((change) => syncKey(change.entityType, change.entityId)),
+      rejected: [],
+      cursor: 0,
+    }));
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(await repo.pendingCount(USER)).toBe(0);
+    expect((await repo.progressFor(USER, BOOK))?.dirty).toBe(false);
+  });
+
+  it('ignores stream frames after stopping', async () => {
+    const api = createFakeApi();
+    engine = testEngine(api, {
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const source = FakeEventSource.instances[0];
+    await engine.stop();
+
+    source?.emit('change', bookmarkChange(5));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(await repo.getCursor(USER)).toBe(0);
+    expect(await repo.listBookmarks(USER, BOOK)).toHaveLength(0);
   });
 
   it('drops rejected changes from the outbox and counts them', async () => {
