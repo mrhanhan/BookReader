@@ -17,6 +17,11 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ERROR_CODES.INVITE_INVALID]: 'Invite code is invalid or expired',
   [ERROR_CODES.RATE_LIMITED]: 'Too many requests',
   [ERROR_CODES.INTERNAL]: 'Internal server error',
+  [ERROR_CODES.AI_DISABLED]: 'AI companion is disabled',
+  [ERROR_CODES.AI_NOT_CONFIGURED]: 'AI is not configured',
+  [ERROR_CODES.AI_QUOTA_EXCEEDED]: 'AI quota exceeded',
+  [ERROR_CODES.AI_UPSTREAM_FAILED]: 'AI service is temporarily unavailable',
+  [ERROR_CODES.AI_TIMEOUT]: 'AI request timed out',
 };
 
 /** Default user-facing message for an error code. */
