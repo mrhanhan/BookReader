@@ -160,22 +160,31 @@ export function createCacheManager(deps: {
 
       const blob = await response.blob();
       const key = cacheKey(userId, bookId, kind);
-      const previous = await store.get(key);
-
-      // The old object URL pointed at the replaced blob; invalidate it first.
-      revokeUrl(key);
-      await store.put(key, blob);
 
       await withRowLock(userId, bookId, async () => {
+        // Reading the replaced file and writing the new one inside the lock
+        // keeps two concurrent re-downloads of the same kind from each
+        // subtracting the same old size and inflating the row.
+        const previous = await store.get(key);
+        // The old object URL pointed at the replaced blob; invalidate it first.
+        revokeUrl(key);
+        await store.put(key, blob);
+
         const row = await rowFor(userId, bookId);
         const timestamp = now();
+        // A missing row carries no baseline; the file left on disk is replaced
+        // wholesale, so the new file size is the accurate total.
+        const bytes = row
+          ? Math.max(0, row.bytes - (previous?.size ?? 0) + blob.size)
+          : blob.size;
+
         await db.offlineBooks.put({
           bookId,
           userId,
           pinned: row?.pinned ?? false,
           lastReadAt: row?.lastReadAt ?? timestamp,
           cachedAt: timestamp,
-          bytes: Math.max(0, (row?.bytes ?? 0) - (previous?.size ?? 0) + blob.size),
+          bytes,
         });
       });
 

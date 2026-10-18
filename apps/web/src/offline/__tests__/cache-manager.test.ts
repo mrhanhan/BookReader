@@ -407,6 +407,34 @@ describe('CacheManager bytes and usage', () => {
     expect((await manager.usage(USER)).bytes).toBe(3);
   });
 
+  it('keeps bytes accurate when the same file is downloaded twice at once', async () => {
+    const url = 'https://files.test/concurrent/book';
+    payloads.set(url, new Blob(['1234567890']));
+    await manager.cacheFromUrl(USER, 'book-1', 'book', url);
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bytes).toBe(10);
+
+    payloads.set(url, new Blob(['12345']));
+    clock += 1;
+    await Promise.all([
+      manager.cacheFromUrl(USER, 'book-1', 'book', url),
+      manager.cacheFromUrl(USER, 'book-1', 'book', url),
+    ]);
+
+    expect((await store.get(cacheKey(USER, 'book-1', 'book')))?.size).toBe(5);
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bytes).toBe(5);
+  });
+
+  it('uses the existing file size when the cache row is missing', async () => {
+    const url = 'https://files.test/orphan/book';
+    // Simulate a schema rebuild that dropped the row but left the file behind.
+    await store.put(cacheKey(USER, 'book-1', 'book'), new Blob(['1234']));
+    payloads.set(url, new Blob(['abcd']));
+
+    await manager.cacheFromUrl(USER, 'book-1', 'book', url);
+
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bytes).toBe(4);
+  });
+
   it('reports cached books and a null quota when storage is unavailable', async () => {
     await cacheBook('book-0');
     clock += 1;
