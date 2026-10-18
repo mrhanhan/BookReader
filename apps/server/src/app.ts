@@ -1,7 +1,7 @@
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { ZodError } from 'zod';
 import { registerAdminRoutes } from './admin/routes';
 import { registerAuthRoutes } from './auth/routes';
@@ -116,17 +116,45 @@ function validationErrorBody(error: ZodError): ApiErrorBody {
   };
 }
 
+/** Optional hooks used by tests that need to observe request logging. */
+export interface BuildAppOptions {
+  /** Destination for request logs; enabling it turns logging on in tests. */
+  logStream?: NodeJS.WritableStream;
+}
+
+/**
+ * Removes the sync stream token from a URL before it is logged. EventSource
+ * cannot send headers, so the token travels in the query string.
+ */
+export function redactRequestUrl(url: string): string {
+  return url.replace(/([?&]token=)[^&]*/i, '$1[redacted]');
+}
+
 /** Builds the Fastify application with all cross-cutting concerns configured. */
-export function buildApp(deps: AppDeps): FastifyInstance {
+export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyInstance {
   const isTest = process.env.NODE_ENV === 'test';
   const app = Fastify({
     logger: {
-      level: process.env.LOG_LEVEL ?? (isTest ? 'silent' : 'info'),
+      level:
+        options.logStream !== undefined
+          ? 'info'
+          : (process.env.LOG_LEVEL ?? (isTest ? 'silent' : 'info')),
       redact: {
         paths: LOG_REDACT_PATHS,
         censor: '[REDACTED]',
       },
+      serializers: {
+        req: (request: FastifyRequest) => ({
+          method: request.method,
+          url: redactRequestUrl(request.url),
+          hostname: request.hostname,
+          remoteAddress: request.ip,
+        }),
+      },
+      ...(options.logStream !== undefined ? { stream: options.logStream } : {}),
     },
+    // SSE responses stay open; without this, closing the server waits for them.
+    forceCloseConnections: true,
     trustProxy: trustProxyOption(deps.config.trustProxy),
     genReqId: () => deps.ids.newId(),
   });

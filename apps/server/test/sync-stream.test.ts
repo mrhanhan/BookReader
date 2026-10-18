@@ -1,23 +1,31 @@
+import { Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { FastifyInstance } from 'fastify';
 import { expect, it } from 'vitest';
-import type { AppDeps } from '../src/app';
+import type { AppDeps, BuildAppOptions } from '../src/app';
 import { signSyncStreamToken } from '../src/auth/tokens';
-import { listChanges } from '../src/sync/repo';
-import { authHeader, createTestApp, resetDb, seedBook, seedUser, testDb } from './helpers';
+import { syncChanges } from '../src/db/schema';
+import { listChanges, markPrunedThrough } from '../src/sync/repo';
+import {
+  authHeader,
+  buildTestConfig,
+  createTestApp,
+  resetDb,
+  seedBook,
+  seedUser,
+  testDb,
+} from './helpers';
 
-async function startServer(): Promise<{ app: FastifyInstance; deps: AppDeps; url: string }> {
-  const { app, deps } = await createTestApp();
+async function startServer(
+  options: BuildAppOptions = {},
+): Promise<{ app: FastifyInstance; deps: AppDeps; url: string }> {
+  const { app, deps } = await createTestApp({}, options);
   const url = await app.listen({ port: 0, host: '127.0.0.1' });
   return { app, deps, url };
 }
 
-/**
- * Closes the listener after dropping undici's idle keep-alive sockets; without
- * this `app.close()` waits out the client pool's four-second idle timeout.
- */
+/** Closes the listener; `forceCloseConnections` also ends open streams. */
 async function stopServer(app: FastifyInstance): Promise<void> {
-  app.server.closeAllConnections();
   await app.close();
 }
 
@@ -126,6 +134,24 @@ async function waitForSubscribers(
     }
     await delay(10);
   }
+}
+
+/** Inserts log rows directly so tests can build backlogs of any size cheaply. */
+async function insertBacklog(userId: string, count: number): Promise<number[]> {
+  const rows = Array.from({ length: count }, (_, index) => ({
+    userId,
+    entityType: 'bookmark' as const,
+    entityId: `backlog-${index}`,
+    op: 'upsert' as const,
+    payload: { index },
+    clientUpdatedAt: new Date(),
+    serverUpdatedAt: new Date(),
+  }));
+  const inserted = await testDb
+    .insert(syncChanges)
+    .values(rows)
+    .returning({ revision: syncChanges.revision });
+  return inserted.map((row) => row.revision);
 }
 
 async function pushProgress(
@@ -300,5 +326,124 @@ it('issues a stream token that carries the caller identity', async () => {
   await waitForSubscribers(deps, user.id, 1);
   stream.controller.abort();
   await waitForSubscribers(deps, user.id, 0);
+  await stopServer(app);
+});
+
+it('redacts the stream token from request logs', async () => {
+  await resetDb();
+  const chunks: string[] = [];
+  const sink = new Writable({
+    write(chunk, _encoding, callback) {
+      chunks.push(String(chunk));
+      callback();
+    },
+  });
+  const { app, deps, url } = await startServer({ logStream: sink });
+  const user = await seedUser('member');
+  const token = await fetchStreamToken(app, await authHeader(user));
+
+  const stream = await openStream(url, token, 0);
+  await waitForSubscribers(deps, user.id, 1);
+
+  const logs = chunks.join('');
+  expect(logs).toContain('token=[redacted]');
+  expect(logs).not.toContain(token);
+
+  stream.controller.abort();
+  await stopServer(app);
+});
+
+it('closes the server promptly while a stream is open', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer();
+  const user = await seedUser('member');
+  const token = await fetchStreamToken(app, await authHeader(user));
+
+  const stream = await openStream(url, token, 0);
+  await waitForSubscribers(deps, user.id, 1);
+
+  const started = Date.now();
+  await app.close();
+  expect(Date.now() - started).toBeLessThan(2_000);
+
+  stream.controller.abort();
+});
+
+it('does not lose changes committed while the backlog is replaying', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer();
+  const user = await seedUser('member');
+  // More than one page of backlog keeps the route busy while the change lands.
+  await insertBacklog(user.id, 450);
+
+  const token = await fetchStreamToken(app, await authHeader(user));
+  const stream = await openStream(url, token, 0);
+
+  const synthetic = {
+    revision: 9_000_000,
+    entityType: 'bookmark' as const,
+    entityId: 'during-replay',
+    op: 'upsert' as const,
+    payload: { during: true },
+    clientUpdatedAt: new Date().toISOString(),
+    serverUpdatedAt: new Date().toISOString(),
+  };
+  deps.syncHub.publish(user.id, synthetic);
+
+  await pumpUntil(stream, (text) => text.includes('during-replay'), 5_000);
+  expect(stream.text.split('during-replay').length - 1).toBe(1);
+
+  stream.controller.abort();
+  await stopServer(app);
+});
+
+it('rejects an expired stream token', async () => {
+  await resetDb();
+  const { app, url } = await startServer();
+  const user = await seedUser('member');
+  const expired = await signSyncStreamToken(
+    { sub: user.id },
+    buildTestConfig().jwtSecret,
+    -1,
+  );
+
+  const response = await fetch(`${url}/api/sync/stream?token=${encodeURIComponent(expired)}`);
+  expect(response.status).toBe(401);
+  await response.text();
+
+  await stopServer(app);
+});
+
+it('sends a reset event when the cursor predates the watermark', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer();
+  const user = await seedUser('member');
+  await insertBacklog(user.id, 3);
+  await testDb.transaction((tx) => markPrunedThrough(tx, 2));
+
+  const token = await fetchStreamToken(app, await authHeader(user));
+  const stream = await openStream(url, token, 1);
+
+  await pumpUntil(stream, (text) => text.includes('event: reset'), 3_000);
+  expect(stream.text).toContain('event: reset');
+
+  stream.controller.abort();
+  await stopServer(app);
+});
+
+it('replays more than one page of backlog', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer();
+  const user = await seedUser('member');
+  await insertBacklog(user.id, 450);
+
+  const token = await fetchStreamToken(app, await authHeader(user));
+  const stream = await openStream(url, token, 0);
+
+  await pumpUntil(stream, (text) => text.includes('backlog-449'), 5_000);
+  expect(stream.text).toContain('backlog-0');
+  expect(stream.text.match(/event: change/g) ?? []).toHaveLength(450);
+
+  stream.controller.abort();
   await stopServer(app);
 });

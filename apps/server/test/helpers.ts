@@ -12,7 +12,7 @@ import {
 } from '@bookr/shared';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { buildApp, type AppDeps, type Clock } from '../src/app';
+import { buildApp, type AppDeps, type BuildAppOptions, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
 import { newRefreshToken, signAccessToken } from '../src/auth/tokens';
 import { FakeConverter } from '../src/books/conversion';
@@ -477,9 +477,10 @@ export async function buildTestApp(overrides: Partial<AppConfig> = {}): Promise<
  */
 export async function createTestApp(
   overrides: Partial<AppConfig> = {},
+  options: BuildAppOptions = {},
 ): Promise<{ app: FastifyInstance; deps: AppDeps }> {
   const deps = await buildTestDeps(overrides);
-  return { app: buildApp(deps), deps };
+  return { app: buildApp(deps, options), deps };
 }
 
 /** Options for `createInvite`, used to exercise invalid invite states. */

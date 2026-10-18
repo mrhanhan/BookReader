@@ -18,6 +18,9 @@ const STREAM_PAGE_SIZE = 200;
 /** Comment frame that keeps idle connections and proxies from timing out. */
 const STREAM_PING_INTERVAL_MS = 25_000;
 
+/** How long a client may stay unreadable before its stream is dropped. */
+const STREAM_BACKPRESSURE_TIMEOUT_MS = 5_000;
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const streamQuerySchema = z.object({
@@ -42,9 +45,10 @@ function changeFrame(change: SyncChangeEnvelope): string {
 }
 
 /**
- * Takes over the socket and replays the caller's backlog, then forwards live
- * changes until the client goes away. Writes are fire-and-forget; cleanup is
- * idempotent because a disconnect and a write error can race.
+ * Takes over the socket, subscribes first so nothing committed during the
+ * backlog replay is lost, replays the backlog, then flushes and forwards live
+ * changes until the client goes away. Cleanup is idempotent because a
+ * disconnect, a write error and backpressure can race.
  */
 async function openStream(
   deps: AppDeps,
@@ -60,22 +64,32 @@ async function openStream(
   raw.flushHeaders();
 
   let closed = false;
-  let cleanedUp = false;
   let unsubscribe: (() => void) | undefined;
   let ping: NodeJS.Timeout | undefined;
+  let backpressure: NodeJS.Timeout | undefined;
 
   const cleanup = (): void => {
-    if (cleanedUp) {
+    if (closed) {
       return;
     }
-    cleanedUp = true;
     closed = true;
     if (ping !== undefined) {
       clearInterval(ping);
     }
+    if (backpressure !== undefined) {
+      clearTimeout(backpressure);
+    }
     unsubscribe?.();
     if (!raw.writableEnded) {
       raw.end();
+    }
+  };
+
+  /** Clears the backpressure warning once the socket accepts writes again. */
+  const onDrain = (): void => {
+    if (backpressure !== undefined) {
+      clearTimeout(backpressure);
+      backpressure = undefined;
     }
   };
 
@@ -84,7 +98,12 @@ async function openStream(
       return false;
     }
     try {
-      raw.write(chunk);
+      // A full buffer means the client stopped reading. Give it a grace period
+      // to drain instead of growing an unbounded queue in memory.
+      if (!raw.write(chunk) && backpressure === undefined) {
+        backpressure = setTimeout(cleanup, STREAM_BACKPRESSURE_TIMEOUT_MS);
+        backpressure.unref();
+      }
       return true;
     } catch {
       cleanup();
@@ -95,6 +114,20 @@ async function openStream(
   // A client that disappears mid-replay must not leave a listener behind.
   reply.request.raw.on('close', cleanup);
   raw.on('error', cleanup);
+  raw.on('drain', onDrain);
+
+  // Subscribe before replaying. Changes committed while pages are being read
+  // land in the buffer and are flushed below instead of falling into the gap
+  // between the last page and the subscription.
+  const buffered: SyncChangeEnvelope[] = [];
+  let live = false;
+  unsubscribe = deps.syncHub.subscribe(userId, (change) => {
+    if (live) {
+      write(changeFrame(change));
+    } else {
+      buffered.push(change);
+    }
+  });
 
   let cursor = since;
   for (;;) {
@@ -107,7 +140,6 @@ async function openStream(
       page = await pullChanges(deps, userId, cursor, STREAM_PAGE_SIZE);
     } catch {
       cleanup();
-      raw.end();
       return;
     }
 
@@ -132,27 +164,22 @@ async function openStream(
     }
   }
 
-  if (closed) {
-    return;
+  // Publish order is monotonic per user, so anything the replay already
+  // covered is at or below the cursor.
+  for (const change of buffered) {
+    if (change.revision > cursor) {
+      if (!write(changeFrame(change))) {
+        return;
+      }
+      cursor = change.revision;
+    }
   }
-
-  const stop = deps.syncHub.subscribe(userId, (change) => {
-    write(changeFrame(change));
-  });
-  unsubscribe = stop;
-  if (closed) {
-    stop();
-    return;
-  }
+  live = true;
 
   ping = setInterval(() => {
     write(': ping\n\n');
   }, STREAM_PING_INTERVAL_MS);
   ping.unref();
-
-  if (closed) {
-    clearInterval(ping);
-  }
 }
 
 /** Registers the per-user sync endpoints. */
