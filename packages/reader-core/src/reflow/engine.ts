@@ -699,7 +699,18 @@ export class ReflowReaderEngine implements ReaderEngine {
         high = mid - 1;
       }
     }
-    return (metrics[visible === -1 ? 0 : visible] ?? first).element;
+    let index = visible === -1 ? 0 : visible;
+    // Tied offsets (an empty paragraph followed by real text, for example)
+    // keep the old linear rule: the later block in document order wins.
+    while (index + 1 < metrics.length) {
+      const current = metrics[index];
+      const next = metrics[index + 1];
+      if (!current || !next || next.offsetTop !== current.offsetTop) {
+        break;
+      }
+      index += 1;
+    }
+    return (metrics[index] ?? first).element;
   }
 
   private findBlockElement(blockId: string, sourcePage: number): HTMLElement | null {

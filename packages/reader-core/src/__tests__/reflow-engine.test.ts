@@ -456,6 +456,36 @@ describe('reflow engine', () => {
     }
   });
 
+  it('keeps the later block when adjacent blocks share an offset', async () => {
+    const { engine, container, host } = await openWith(makePack());
+    scrollMetrics(host);
+    stackTextBlocks(container);
+    host.scrollTop = 200;
+    // An empty paragraph followed by real text can land on the same offset;
+    // the reader should be considered to be on the later block.
+    Object.defineProperty(blockElement(container, 'p1-b2', 1), 'offsetTop', {
+      configurable: true,
+      get: () => 200,
+    });
+    refreshLayout(host);
+    const events: Locator[] = [];
+    engine.on('relocated', ({ locator }) => events.push(locator));
+
+    vi.useFakeTimers();
+    const restoreFrames = useTimerFrames();
+    try {
+      dispatchScroll(host);
+      advanceFrame();
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ sourcePage: 1, blockId: 'p1-b2' });
+    } finally {
+      restoreFrames();
+      vi.useRealTimers();
+      await engine.destroy();
+    }
+  });
+
   it('emits when only the visible source page changes', async () => {
     const pack = makePack();
     // Ids only have to be unique per page; reuse one to make the page the only
