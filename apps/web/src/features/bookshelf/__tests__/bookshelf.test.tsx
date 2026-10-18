@@ -54,3 +54,9 @@ it('confirms before deleting and moves the book to trash', async () => {
   await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
   expect(await screen.findByText('已移入回收站')).toBeInTheDocument();
 });
+it('shows the remaining retention days from the deletion time', async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ['/trash'] });
+  renderWithProviders(<RouterProvider router={router} />);
+  expect(await screen.findByText('设计数据密集型应用')).toBeInTheDocument();
+  expect(screen.getByText('剩余 20 天')).toBeInTheDocument();
+});

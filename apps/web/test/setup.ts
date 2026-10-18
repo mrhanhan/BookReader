@@ -50,6 +50,7 @@ function book(overrides: Partial<BookDto> & Pick<BookDto, 'id' | 'title'>): Book
     conversionStatus: 'none',
     createdAt: new Date(now - 7 * DAY_MS).toISOString(),
     updatedAt: new Date(now - 2 * DAY_MS).toISOString(),
+    deletedAt: null,
     ...overrides,
   };
 }
@@ -95,7 +96,24 @@ function createFixtureState() {
     }),
   ];
 
-  return { categories: [computer, literature], shelf, trash: [] as BookDto[] };
+  const trashed = book({
+    id: 'book-ddia',
+    title: '设计数据密集型应用',
+    author: 'Martin Kleppmann',
+    format: 'epub',
+    size: 5 * 1024 * 1024,
+    status: 'finished',
+    progressPercent: 100,
+    categories: [computer],
+    uploadedBy: { id: reader.id, displayName: reader.displayName },
+    createdAt: new Date(now - 40 * DAY_MS).toISOString(),
+    // `updatedAt` deliberately differs from `deletedAt`: retention must follow
+    // the deletion instant, not the last metadata touch.
+    updatedAt: new Date(now - 1 * DAY_MS).toISOString(),
+    deletedAt: new Date(now - 10 * DAY_MS).toISOString(),
+  });
+
+  return { categories: [computer, literature], shelf, trash: [trashed] as BookDto[] };
 }
 
 let fixtures = createFixtureState();
@@ -193,6 +211,7 @@ export const handlers = [
     const [removed] = fixtures.shelf.splice(index, 1);
     if (removed) {
       removed.updatedAt = new Date().toISOString();
+      removed.deletedAt = removed.updatedAt;
       fixtures.trash.unshift(removed);
     }
     return new HttpResponse(null, { status: 204 });
@@ -202,6 +221,7 @@ export const handlers = [
     if (index === -1) return error(404, 'NOT_FOUND', 'Book not found');
     const [restored] = fixtures.trash.splice(index, 1);
     if (!restored) return error(404, 'NOT_FOUND', 'Book not found');
+    restored.deletedAt = null;
     restored.updatedAt = new Date().toISOString();
     fixtures.shelf.unshift(restored);
     return HttpResponse.json({ book: restored });

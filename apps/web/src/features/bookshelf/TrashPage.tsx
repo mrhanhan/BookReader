@@ -63,9 +63,7 @@ export function TrashPage() {
       ) : (
         <ul className="flex flex-col gap-3">
           {books.map((book) => {
-            // The API does not expose `deletedAt`; soft delete sets `updatedAt`
-            // to the same instant, and trashed books accept no further updates.
-            const daysLeft = retentionDaysLeft(book.updatedAt);
+            const daysLeft = book.deletedAt ? retentionDaysLeft(book.deletedAt) : null;
             const canManage = Boolean(
               user && (user.role === 'admin' || book.uploadedBy.id === user.id),
             );
@@ -98,13 +96,24 @@ export function TrashPage() {
                     {formatBytes(book.size)}
                   </p>
                   <p className="mt-0.5 truncate text-xs text-muted">
-                    由 {book.uploadedBy.displayName} 上传 · 删除于 {formatDate(book.updatedAt)}
+                    由 {book.uploadedBy.displayName} 上传 · 删除于{' '}
+                    {formatDate(book.deletedAt ?? book.updatedAt)}
                   </p>
                 </div>
 
                 <div className="flex shrink-0 flex-col items-end gap-1.5">
-                  <p className={daysLeft <= 3 ? 'text-xs text-highlight' : 'text-xs text-muted'}>
-                    {daysLeft === 0 ? '即将清理' : `剩余 ${daysLeft} 天`}
+                  <p
+                    className={
+                      daysLeft !== null && daysLeft <= 3
+                        ? 'text-xs text-highlight'
+                        : 'text-xs text-muted'
+                    }
+                  >
+                    {daysLeft === null
+                      ? '保留期未知'
+                      : daysLeft === 0
+                        ? '即将清理'
+                        : `剩余 ${daysLeft} 天`}
                   </p>
                   {canManage ? (
                     <Button

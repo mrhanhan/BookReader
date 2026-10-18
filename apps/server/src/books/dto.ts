@@ -48,5 +48,6 @@ export async function toBookDto(
     conversionStatus: book.conversionStatus,
     createdAt: book.createdAt.toISOString(),
     updatedAt: book.updatedAt.toISOString(),
+    deletedAt: book.deletedAt ? book.deletedAt.toISOString() : null,
   };
 }

@@ -48,4 +48,6 @@ export interface BookDto {
   conversionStatus: BookConversionStatus;
   createdAt: string;
   updatedAt: string;
+  /** Set when the book was moved to the trash; null while it is on the shelf. */
+  deletedAt: string | null;
 }
