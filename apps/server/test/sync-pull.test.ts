@@ -166,6 +166,10 @@ it('snapshots live entities only and includes the cursor', async () => {
     bookmarks: [{ id: liveBookmark.id, label: '保留' }],
     settings: { settings: { theme: 'dark' } },
   });
+  expect(snapshot.settings).toMatchObject({
+    settings: { theme: 'dark' },
+    clientUpdatedAt: '2026-10-18T00:00:00.000Z',
+  });
   expect(
     (await testDb.select().from(annotations)).filter((row) => row.deletedAt !== null),
   ).toHaveLength(1);
