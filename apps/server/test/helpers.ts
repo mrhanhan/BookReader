@@ -45,6 +45,7 @@ import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
 import { LIBRARY_ID, LIBRARY_NAME } from '../src/library/service';
 import { FakeStorage } from '../src/storage/fake';
+import { createSyncHub } from '../src/sync/hub';
 import { cleanupExpiredUploads } from '../src/uploads/service';
 
 const TEST_DATABASE_URL =
@@ -386,6 +387,7 @@ export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise
     jobs: fakeJobQueue,
     converter: fakeConverter,
     metadataRunner: new InProcessMetadataRunner(),
+    syncHub: createSyncHub(),
   };
 }
 
@@ -467,6 +469,17 @@ export async function authHeader(
 /** Builds the app with fake dependencies, without touching Postgres or S3. */
 export async function buildTestApp(overrides: Partial<AppConfig> = {}): Promise<FastifyInstance> {
   return buildApp(await buildTestDeps(overrides));
+}
+
+/**
+ * Builds the app together with the dependency object backing it, for tests
+ * that need to observe both (for example the sync hub).
+ */
+export async function createTestApp(
+  overrides: Partial<AppConfig> = {},
+): Promise<{ app: FastifyInstance; deps: AppDeps }> {
+  const deps = await buildTestDeps(overrides);
+  return { app: buildApp(deps), deps };
 }
 
 /** Options for `createInvite`, used to exercise invalid invite states. */

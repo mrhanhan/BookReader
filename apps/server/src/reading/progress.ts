@@ -32,7 +32,7 @@ export async function saveProgress(
   assertLocatorKind(book, locator);
   const now = deps.clock.now();
 
-  const row = await deps.db.transaction(async (tx) => {
+  const { row, change } = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const stored = await upsertProgress(tx, {
       userId: actor.id,
@@ -44,7 +44,7 @@ export async function saveProgress(
       clientUpdatedAt: now,
     });
     const dto = toProgressDto(stored);
-    await recordChange(tx, {
+    const change = await recordChange(tx, {
       userId: actor.id,
       entityType: 'reading_progress',
       entityId: bookId,
@@ -54,7 +54,8 @@ export async function saveProgress(
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,
     });
-    return stored;
+    return { row: stored, change };
   });
+  deps.syncHub.publish(actor.id, change);
   return toProgressDto(row);
 }

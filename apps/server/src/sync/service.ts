@@ -213,6 +213,9 @@ export async function applyPush(
     const key = syncKey(change.entityType, change.entityId);
     if (result.status === 'applied' && result.change) {
       appliedChanges.push(result.change);
+      // `applyChange` commits its own transaction before returning, so a
+      // listener that pulls immediately can see the row this change describes.
+      deps.syncHub.publish(actor.id, result.change);
     } else if (result.status === 'skipped') {
       skipped.push(key);
     } else {

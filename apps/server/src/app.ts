@@ -16,6 +16,7 @@ import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
 import { registerReadingRoutes } from './reading/routes';
 import type { StorageService } from './storage/types';
+import type { SyncHub } from './sync/hub';
 import { registerSyncRoutes } from './sync/routes';
 import { registerUploadRoutes } from './uploads/routes';
 
@@ -41,6 +42,8 @@ export interface AppDeps {
   converter: Converter;
   /** Parses EPUB/PDF metadata, in-process in tests and isolated in production. */
   metadataRunner: MetadataRunner;
+  /** Fans committed changes out to open sync streams. */
+  syncHub: SyncHub;
 }
 
 const LOG_REDACT_PATHS = [

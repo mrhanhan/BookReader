@@ -46,7 +46,7 @@ export async function createAnnotation(
   assertLocatorKind(book, input.locator);
   const now = deps.clock.now();
 
-  const row = await deps.db.transaction(async (tx) => {
+  const { row, change } = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const inserted = await insertAnnotation(tx, {
       userId: actor.id,
@@ -61,7 +61,7 @@ export async function createAnnotation(
       clientUpdatedAt: now,
     });
     const dto = toAnnotationDto(inserted);
-    await recordChange(tx, {
+    const change = await recordChange(tx, {
       userId: actor.id,
       entityType: 'annotation',
       entityId: inserted.id,
@@ -71,8 +71,9 @@ export async function createAnnotation(
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,
     });
-    return inserted;
+    return { row: inserted, change };
   });
+  deps.syncHub.publish(actor.id, change);
   return toAnnotationDto(row);
 }
 
@@ -91,7 +92,7 @@ export async function updateAnnotation(
   await requireLiveBook(deps, bookId);
   const now = deps.clock.now();
 
-  return deps.db.transaction(async (tx) => {
+  const { change, ...result } = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const row = await findOwnedAnnotationForUpdate(tx, annotationId, bookId, actor.id);
     // Missing, deleted and another member's row are all 404 so ownership is
@@ -127,7 +128,7 @@ export async function updateAnnotation(
       clientUpdatedAt: now,
     });
     const dto = toAnnotationDto(updated);
-    await recordChange(tx, {
+    const change = await recordChange(tx, {
       userId: actor.id,
       entityType: 'annotation',
       entityId: annotationId,
@@ -137,8 +138,10 @@ export async function updateAnnotation(
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,
     });
-    return { annotation: dto, conflict };
+    return { annotation: dto, conflict, change };
   });
+  deps.syncHub.publish(actor.id, change);
+  return result;
 }
 
 /** Soft-deletes the caller's annotation; any other target is a 404. */
@@ -151,13 +154,13 @@ export async function deleteAnnotation(
   await requireLiveBook(deps, bookId);
   const now = deps.clock.now();
 
-  await deps.db.transaction(async (tx) => {
+  const change = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const deleted = await softDeleteAnnotation(tx, annotationId, bookId, actor.id, now);
     if (!deleted) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND);
     }
-    await recordChange(tx, {
+    return recordChange(tx, {
       userId: actor.id,
       entityType: 'annotation',
       entityId: annotationId,
@@ -168,4 +171,5 @@ export async function deleteAnnotation(
       deviceId: actor.deviceId ?? null,
     });
   });
+  deps.syncHub.publish(actor.id, change);
 }

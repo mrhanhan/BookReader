@@ -43,7 +43,7 @@ export async function createBookmark(
   assertLocatorKind(book, input.locator);
   const now = deps.clock.now();
 
-  const row = await deps.db.transaction(async (tx) => {
+  const { row, change } = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const inserted = await insertBookmark(tx, {
       userId: actor.id,
@@ -54,7 +54,7 @@ export async function createBookmark(
       clientUpdatedAt: now,
     });
     const dto = toBookmarkDto(inserted);
-    await recordChange(tx, {
+    const change = await recordChange(tx, {
       userId: actor.id,
       entityType: 'bookmark',
       entityId: inserted.id,
@@ -64,8 +64,9 @@ export async function createBookmark(
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,
     });
-    return inserted;
+    return { row: inserted, change };
   });
+  deps.syncHub.publish(actor.id, change);
   return toBookmarkDto(row);
 }
 
@@ -80,14 +81,14 @@ export async function updateBookmark(
   await requireLiveBook(deps, bookId);
   const now = deps.clock.now();
 
-  return deps.db.transaction(async (tx) => {
+  const { dto, change } = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const row = await updateBookmarkRow(tx, bookmarkId, bookId, actor.id, input.label, now, now);
     if (!row) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND);
     }
     const dto = toBookmarkDto(row);
-    await recordChange(tx, {
+    const change = await recordChange(tx, {
       userId: actor.id,
       entityType: 'bookmark',
       entityId: bookmarkId,
@@ -97,8 +98,10 @@ export async function updateBookmark(
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,
     });
-    return dto;
+    return { dto, change };
   });
+  deps.syncHub.publish(actor.id, change);
+  return dto;
 }
 
 /** Soft-deletes the caller's bookmark; any other target is a 404. */
@@ -111,13 +114,13 @@ export async function deleteBookmark(
   await requireLiveBook(deps, bookId);
   const now = deps.clock.now();
 
-  await deps.db.transaction(async (tx) => {
+  const change = await deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
     const deleted = await softDeleteBookmark(tx, bookmarkId, bookId, actor.id, now);
     if (!deleted) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND);
     }
-    await recordChange(tx, {
+    return recordChange(tx, {
       userId: actor.id,
       entityType: 'bookmark',
       entityId: bookmarkId,
@@ -128,4 +131,5 @@ export async function deleteBookmark(
       deviceId: actor.deviceId ?? null,
     });
   });
+  deps.syncHub.publish(actor.id, change);
 }

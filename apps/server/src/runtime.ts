@@ -6,6 +6,7 @@ import type { AppConfig } from './config';
 import { createDb, type Database } from './db/client';
 import { PostgresJobQueue } from './jobs/queue';
 import { S3Storage } from './storage/s3';
+import { createSyncHub } from './sync/hub';
 
 /**
  * Builds the production dependency graph. Tests inject fakes instead; the
@@ -25,5 +26,6 @@ export function createDeps(
     jobs: new PostgresJobQueue(db, clock),
     converter: new CalibreConverter(),
     metadataRunner: new ProcessMetadataRunner(),
+    syncHub: createSyncHub(),
   };
 }
