@@ -432,8 +432,32 @@ it('closes the server promptly while a stream is open', async () => {
   const started = Date.now();
   await app.close();
   expect(Date.now() - started).toBeLessThan(2_000);
+  // preClose must also drop the hub listener, not just end the socket.
+  expect(deps.syncHub.subscriberCount(user.id)).toBe(0);
 
   stream.controller.abort();
+});
+
+it('drops a subscription that registers while the server is closing', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer();
+  const user = await seedUser('member');
+  const token = await fetchStreamToken(app, await authHeader(user));
+  const controller = new AbortController();
+
+  // Do not await the response: the route may still be between hijacking the
+  // socket and registering its listener when preClose runs. Whatever happens,
+  // no listener may survive the close.
+  const pending = fetch(
+    `${url}/api/sync/stream?token=${encodeURIComponent(token)}&since=0`,
+    { signal: controller.signal },
+  ).catch(() => null);
+
+  await app.close();
+  expect(deps.syncHub.subscriberCount(user.id)).toBe(0);
+
+  controller.abort();
+  await pending;
 });
 
 it('does not lose changes committed while the backlog is replaying', async () => {

@@ -88,11 +88,6 @@ async function openStream(
     }
   };
   activeStreams.add(cleanup);
-  // A stream can register after preClose already snapshotted the set (for
-  // example while its token is being verified); clean it up immediately.
-  if (isClosing()) {
-    cleanup();
-  }
 
   /** Clears the backpressure warning once the socket accepts writes again. */
   const onDrain = (): void => {
@@ -137,6 +132,15 @@ async function openStream(
       buffered.push(change);
     }
   });
+
+  // preClose may have run while this request was still verifying its token.
+  // End the stream and drop the listener that was just registered; cleanup
+  // alone cannot do it if a disconnect already fired before subscribe.
+  if (closed || isClosing()) {
+    cleanup();
+    unsubscribe();
+    return;
+  }
 
   let cursor = since;
   for (;;) {
