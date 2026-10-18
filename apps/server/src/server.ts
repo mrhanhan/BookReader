@@ -55,7 +55,13 @@ async function main(): Promise<void> {
   } catch (error) {
     // A bad bootstrap value must not keep the shelf down; an administrator can
     // enter the provider settings through the admin API instead.
-    app.log.error({ errorName: errorName(error) }, 'failed to bootstrap AI configuration');
+    app.log.error(
+      {
+        errorName: errorName(error),
+        message: error instanceof Error ? error.message : String(error),
+      },
+      'failed to bootstrap AI configuration',
+    );
   }
   await withStartupRetry('S3 bucket creation', () => ensureBucket(config.s3));
 

@@ -242,6 +242,12 @@ export async function writeAiConfig(
   actorId: string | null,
   input: WriteAiConfigInput,
 ): Promise<AiConfigView> {
+  // The fake provider ignores stored settings; accepting a write would make the
+  // view disagree with what the runtime actually uses.
+  if (deps.config.ai.fakeProvider) {
+    return fakeConfigView();
+  }
+
   const [existing] = await deps.db
     .select()
     .from(aiConfig)
@@ -249,6 +255,15 @@ export async function writeAiConfig(
     .limit(1);
 
   if (!existing && input.apiKey === undefined) {
+    throw validationError('apiKey');
+  }
+  if (
+    input.apiKey === undefined &&
+    existing !== undefined &&
+    decryptRow(deps, existing) === null
+  ) {
+    // The stored key is unreadable (for example after rotating JWT_SECRET);
+    // keeping it would leave the provider permanently broken.
     throw validationError('apiKey');
   }
 

@@ -1,9 +1,10 @@
+import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../app';
 import { makeRequireAdmin, makeRequireAuth } from '../auth/guards';
-import { auditLogs } from '../db/schema';
-import { AI_CONFIG_ID, deleteAiConfig, readAiConfigView, writeAiConfig } from './config';
+import { auditLogs, aiConfig } from '../db/schema';
+import { AI_CONFIG_ID, readAiConfigView, writeAiConfig } from './config';
 
 const updateAiConfigSchema = z
   .object({
@@ -32,11 +33,13 @@ export function registerAiAdminRoutes(app: FastifyInstance, deps: AppDeps): void
   });
 
   app.delete('/api/admin/ai', adminOnly, async (request, reply) => {
-    await deleteAiConfig(deps);
-    await deps.db.insert(auditLogs).values({
-      userId: request.user!.id,
-      action: 'ai.config.delete',
-      target: AI_CONFIG_ID,
+    await deps.db.transaction(async (tx) => {
+      await tx.delete(aiConfig).where(eq(aiConfig.id, AI_CONFIG_ID));
+      await tx.insert(auditLogs).values({
+        userId: request.user!.id,
+        action: 'ai.config.delete',
+        target: AI_CONFIG_ID,
+      });
     });
     return reply.status(204).send();
   });
