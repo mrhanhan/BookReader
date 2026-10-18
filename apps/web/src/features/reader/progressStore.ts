@@ -15,6 +15,29 @@ export interface LocalProgress {
   savedAt: number;
 }
 
+/** Serialises with sorted keys, so equal locators compare equally. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Whether two positions point at the same place. The engine may hand back a
+ * locator assembled in a different order, so keys are normalized first.
+ */
+export function locatorsEqual(left: Locator, right: Locator): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
 function storage(): Storage | null {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage;

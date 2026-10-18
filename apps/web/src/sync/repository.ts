@@ -71,6 +71,8 @@ export interface LocalRepository {
   settingsFor(userId: string): Promise<LocalSettingsRow | null>;
   saveSettings(userId: string, settings: Record<string, unknown>): Promise<void>;
   pendingCount(userId: string): Promise<number>;
+  /** Whether the outbox still holds an unsent mutation of one entity. */
+  hasPending(userId: string, entityType: SyncEntityType, entityId: string): Promise<boolean>;
   applyServerChange(userId: string, change: SyncChangeEnvelope): Promise<'applied' | 'skipped'>;
   applySnapshot(userId: string, snapshot: SyncSnapshot): Promise<void>;
   getCursor(userId: string): Promise<number>;
@@ -265,6 +267,23 @@ function clientTimeOf(at?: number): string {
 function parseTime(value: string): number {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Newest first, matching the REST endpoints the reader used before local-first
+ * reads. Equal timestamps fall back to the descending id, which is time-ordered.
+ */
+function newestFirst<T extends { id: string }>(timeOf: (row: T) => string): (a: T, b: T) => number {
+  return (left, right) => {
+    const delta = parseTime(timeOf(right)) - parseTime(timeOf(left));
+    if (delta !== 0) {
+      return delta;
+    }
+    if (left.id === right.id) {
+      return 0;
+    }
+    return left.id < right.id ? 1 : -1;
+  };
 }
 
 function annotationWritePayload(row: AnnotationDto): Record<string, unknown> {
@@ -506,12 +525,24 @@ export function createRepository(db: BookrDb): LocalRepository {
         clientUpdatedAt,
         dirty: false,
       };
-      await db.progress.put(row);
-      return row;
+      // A sync pull may have written this book between the caller's read and
+      // this migration; the newer row must win over the legacy cache.
+      return db.transaction('rw', db.progress, async () => {
+        const existing = await db.progress.get([userId, bookId]);
+        if (existing !== undefined) {
+          return existing;
+        }
+        await db.progress.put(row);
+        return row;
+      });
     },
 
     async listAnnotations(userId, bookId) {
-      return db.annotations.where('[userId+bookId]').equals([userId, bookId]).toArray();
+      const rows = await db.annotations
+        .where('[userId+bookId]')
+        .equals([userId, bookId])
+        .toArray();
+      return rows.sort(newestFirst((row) => row.updatedAt));
     },
 
     async createAnnotation(userId, input) {
@@ -602,7 +633,11 @@ export function createRepository(db: BookrDb): LocalRepository {
     },
 
     async listBookmarks(userId, bookId) {
-      return db.bookmarks.where('[userId+bookId]').equals([userId, bookId]).toArray();
+      const rows = await db.bookmarks
+        .where('[userId+bookId]')
+        .equals([userId, bookId])
+        .toArray();
+      return rows.sort(newestFirst((row) => row.createdAt));
     },
 
     async createBookmark(userId, input) {
@@ -705,6 +740,10 @@ export function createRepository(db: BookrDb): LocalRepository {
 
     async pendingCount(userId) {
       return db.outbox.where('userId').equals(userId).count();
+    },
+
+    async hasPending(userId, entityType, entityId) {
+      return (await pendingFor(db, userId, entityType, entityId)).length > 0;
     },
 
     applyServerChange(userId, change) {

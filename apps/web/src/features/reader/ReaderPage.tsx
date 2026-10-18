@@ -41,9 +41,10 @@ import type { ReaderFileInfo } from '../../api/reading';
 import { fetchReflowFile } from '../../api/reflow';
 import { messageForApiError } from '../../lib/errorMessages';
 import { useSync } from '../../sync/SyncProvider';
+import type { SyncState } from '../../sync/engine';
 import { Toast } from '../bookshelf/Toast';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
-import { readLocalProgress } from './progressStore';
+import { locatorsEqual, readLocalProgress } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
 import { useReadingMode } from './useReadingMode';
@@ -518,7 +519,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const initialLocator = source?.initialLocator;
 
   // Autosave must subscribe before `open` so the first relocation is captured.
-  const { percent, saveState } = useReaderProgress({
+  const { percent, saveState, suppressNext } = useReaderProgress({
     userId: userId ?? '',
     bookId: bookId ?? '',
     engine,
@@ -625,6 +626,67 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       unsubscribe();
     };
   }, [engine, mode, sourceEpoch, fallbackToOriginal]);
+
+  // A progress change applied from another device (pull or stream) wins over
+  // the position this visit opened at. Follow it once the book is open, and
+  // only when nothing local is queued; otherwise the next autosave would
+  // overwrite the newer server position. These effects sit after `open` so a
+  // replaced engine is never navigated before it loads.
+  const pendingFollowRef = useRef<Locator | null>(null);
+  const handledAppliedRef = useRef<SyncState['lastApplied']>(undefined);
+
+  const applyPendingFollow = useCallback(() => {
+    const target = pendingFollowRef.current;
+    if (target === null || engine === null || !readyRef.current) {
+      return;
+    }
+    pendingFollowRef.current = null;
+    const current = currentLocatorRef.current;
+    if (current !== null && locatorsEqual(current, target)) {
+      return;
+    }
+    // The store already holds this position, so the relocation it causes must
+    // not queue a redundant write.
+    suppressNext(target);
+    ignoreRejection(() => engine.goTo(target));
+  }, [engine, suppressNext]);
+
+  useEffect(() => {
+    const applied = syncState.lastApplied;
+    if (applied === undefined || applied === handledAppliedRef.current) return;
+    if (applied.entityType !== 'reading_progress' || applied.entityId !== bookId) return;
+    if (!bookId || !userId) return;
+
+    handledAppliedRef.current = applied;
+    // A push echo carries this device's own position; only remote changes move
+    // the reader.
+    if (applied.source === 'push') return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [row, pending] = await Promise.all([
+          repo.progressFor(userId, bookId),
+          repo.hasPending(userId, 'reading_progress', bookId),
+        ]);
+        if (cancelled || pending || row === null) return;
+        pendingFollowRef.current = row.locator;
+        applyPendingFollow();
+      } catch {
+        // A failed local read must not break reading; the next sync retries.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyPendingFollow, bookId, repo, syncState.lastApplied, userId]);
+
+  // The applied change may arrive while the book is still opening; navigate as
+  // soon as the engine accepts it.
+  useEffect(() => {
+    applyPendingFollow();
+  }, [applyPendingFollow, status]);
 
   const [chromeVisible, setChromeVisible] = useState(true);
   const chromeVisibleRef = useRef(chromeVisible);
@@ -773,16 +835,19 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     if (bookmarksError) showToast(messageForApiError(bookmarksError));
   }, [bookmarksError, showToast]);
 
-  // The sync provider exposes conflicts as a counter; any increase while the
-  // reader is open maps to a conflict toast. The initial value is remembered so
-  // a conflict counted before mount does not pop up on entry.
+  // The sync provider exposes conflicts as a counter; an increase while the
+  // book is open maps to a conflict toast. Conflicts counted while the reader
+  // is still loading (including before mount) are only a baseline, so they do
+  // not pop up on entry.
   const conflictsRef = useRef(syncState.conflicts);
   useEffect(() => {
-    if (syncState.conflicts > conflictsRef.current) {
+    const previous = conflictsRef.current;
+    conflictsRef.current = syncState.conflicts;
+    if (status !== 'ready') return;
+    if (syncState.conflicts > previous) {
       showToast(SYNC_CONFLICT_MESSAGE);
     }
-    conflictsRef.current = syncState.conflicts;
-  }, [showToast, syncState.conflicts]);
+  }, [showToast, status, syncState.conflicts]);
 
   /** Applies an annotation change to the cache and mirrors it into the engine. */
   const applyAnnotations = useCallback(

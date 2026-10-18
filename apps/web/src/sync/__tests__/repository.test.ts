@@ -1,5 +1,5 @@
 import type { AnnotationColor, Locator, SyncChangeEnvelope } from '@bookr/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSyncDb, type BookrDb } from '../db';
 import { createRepository, type LocalRepository } from '../repository';
 
@@ -29,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await db.delete();
 });
 
@@ -92,6 +93,27 @@ describe('LocalRepository', () => {
     expect(await db.progress.count()).toBe(2);
   });
 
+  it('reports whether one entity still has a queued mutation', async () => {
+    expect(await repo.hasPending(USER, 'reading_progress', BOOK)).toBe(false);
+
+    await repo.saveProgress(USER, BOOK, locator);
+
+    expect(await repo.hasPending(USER, 'reading_progress', BOOK)).toBe(true);
+    expect(await repo.hasPending(USER, 'reading_progress', OTHER_BOOK)).toBe(false);
+    expect(await repo.hasPending(OTHER_USER, 'reading_progress', BOOK)).toBe(false);
+  });
+
+  it('does not let a legacy import overwrite a position written meanwhile', async () => {
+    await repo.saveProgress(USER, BOOK, laterLocator, Date.parse(T2));
+
+    const imported = await repo.importProgress(USER, BOOK, locator, Date.parse(T1));
+
+    expect(imported.locator).toEqual(laterLocator);
+    expect((await repo.progressFor(USER, BOOK))?.locator).toEqual(laterLocator);
+    // The import itself never queues anything; only the sync write remains.
+    expect(await repo.pendingCount(USER)).toBe(1);
+  });
+
   it('creates annotations with a UUIDv7 id and a writable payload', async () => {
     const created = await repo.createAnnotation(USER, {
       ...annotationInput(),
@@ -136,6 +158,34 @@ describe('LocalRepository', () => {
     expect(blue?.payload).toMatchObject({ color: 'blue', tags: ['重点'] });
   });
 
+  it('lists annotations newest-edited first', async () => {
+    let clock = Date.parse('2026-02-01T00:00:00.000Z');
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+
+    const first = await repo.createAnnotation(USER, {
+      ...annotationInput(),
+      selectedText: '第一条',
+    });
+    clock += 1_000;
+    const second = await repo.createAnnotation(USER, {
+      ...annotationInput(),
+      selectedText: '第二条',
+    });
+    expect((await repo.listAnnotations(USER, BOOK)).map((row) => row.id)).toEqual([
+      second.id,
+      first.id,
+    ]);
+
+    clock += 1_000;
+    await repo.updateAnnotation(USER, BOOK, first.id, { noteText: '更新旧批注' });
+
+    expect((await repo.listAnnotations(USER, BOOK)).map((row) => row.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+    now.mockRestore();
+  });
+
   it('deletes annotations and enqueues the delete', async () => {
     const created = await repo.createAnnotation(USER, annotationInput());
     await repo.deleteAnnotation(USER, BOOK, created.id);
@@ -168,6 +218,21 @@ describe('LocalRepository', () => {
       (row) => row.op === 'upsert' && (row.payload as { label?: string | null }).label === null,
     );
     expect(cleared?.payload).toEqual({ bookId: BOOK, locator, label: null });
+  });
+
+  it('lists bookmarks newest-created first', async () => {
+    let clock = Date.parse('2026-02-01T00:00:00.000Z');
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+
+    const first = await repo.createBookmark(USER, { bookId: BOOK, locator, label: '第一处' });
+    clock += 1_000;
+    const second = await repo.createBookmark(USER, { bookId: BOOK, locator, label: '第二处' });
+
+    expect((await repo.listBookmarks(USER, BOOK)).map((row) => row.id)).toEqual([
+      second.id,
+      first.id,
+    ]);
+    now.mockRestore();
   });
 
   it('saves reader settings with one outbox row', async () => {

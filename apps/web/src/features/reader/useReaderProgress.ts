@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Locator } from '@bookr/shared';
 import type { ReaderEngine } from '@bookr/reader-core';
 import { useSync } from '../../sync/SyncProvider';
 import type { SyncState } from '../../sync/engine';
-import { writeLocalProgress } from './progressStore';
+import { locatorsEqual, writeLocalProgress } from './progressStore';
 
 /** The local cache is written at most once per this interval (leading + trailing). */
 export const LOCAL_WRITE_INTERVAL_MS = 5_000;
@@ -32,6 +32,12 @@ export interface ReaderProgressState {
   /** 0–1 book position, driven by the engine's `relocated` events. */
   percent: number;
   saveState: ReaderSaveState;
+  /**
+   * Ignores the next relocation when it lands on `locator`. The reader calls
+   * this before navigating to a position the sync engine just applied, so
+   * following the server does not queue the same position back again.
+   */
+  suppressNext: (locator: Locator) => void;
 }
 
 function clampPercent(value: number): number {
@@ -73,17 +79,34 @@ export function useReaderProgress({
   const dirtyRef = useRef(false);
   const lastLocalWriteRef = useRef(0);
   const trailingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The latest resolved position, readable from the subscription closure.
+  const initialLocatorRef = useRef<Locator | undefined>(initialLocator);
+  initialLocatorRef.current = initialLocator;
+  // The first relocation after opening usually just confirms where the book
+  // was opened. Writing it would queue a stale position before the first pull
+  // can deliver a newer one from another device.
+  const awaitingInitialRef = useRef(true);
+  // Set just before following a server-applied position; the relocation it
+  // causes must not become a local write.
+  const suppressedRef = useRef<Locator | null>(null);
+
+  const suppressNext = useCallback((locator: Locator) => {
+    suppressedRef.current = locator;
+  }, []);
 
   // Seed from the resolved local position once it is known; this runs before
   // the page's own effect calls `engine.open`.
   useEffect(() => {
     locatorRef.current = initialLocator ?? null;
     dirtyRef.current = false;
+    awaitingInitialRef.current = true;
+    suppressedRef.current = null;
     setPercent(clampPercent(initialLocator?.percent ?? 0));
   }, [userId, bookId, initialLocator]);
 
   useEffect(() => {
     if (!engine || !bookId || !userId) return;
+    awaitingInitialRef.current = true;
 
     const write = (locator: Locator): void => {
       const now = Date.now();
@@ -92,9 +115,32 @@ export function useReaderProgress({
     };
 
     const record = (locator: Locator): void => {
+      setPercent(clampPercent(locator.percent));
+
+      const suppressed = suppressedRef.current;
+      if (suppressed !== null && locatorsEqual(locator, suppressed)) {
+        // The reader navigated to the position the server just applied; the
+        // local store already holds it, so there is nothing to save.
+        suppressedRef.current = null;
+        locatorRef.current = locator;
+        dirtyRef.current = false;
+        return;
+      }
+      suppressedRef.current = null;
+
+      if (awaitingInitialRef.current) {
+        awaitingInitialRef.current = false;
+        const initial = initialLocatorRef.current;
+        if (initial !== undefined && locatorsEqual(locator, initial)) {
+          // Opened where the stored position said; do not queue it back.
+          locatorRef.current = locator;
+          dirtyRef.current = false;
+          return;
+        }
+      }
+
       locatorRef.current = locator;
       dirtyRef.current = true;
-      setPercent(clampPercent(locator.percent));
 
       const elapsed = Date.now() - lastLocalWriteRef.current;
       if (elapsed >= LOCAL_WRITE_INTERVAL_MS) {
@@ -149,5 +195,5 @@ export function useReaderProgress({
     };
   }, [bookId, engine, requestSync, repo, userId]);
 
-  return { percent, saveState: saveStateFor(syncState) };
+  return { percent, saveState: saveStateFor(syncState), suppressNext };
 }

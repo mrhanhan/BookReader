@@ -157,3 +157,19 @@ it('labels bookmarks by page for PDF and reflow, by percent for EPUB', () => {
     bookmarkTitle({ ...base, locator: { kind: 'epub', cfi: 'epubcfi(/6/2)', percent: 0.426 } }),
   ).toBe('位置 43%');
 });
+
+it('requests a debounced sync after a local write', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  await userEvent.click(await screen.findByRole('button', { name: '书签' }));
+  await userEvent.click(await screen.findByRole('button', { name: '添加书签' }));
+  await userEvent.click(screen.getByRole('button', { name: '保存书签' }));
+
+  await waitFor(async () => {
+    expect(await repo.listBookmarks(USER, BOOK_ID)).toHaveLength(1);
+  });
+  // The provider debounces writes so a burst results in one push.
+  await waitFor(() => expect(syncEngine.syncNowCalls).toContain('bookmark'), { timeout: 3000 });
+});

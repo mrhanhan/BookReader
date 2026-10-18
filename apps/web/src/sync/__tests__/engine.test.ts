@@ -252,7 +252,13 @@ describe('SyncEngine', () => {
     expect(vi.mocked(api.pull).mock.calls[1]?.[0]).toBe(5);
     expect(await repo.getCursor(USER)).toBe(9);
     const bookmarks = await repo.listBookmarks(USER, BOOK);
-    expect(bookmarks.map((row) => row.id)).toEqual([first.entityId, second.entityId]);
+    // Both carry the same creation time, so the newer id lists first.
+    expect(bookmarks.map((row) => row.id)).toEqual([second.entityId, first.entityId]);
+    expect(engine.getState().lastApplied).toMatchObject({
+      entityType: 'bookmark',
+      entityId: second.entityId,
+      source: 'pull',
+    });
   });
 
   it('rebuilds from a snapshot when the pull reports reset', async () => {

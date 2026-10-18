@@ -5,11 +5,35 @@ import type { OutboxRow } from './types';
 /**
  * Appends one unsent mutation. New rows are immediately due; the sync engine
  * owns retry accounting through `attempts` and `nextAttemptAt`.
+ *
+ * Reading progress is a single position per book, so a queued upsert is
+ * updated in place: a burst of page turns then travels as one row carrying the
+ * newest locator instead of a backlog of stale positions.
  */
 export async function enqueue(
   db: BookrDb,
   change: Omit<OutboxRow, 'attempts' | 'nextAttemptAt'>,
 ): Promise<void> {
+  if (change.entityType === 'reading_progress' && change.op === 'upsert') {
+    const existing = await db.outbox
+      .where('userId')
+      .equals(change.userId)
+      .filter(
+        (row) =>
+          row.entityType === 'reading_progress' &&
+          row.entityId === change.entityId &&
+          row.op === 'upsert',
+      )
+      .first();
+    if (existing !== undefined) {
+      await db.outbox.update(existing.id, {
+        payload: change.payload,
+        clientUpdatedAt: change.clientUpdatedAt,
+      });
+      return;
+    }
+  }
+
   await db.outbox.put({ ...change, attempts: 0, nextAttemptAt: 0 });
 }
 
@@ -31,13 +55,37 @@ export async function dueOutbox(
     .toArray();
 }
 
-/** Removes rows the server has accepted (or rejected). */
-export async function acknowledgeOutbox(db: BookrDb, ids: string[]): Promise<void> {
-  if (ids.length === 0) {
+/**
+ * Removes rows the server has accepted (or rejected).
+ *
+ * A queued progress upsert is merged in place, so the row a batch carried may
+ * have been updated while that batch was on the wire. Such a row is left for
+ * the next push: the server has not seen its newer payload yet.
+ */
+export async function acknowledgeOutbox(db: BookrDb, rows: OutboxRow[]): Promise<void> {
+  if (rows.length === 0) {
     return;
   }
 
-  await db.outbox.bulkDelete(ids);
+  await db.transaction('rw', db.outbox, async () => {
+    const ids: string[] = [];
+    for (const row of rows) {
+      const current = await db.outbox.get(row.id);
+      if (current === undefined) {
+        continue;
+      }
+      if (
+        current.clientUpdatedAt === row.clientUpdatedAt &&
+        JSON.stringify(current.payload) === JSON.stringify(row.payload)
+      ) {
+        ids.push(row.id);
+      }
+    }
+
+    if (ids.length > 0) {
+      await db.outbox.bulkDelete(ids);
+    }
+  });
 }
 
 /** Drops every queued mutation of one entity, used when the server wins. */

@@ -51,6 +51,20 @@ function iso(at?: number): string {
   return new Date(at ?? Date.now()).toISOString();
 }
 
+/** Mirrors the Dexie repository's newest-first list order. */
+function newestFirst<T extends { id: string }>(timeOf: (row: T) => string): (a: T, b: T) => number {
+  return (left, right) => {
+    const delta = Date.parse(timeOf(right)) - Date.parse(timeOf(left));
+    if (delta !== 0) {
+      return delta;
+    }
+    if (left.id === right.id) {
+      return 0;
+    }
+    return left.id < right.id ? 1 : -1;
+  };
+}
+
 export function createMemoryRepository(): MemoryRepository {
   const progressRows = new Map<string, LocalProgressRow>();
   const annotationRows = new Map<string, LocalAnnotationRow>();
@@ -68,6 +82,21 @@ export function createMemoryRepository(): MemoryRepository {
     payload: unknown,
     clientUpdatedAt: string,
   ): void {
+    if (entityType === 'reading_progress' && op === 'upsert') {
+      const existing = outbox.find(
+        (row) =>
+          row.userId === userId &&
+          row.entityType === entityType &&
+          row.entityId === entityId &&
+          row.op === 'upsert',
+      );
+      if (existing !== undefined) {
+        existing.payload = payload;
+        existing.clientUpdatedAt = clientUpdatedAt;
+        return;
+      }
+    }
+
     outbox.push({
       id: newId(),
       userId,
@@ -118,6 +147,10 @@ export function createMemoryRepository(): MemoryRepository {
     },
 
     async importProgress(userId, bookId, locator, at) {
+      const existing = progressRows.get(key(userId, bookId));
+      if (existing !== undefined) {
+        return existing;
+      }
       const clientUpdatedAt = iso(at);
       const row: LocalProgressRow = {
         userId,
@@ -133,9 +166,9 @@ export function createMemoryRepository(): MemoryRepository {
     },
 
     async listAnnotations(userId, bookId) {
-      return [...annotationRows.values()].filter(
-        (row) => row.userId === userId && row.bookId === bookId,
-      );
+      return [...annotationRows.values()]
+        .filter((row) => row.userId === userId && row.bookId === bookId)
+        .sort(newestFirst((row) => row.updatedAt));
     },
 
     async createAnnotation(userId, input) {
@@ -223,9 +256,9 @@ export function createMemoryRepository(): MemoryRepository {
     },
 
     async listBookmarks(userId, bookId) {
-      return [...bookmarkRows.values()].filter(
-        (row) => row.userId === userId && row.bookId === bookId,
-      );
+      return [...bookmarkRows.values()]
+        .filter((row) => row.userId === userId && row.bookId === bookId)
+        .sort(newestFirst((row) => row.createdAt));
     },
 
     async createBookmark(userId, input) {
@@ -300,6 +333,13 @@ export function createMemoryRepository(): MemoryRepository {
 
     async pendingCount(userId) {
       return outbox.filter((row) => row.userId === userId).length;
+    },
+
+    async hasPending(userId, entityType, entityId) {
+      return outbox.some(
+        (row) =>
+          row.userId === userId && row.entityType === entityType && row.entityId === entityId,
+      );
     },
 
     async applyServerChange(userId, change) {
@@ -473,11 +513,14 @@ export function createMemoryRepository(): MemoryRepository {
 
 /** Minimal engine used by reader tests; state can be pushed from a test. */
 export interface FakeSyncEngine extends SyncEngine {
+  /** Reasons passed to `syncNow`, in call order. */
+  readonly syncNowCalls: string[];
   setState(next: SyncState): void;
 }
 
 export function createFakeSyncEngine(initial?: Partial<SyncState>): FakeSyncEngine {
   let listener: ((state: SyncState) => void) | null = null;
+  const syncNowCalls: string[] = [];
   let state: SyncState = {
     status: 'synced',
     pending: 0,
@@ -487,11 +530,14 @@ export function createFakeSyncEngine(initial?: Partial<SyncState>): FakeSyncEngi
   };
 
   return {
+    syncNowCalls,
     start() {
       listener?.(state);
     },
     async stop() {},
-    async syncNow() {},
+    async syncNow(reason?: string) {
+      syncNowCalls.push(reason ?? '');
+    },
     getState() {
       return { ...state };
     },

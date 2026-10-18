@@ -9,11 +9,28 @@ import type { LocalRepository } from './repository';
 
 export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'error';
 
+/** Where an applied server change came from; a push echo is our own write. */
+export type AppliedSource = 'push' | 'pull' | 'stream';
+
+/** The latest server change written to the local store. */
+export interface AppliedChange {
+  entityType: SyncEntityType;
+  entityId: string;
+  /** Engine clock at application time; only meaningful as an ordering marker. */
+  at: number;
+  source: AppliedSource;
+}
+
 export interface SyncState {
   status: SyncStatus;
   pending: number;
   lastSyncedAt: number | null;
   conflicts: number;
+  /**
+   * Set when the engine applies a server change to the local store. Open views
+   * (the reader's progress) compare this to what they already followed.
+   */
+  lastApplied?: AppliedChange;
 }
 
 export interface EventSourceLike {
@@ -52,6 +69,8 @@ const SYNC_ERRORS_PREFIX = 'syncErrors:';
 interface SyncEvent {
   type: 'applied' | 'conflict';
   entityType: SyncEntityType;
+  entityId: string;
+  source?: AppliedSource;
 }
 
 export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
@@ -68,6 +87,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   let lastSyncedAt: number | null = null;
   let lastError = false;
   let conflicts = 0;
+  let lastApplied: AppliedChange | undefined;
   /** Bumped whenever pending/lastSyncedAt are written, so a stale refresh cannot win. */
   let stateEpoch = 0;
 
@@ -98,18 +118,28 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     } else {
       status = 'synced';
     }
-    return { status, pending, lastSyncedAt, conflicts };
+    return { status, pending, lastSyncedAt, conflicts, lastApplied };
   }
 
   let state = computeState();
 
   function publish(event?: SyncEvent): void {
+    if (event?.type === 'applied') {
+      lastApplied = {
+        entityType: event.entityType,
+        entityId: event.entityId,
+        at: now(),
+        source: event.source ?? 'pull',
+      };
+    }
+
     const next = computeState();
     const changed =
       next.status !== state.status ||
       next.pending !== state.pending ||
       next.lastSyncedAt !== state.lastSyncedAt ||
-      next.conflicts !== state.conflicts;
+      next.conflicts !== state.conflicts ||
+      next.lastApplied !== state.lastApplied;
     state = next;
     if (!changed && event === undefined) {
       return;
@@ -118,7 +148,11 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     for (const listener of listeners) {
       listener(state);
     }
-    onChange?.(state, event);
+    // `onChange` consumers only care about the kind of change; the entity id
+    // and source stay on the published state.
+    const notice =
+      event === undefined ? undefined : { type: event.type, entityType: event.entityType };
+    onChange?.(state, notice);
   }
 
   async function refreshPending(): Promise<void> {
@@ -191,26 +225,29 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       }));
       const result = await api.push(changes);
       const rowsByKey = groupRowsByKey(rows);
-      const acknowledged = new Set<string>();
+      // Ids alone are not enough: a merged progress row may have changed while
+      // the batch was in flight, and acknowledging it would drop the newer
+      // position. Keep the snapshot so only unchanged rows are removed.
+      const acknowledged = new Map<string, OutboxRow>();
       const skippedKeys: string[] = [];
       let rejected = 0;
 
       for (const envelope of result.applied) {
         for (const row of rowsByKey.get(syncKey(envelope.entityType, envelope.entityId)) ?? []) {
-          acknowledged.add(row.id);
+          acknowledged.set(row.id, row);
         }
       }
 
       for (const key of result.skipped) {
         skippedKeys.push(key);
         for (const row of rowsByKey.get(key) ?? []) {
-          acknowledged.add(row.id);
+          acknowledged.set(row.id, row);
         }
       }
 
       for (const rejection of result.rejected) {
         for (const row of rowsByKey.get(rejection.key) ?? []) {
-          acknowledged.add(row.id);
+          acknowledged.set(row.id, row);
         }
         rejected += 1;
       }
@@ -219,7 +256,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       // push was in flight are still queued, so last-write-wins protects them;
       // if nothing newer was written, the echo applies because no pending row
       // is left to compare against.
-      await acknowledgeOutbox(db, [...acknowledged]);
+      await acknowledgeOutbox(db, [...acknowledged.values()]);
       if (rejected > 0) {
         await recordRejected(rejected);
       }
@@ -227,7 +264,12 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       for (const envelope of result.applied) {
         const outcome = await repo.applyServerChange(userId, envelope);
         if (outcome === 'applied') {
-          publish({ type: 'applied', entityType: envelope.entityType });
+          publish({
+            type: 'applied',
+            entityType: envelope.entityType,
+            entityId: envelope.entityId,
+            source: 'push',
+          });
         }
       }
 
@@ -239,7 +281,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         }
         conflicts += 1;
         await markLocalClean(first.entityType, first.entityId);
-        publish({ type: 'conflict', entityType: first.entityType });
+        publish({ type: 'conflict', entityType: first.entityType, entityId: first.entityId });
       }
 
       if (acknowledged.size === 0) {
@@ -282,7 +324,12 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         }
         if (outcome === 'applied') {
           await refreshPending();
-          publish({ type: 'applied', entityType: change.entityType });
+          publish({
+            type: 'applied',
+            entityType: change.entityType,
+            entityId: change.entityId,
+            source: 'pull',
+          });
         }
       }
 
@@ -435,7 +482,12 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         if (stopped) {
           return;
         }
-        publish({ type: 'applied', entityType: change.entityType });
+        publish({
+          type: 'applied',
+          entityType: change.entityType,
+          entityId: change.entityId,
+          source: 'stream',
+        });
       }
     } catch {
       // A dropped or malformed frame must not tear down the stream; the

@@ -352,3 +352,15 @@ it('creates a highlight while offline and queues it for sync', async () => {
   expect(screen.queryByRole('button', { name: '用绿色划线' })).not.toBeInTheDocument();
   expect(repo.outbox.some((row) => row.entityType === 'annotation')).toBe(true);
 });
+
+it('does not toast for conflicts counted before the reader mounted', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  syncEngine = createFakeSyncEngine({ conflicts: 2 });
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+  await screen.findByRole('button', { name: '目录' });
+
+  expect(
+    screen.queryByText('此批注已在另一台设备更新，旧版本已保留在历史中'),
+  ).not.toBeInTheDocument();
+});
