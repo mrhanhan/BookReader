@@ -29,6 +29,20 @@ def make_blank_pdf(path, pages=1):
     return path
 
 
+def make_scanned_pdf(path):
+    """A page whose only content is an image, like a scanned book page."""
+    document = pymupdf.open()
+    page = document.new_page(width=612, height=792)
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 20, 20), 0)
+    pixmap.clear_with(255)
+    page.insert_image(
+        pymupdf.Rect(50, 50, 550, 750), stream=pixmap.tobytes('png')
+    )
+    document.save(path)
+    document.close()
+    return path
+
+
 def read_json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
@@ -102,6 +116,45 @@ def test_ocr_loader_returns_none_when_optional_modules_are_missing(monkeypatch):
 
     monkeypatch.setattr(cli, 'find_spec', lambda name: None)
     assert cli._load_ocr_backend('ch') is None
+
+
+def test_cli_ocr_always_requires_paddle_even_when_paddleocr_exists(
+    tmp_path, monkeypatch, capsys
+):
+    from bookr_preprocess import cli
+
+    pdf = make_text_pdf(tmp_path / 'in.pdf', ['Page one text'])
+    # paddleocr/paddlex do not depend on paddlepaddle, so paddle can be absent
+    # while their specs resolve.
+    monkeypatch.setattr(
+        cli,
+        'find_spec',
+        lambda name: None if name == 'paddle' else object(),
+    )
+    out = tmp_path / 'o.json'
+    assert main([str(pdf), '--out', str(out), '--ocr', 'always']) == 3
+    assert "pip install -e '.[ocr]'" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_cli_ocr_auto_degrades_when_paddle_is_missing(tmp_path, monkeypatch, capsys):
+    from bookr_preprocess import cli
+
+    pdf = make_scanned_pdf(tmp_path / 'scan.pdf')
+    monkeypatch.setattr(
+        cli,
+        'find_spec',
+        lambda name: None if name == 'paddle' else object(),
+    )
+    out = tmp_path / 'o.json'
+    assert main([str(pdf), '--out', str(out), '--ocr', 'auto']) == 0
+    pack = read_json(out)
+    assert pack['quality']['fallbackPages'] == [1]
+    assert any(
+        '没有可用的 OCR 后端' in warning
+        for warning in pack['quality']['warnings']
+    )
+    assert '警告' in capsys.readouterr().err
 
 
 def test_cli_ocr_auto_without_backend_still_builds(tmp_path, monkeypatch):

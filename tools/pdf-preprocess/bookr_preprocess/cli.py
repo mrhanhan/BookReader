@@ -31,7 +31,9 @@ def _configure_stream(stream) -> None:
         pass
 
 
-_OCR_MODULES = ("numpy", "PIL", "paddleocr")
+# ``paddleocr`` does not declare ``paddlepaddle`` as a dependency, so the
+# spec lookup has to cover the ``paddle`` package separately.
+_OCR_MODULES = ("numpy", "PIL", "paddleocr", "paddle")
 
 
 def _ocr_dependencies_available() -> bool:
