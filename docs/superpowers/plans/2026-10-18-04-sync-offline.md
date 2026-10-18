@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让阅读进度、划线/批注、书签与阅读设置在多设备间近实时同步，并在断网时仍可阅读最近 5 本书、记笔记，联网后无丢失地合并。
+**Goal:** 让阅读进度、划线/批注、书签与阅读设置在多设备间同步：批注/书签近实时推送，进度在打开书籍时对齐，并在断网时仍可阅读最近 5 本书、记笔记，联网后无丢失地合并。
 
 **Architecture:** 本地优先。客户端所有写操作先落 IndexedDB（Dexie）并入 outbox，再由同步引擎批量推送；服务端为每个用户维护单调递增的 `sync_changes` 变更日志，客户端凭游标增量拉取，同时在线的设备通过 SSE 在 5 秒内收到变更。冲突按实体类型处理：进度/书签/设置为「客户端更新时间 + 服务端接收顺序」的 LWW，批注逐条合并且文字冲突保留旧版到 `annotation_history`。离线缓存用 OPFS（不可用时退化为 IndexedDB）保存原书文件与重排包，保留最近 5 本 + 手动固定，其余 LRU 淘汰。
 
@@ -297,7 +297,7 @@ export interface AppendChangeInput {
 }
 export async function appendChange(tx: Transaction, input: AppendChangeInput): Promise<SyncChangeEnvelope>;
 export async function listChanges(db: Database, userId: string, since: number, limit: number): Promise<{ rows: SyncChangeEnvelope[]; hasMore: boolean }>;
-export async function maxRevision(db: Database): Promise<number>;
+export async function maxRevision(db: Database, userId: string): Promise<number>;
 export async function prunedThrough(db: Database): Promise<number>;
 export async function markPrunedThrough(tx: Transaction, revision: number): Promise<void>;
 export async function readUserSettings(db: Database, userId: string): Promise<{ payload: Record<string, unknown>; clientUpdatedAt: Date } | null>;
@@ -307,6 +307,7 @@ export async function upsertUserSettings(tx: Transaction, input: { userId: strin
 - 信封映射都在 `repo.ts` 内部：`serverUpdatedAt` 用 ISO 字符串，`payload` 原样返回。
 - `listChanges` 取 `limit + 1` 行判断 `hasMore`，按 `revision asc`。
 - `appendChange` 返回刚插入的行（`returning()`），`revision` 是 bigserial。
+- `appendChange` 先执行 `pg_advisory_xact_lock(hashtext(userId))`（事务级、可重入），把同一用户的日志写入串行化，使 revision 按提交顺序对该用户可见；`maxRevision(db, userId)` 只统计该用户的日志。
 
 - [ ] **Step 1: 写失败测试**（`apps/server/test/sync-repo.test.ts`，沿用现有 `test/helpers.ts` 的 `createTestApp`/DB 清理方式）
 
@@ -469,8 +470,8 @@ git commit -m "feat(server): append reading writes to the sync log"
 - Produces：`GET /api/sync/pull?since&limit` → `SyncPullResult`；`GET /api/sync/snapshot` → `SyncSnapshot`
 
 **行为：**
-- `pullChanges`：`cursor = maxRevision(db)`；若 `since > 0 && since < prunedThrough(db)` → `{ changes: [], cursor, hasMore: false, reset: true }`；否则 `listChanges(since, limit)`。
-- `buildSnapshot`：`progress` 为该用户全部进度（按 `updatedAt desc`）、`annotations`/`bookmarks` 仅 `deleted_at is null`，`settings` 为 `readUserSettings` 的 payload 或 null，`cursor = maxRevision`。
+- `pullChanges`：返回本页最后一条变更的 `revision`（空页或 reset 时返回 `since`）；若 `since > 0 && since < prunedThrough(db)` → `{ changes: [], cursor: since, hasMore: false, reset: true }`；否则按 `revision asc` 读 `listChanges(since, limit)`。带 `hasMore` 的游标不能用全局最大 revision，否则会跳过本页之后的变更。
+- `buildSnapshot`：`progress` 为该用户全部进度（按 `updatedAt desc`）、`annotations`/`bookmarks` 仅 `deleted_at is null`，`settings` 为 `readUserSettings` 的 payload 或 null，`cursor = max(maxRevision(db, userId), prunedThrough(db))`（用户日志头与全局清理水位的较大者，避免用户日志低于水位时反复 reset）。
 - 两个端点都要求登录；只返回调用者自己的数据。
 
 - [ ] **Step 1: 写失败测试**
@@ -544,7 +545,7 @@ export async function applyPush(deps: AppDeps, actor: ReadingActor, changes: Syn
 - `bookmark`：同批注（无历史）。
 - `reader_settings`：LWW 覆盖 `user_settings` 行并追加日志。
 
-**端点**：`POST /api/sync/push`，body `syncPushRequestSchema`；`deviceId` 取 `request.user.deviceId`。返回 `applied`（服务端权威对象）、`skipped`、`rejected`（`{ key, reason }`）、`cursor = maxRevision`。
+**端点**：`POST /api/sync/push`，body `syncPushRequestSchema`；`deviceId` 取 `request.user.deviceId`。返回 `applied`（服务端权威对象）、`skipped`、`rejected`（`{ key, reason }`）、`cursor = 本批最后一条 applied 的 revision`（没有 applied 时为 0；这是回执，不是 pull 游标）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -817,11 +818,13 @@ export function createRepository(db: BookrDb): LocalRepository;
 ```
 
 **Dexie 版本 1 的键与索引：**
-`progress: 'userId, bookId, [userId+bookId], updatedAt'`（主键 `[userId+bookId]`）、
+`progress: '[userId+bookId], userId, bookId, updatedAt'`（Dexie 以声明中的第一项为主键，主键就是 `[userId+bookId]`；若把 `userId` 放前面会跨书覆盖进度）、
 `annotations: 'id, userId, bookId, [userId+bookId], dirty'`、
 `bookmarks: 'id, userId, bookId, [userId+bookId], dirty'`、
 `settings: 'userId'`、`outbox: 'id, userId, [userId+nextAttemptAt]'`、`meta: 'key'`、
-`offlineBooks: 'bookId, userId, pinned, lastReadAt'`、`shelf: 'id, userId, updatedAt'`。
+`offlineBooks: '[userId+bookId], userId, bookId, pinned, lastReadAt'`、`shelf: '[userId+id], userId, id'`。
+
+缓存表在后续版本重键：Dexie 不能就地修改主键，因此版本 2/3 以删表重建把 `offlineBooks` 迁到 `[userId+bookId]`，版本 4/5 同样把 `shelf` 迁到 `[userId+id]`（缓存数据可重建，不会触碰 outbox 与阅读数据）。
 
 **规则：**
 - 每次本地写与 outbox 入队在同一个 `db.transaction('rw', ...)` 内完成；`clientUpdatedAt` 用 `new Date(at ?? Date.now()).toISOString()`，实体 id 用 `newId()`。
@@ -1033,6 +1036,7 @@ git commit -m "feat(web): sync provider and status indicator"
 - `useReaderProgress`：本地落库与 outbox 入队走 `repo.saveProgress`；不再直接调用 HTTP。25 秒/离页时只调用 `requestSync()`，由同步引擎推送；`saveState` 由 `sync` 状态推导（`saved`/`saving`/`error` 映射）。
 - `ReaderPage`：
   - 进度、批注、书签的读取改走 `repo`；打开书籍时与统一 URL 获取并行。
+  - 进度在**打开书籍时对齐一次**：在线最多等待首轮 pull 1.5 秒后再读本地位置，离线或超时直接使用本地记录；阅读过程中不跟随远端进度实时跳转。批注与书签仍随 SSE 实时更新。
   - 新建/编辑/删除批注与书签走 `repo`，成功后 `invalidateQueries` 并 `requestSync()`。
   - 进度与本地库不存在的旧 localStorage 数据：首次读取时迁移进 Dexie（`dirty: false`，不产生 outbox）。
   - 同步冲突：`reader` 挂载期间监听 `sync` 的 `conflict` 事件，`showToast('此批注已在另一台设备更新，旧版本已保留在历史中')`。
@@ -1108,7 +1112,7 @@ export function createCacheManager(deps: { store: CachedFileStore; db: BookrDb; 
 ```
 
 **规则：**
-- key 为 `${userId}/${bookId}/${kind}`；`offlineBooks` 行按 `bookId` 记录 `bytes`（累加 book+reflow 大小）、`lastReadAt`、`pinned`、`cachedAt`。
+- key 为 `${userId}/${bookId}/${kind}`；`offlineBooks` 行按 `[userId+bookId]` 记录 `bytes`（累加 book+reflow 大小）、`lastReadAt`、`pinned`、`cachedAt`。
 - LRU：未固定且不是 `keepBookId` 的书按 `lastReadAt` 升序淘汰，直到只剩 `OFFLINE_RECENT_LIMIT` 本；固定书永不淘汰。
 - `remove`/`clearUnpinned` 只删文件与 `offlineBooks` 行，**绝不**碰 `annotations`/`bookmarks`/`progress`/`outbox`。
 - `usage.quota` 取 `navigator.storage.estimate().quota`（不可用时 null）。

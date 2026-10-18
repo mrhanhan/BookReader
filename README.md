@@ -362,7 +362,53 @@ pnpm --filter @bookr/web e2e
 PDF 的阅读进度、批注与书签接口同时接受 `pdf` 与 `reflow` 两种 locator，因此切换模式
 不会丢失位置或标注。
 
-## 14. 本地 PDF 预处理工具
+## 14. 同步与离线
+
+阅读数据采用本地优先模型：进度、批注、书签与阅读设置先写入浏览器 IndexedDB（Dexie）并进入 outbox，由同步引擎在网络可用时批量推送；服务端为每个用户维护单调递增的 `sync_changes` 变更日志，设备凭游标增量拉取，在线设备同时通过 SSE 接收变更（批注/书签通常 5 秒内到达另一台设备）。
+
+**同步范围**：仅四类每用户实体——阅读进度、批注、书签、阅读设置。图书元数据与分类是书架级共享数据、以服务端为权威，不进入变更日志；离线时书架从 IndexedDB 中的书架快照读取。
+
+**端点**
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/sync/push` | 推送最多 100 条本地变更；返回 `applied`、`skipped`、`rejected` 与本批回执 `cursor` |
+| `GET` | `/api/sync/pull?since&limit` | 按游标增量拉取变更（默认 200 条，上限 500）；游标过旧时返回 `reset` |
+| `GET` | `/api/sync/snapshot` | 返回该用户全部在线数据与快照游标；新设备首次登录或 `reset` 后使用 |
+| `POST` | `/api/sync/stream-token` | 签发 60 秒有效的流令牌（SSE 无法携带 Authorization 头） |
+| `GET` | `/api/sync/stream?token&since` | SSE 变更流；先补发游标之后的历史，再推送实时变更 |
+| `GET` | `/api/devices` | 列出当前账号的已登录设备 |
+| `PATCH` | `/api/devices/:id` | 重命名设备（`name`，传 `null` 清除） |
+| `DELETE` | `/api/devices/:id` | 撤销设备：其刷新令牌失效，绑定该设备的访问令牌被拒绝 |
+
+**游标语义**
+
+- `pull` 返回本页最后一条变更的 `revision`；空页与 `reset` 返回请求里的 `since`。客户端只有在 `hasMore: false` 的最后一页之后才推进到更靠后的位置，避免跳过本页之后的变更。
+- `snapshot.cursor = max(该用户日志最大 revision, 全局清理水位)`；设备用快照重建后从这里继续拉取。新设备首次登录没有本地游标，会先拉一次快照。
+- `push.cursor` 只是本批回执（没有应用任何变更时为 0），不是 pull 游标。
+
+**冲突规则**
+
+- 进度、书签、阅读设置：按「客户端更新时间 + 服务端接收顺序」做 LWW。客户端时钟超前服务端 5 分钟以上时改用服务端接收时间，避免一台设备的错误时钟永久压制后续修改。
+- 批注：逐条合并，不整表覆盖；编辑笔记时旧文字写入 `annotation_history`（含设备与时间），不会丢失。
+- 删除：批注/书签软删除并保留墓碑，变更日志与墓碑在 90 天后由每日清理任务移除；超过 90 天未同步的设备会收到 `reset` 并重新拉快照。
+- 同一用户的日志写入在事务内取 `pg_advisory_xact_lock(hashtext(userId))`，使 revision 按提交顺序对该用户可见，游标不会跨过尚未提交的变更。
+
+**实时流**
+
+- SSE 连接使用 60 秒流令牌；断线后按最后游标重连并补齐缺口，客户端按 1/2/5/15/30 秒退避重试；服务端每 25 秒发送 `: ping` 心跳。游标早于保留窗口时服务端发送 `reset`，客户端改用快照重建。
+- 本地写入后约 2 秒触发一次推送；`online`、页面重新可见与 60 秒心跳也会触发同步。
+
+**离线阅读**
+
+- 每台设备保留最近阅读的 5 本未固定书籍，手动固定的书不受淘汰限制；缓存文件优先写入 OPFS，不可用时退化为 IndexedDB（再退回内存）。
+- 清理缓存（单本移出或批量清理未固定书籍）只删除书籍文件与缓存记录，绝不影响 `outbox`、进度、批注、书签等未同步数据。
+- 离线冷启动时使用 localStorage 中缓存的 `bookr.me` 资料恢复会话，只有服务端明确返回 401/403 才登出；网络错误或服务不可达不会清空令牌，已缓存的书仍可打开。
+- 阅读进度在**打开书籍时对齐**：在线时最多等待首轮 pull 1.5 秒再读取本地位置，离线或超时直接使用本地记录；阅读过程中不跟随远端进度。批注与书签仍随 SSE 实时更新。
+
+**设置页**：`/settings` 汇总同步状态、待同步变更数、上次同步时间与「立即同步」，展示离线缓存用量及每本书的固定/移出操作，并列出已登录设备（可重命名或撤销）。
+
+## 15. 本地 PDF 预处理工具
 
 源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
 [`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
@@ -399,7 +445,7 @@ bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --repo
 服务端会校验包内 `source.sha256`、schema 版本与大小（≤32 MiB）；每本书最多一个包，
 重排包不计入书籍配额。
 
-## 15. 桌面端（Tauri 2）
+## 16. 桌面端（Tauri 2）
 
 源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
 
@@ -418,7 +464,7 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
-## 16. Android 端（Capacitor 7）
+## 17. Android 端（Capacitor 7）
 
 源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
 `apps/mobile/README.md`。
@@ -437,13 +483,13 @@ WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost`
 `capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
 预签名文件地址都必须是设备可达的 HTTPS 地址。
 
-## 17. 已知范围
+## 18. 已知范围
 
 - 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
   均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
 - 原生端依赖服务端可访问：部署在局域网或本机时，手机/另一台电脑需要能解析并访问
   `VITE_API_BASE_URL` 与 `S3_PUBLIC_ENDPOINT`。
-- 阅读进度目前走直连 API 保存（Plan 4 替换为本地优先同步）。
+- 阅读数据（进度、批注、书签、阅读设置）走本地优先同步；图书元数据与分类以服务端为权威，不进同步日志，离线时由书架快照提供只读元数据。
 - 重排模式依赖本地生成的重排包：服务器不做 OCR 或版面分析，没有上传包时只能使用
   原版 PDF。
 - 重排包是纯文本 JSON（≤32 MiB），不内嵌图片；图片、表格、公式均以源页裁绘显示。
