@@ -1836,7 +1836,7 @@ Expected: FAIL — missing labels/behavior.
 - [ ] **Step 3: Implement the controls**
 
 - `SettingsPanel` uses labelled controls: `缩放` (select: 适应宽度/适应页面/75%/100%/125%/150%), `页面布局` (连续/单页/双页), `自动裁边` checkbox, four `裁边上边/右边/下边/左边` sliders (0–10%), `主题` buttons with names `纸白主题`/`米黄主题`/`护眼绿主题`/`深色主题`, `亮度` range, EPUB `字体` (衬线/无衬线), `字号`, `行距`, `页边距`, `排版` (分页/滚动), `分栏` (单栏/双栏). Changes merge into `ReaderSettings`, persist, and call `engine.setSettings`.
-- Bottom bar slider: `aria-label="阅读进度"`, PDF `min=1 max=pageCount value=currentPage`, EPUB `min=0 max=100`. On change, PDF calls `engine.goTo(pageLocator)`; EPUB calls `engine.goToPercent(value/100)`. Do not save on every slider tick; the engine's `relocated` drives autosave.
+- Bottom bar slider: `aria-label="阅读进度"`, `min=0 max=100` for both engines. On change call `engine.goToPercent(value/100)` (PDF page jumps use the separate `页码` input). Do not save on every slider tick; the engine's `relocated` drives autosave.
 - PDF page jump: a number input labelled `页码` plus a `跳转` button; Enter in the input also jumps. Clamp to `1..pageCount` and call `engine.goTo({ kind:'pdf', page, percent: percentForPage(page, pageCount) })`.
 - `全屏` calls `document.documentElement.requestFullscreen()` and `document.exitFullscreen()`; ignore absence/rejection.
 - Keyboard handler on `window` (ignores `input`, `textarea`, `select`, `[contenteditable]`): ArrowRight/PageDown/Space → next; ArrowLeft/PageUp → previous; `t` toggles TOC; `b` opens bookmark dialog; `f` toggles fullscreen; Escape closes panels/menu.
