@@ -6,6 +6,13 @@ import type { APIRequestContext, Page, Response } from '@playwright/test';
 const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'admin';
 const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? 'Admin-Test-Password-123';
 
+/**
+ * Public entry point of the disposable stack. Contexts created by hand with
+ * `browser.newContext()` do not inherit `use.baseURL`, so multi-device tests
+ * pass this value explicitly.
+ */
+export const E2E_BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8180';
+
 export const READER_PASSWORD = 'e2e-reader-password';
 const READER_DISPLAY_NAME = '阅读端到端';
 const READER_URL = /\/books\/[^/]+\/read$/;
@@ -28,6 +35,56 @@ export async function adminAuth(
   return { authorization: `Bearer ${accessToken}` };
 }
 
+interface ShelfBookRow {
+  id: string;
+  uploadedBy: { displayName: string };
+}
+
+/**
+ * Reads every shelf page before deleting anything: removing rows mid-walk
+ * would shift the pagination and could leave a dedupe-blocking book behind.
+ */
+async function readWholeShelf(
+  request: APIRequestContext,
+  headers: AuthHeaders,
+): Promise<ShelfBookRow[]> {
+  const items: ShelfBookRow[] = [];
+  const pageSize = 100;
+  let total = 0;
+  for (let pageNumber = 1; pageNumber <= 50; pageNumber += 1) {
+    const shelf = await request.get(`/api/books?page=${pageNumber}&pageSize=${pageSize}`, {
+      headers,
+    });
+    expect(shelf.status(), 'list shelf for cleanup').toBe(200);
+    const body = (await shelf.json()) as { items: ShelfBookRow[]; total: number };
+    total = body.total;
+    items.push(...body.items);
+    if (body.items.length === 0 || items.length >= total) break;
+  }
+  expect(items.length, 'read the whole shelf for cleanup').toBe(total);
+  return items;
+}
+
+async function deleteReaderBooks(
+  request: APIRequestContext,
+  headers: AuthHeaders,
+): Promise<void> {
+  for (const item of await readWholeShelf(request, headers)) {
+    if (item.uploadedBy.displayName !== READER_DISPLAY_NAME) continue;
+    const cleaned = await request.delete(`/api/books/${item.id}`, { headers });
+    expect(cleaned.status(), 'trash leftover E2E book').toBe(204);
+  }
+}
+
+/**
+ * Soft-deletes every book uploaded by the E2E reader account. Sync tests call
+ * this in `afterEach` so an interrupted run cannot leave a book that blocks
+ * the next upload (sha256 dedupe spans the whole library).
+ */
+export async function deleteE2EBooks(request: APIRequestContext): Promise<void> {
+  await deleteReaderBooks(request, await adminAuth(request));
+}
+
 /**
  * Mints an invite as the administrator and registers a fresh reader. Every
  * test gets its own identity, so runs never depend on state another test left
@@ -39,31 +96,7 @@ export async function registerFreshReader(
   request: APIRequestContext,
 ): Promise<FreshReader> {
   const headers = await adminAuth(request);
-
-  // Walk every page before deleting: removing rows mid-walk would shift the
-  // pagination and could leave a dedupe-blocking book behind.
-  const leftovers: Array<{ id: string; uploadedBy: { displayName: string } }> = [];
-  const pageSize = 100;
-  let total = 0;
-  for (let pageNumber = 1; pageNumber <= 50; pageNumber += 1) {
-    const shelf = await request.get(`/api/books?page=${pageNumber}&pageSize=${pageSize}`, {
-      headers,
-    });
-    expect(shelf.status(), 'list shelf for cleanup').toBe(200);
-    const body = (await shelf.json()) as {
-      items: Array<{ id: string; uploadedBy: { displayName: string } }>;
-      total: number;
-    };
-    total = body.total;
-    leftovers.push(...body.items);
-    if (body.items.length === 0 || leftovers.length >= total) break;
-  }
-  expect(leftovers.length, 'read the whole shelf for cleanup').toBe(total);
-  for (const item of leftovers) {
-    if (item.uploadedBy.displayName !== READER_DISPLAY_NAME) continue;
-    const cleaned = await request.delete(`/api/books/${item.id}`, { headers });
-    expect(cleaned.status(), 'trash leftover E2E book').toBe(204);
-  }
+  await deleteReaderBooks(request, headers);
 
   const invite = await request.post('/api/admin/invites', {
     headers,
@@ -81,6 +114,23 @@ export async function registerFreshReader(
   await page.getByRole('button', { name: '注册' }).click();
   await expect(page).toHaveURL('/');
   return { username };
+}
+
+/**
+ * Signs an already-registered account in through the real login form. A second
+ * browser context has empty storage, so the multi-device tests log in again
+ * with the credentials the first context registered.
+ */
+export async function loginAs(
+  page: Page,
+  username: string,
+  password: string = READER_PASSWORD,
+): Promise<void> {
+  await page.goto('/login');
+  await page.getByLabel('用户名').fill(username);
+  await page.getByLabel('密码').fill(password);
+  await page.getByRole('button', { name: '登录' }).click();
+  await expect(page).toHaveURL('/');
 }
 
 interface DuplicateBookBody {
