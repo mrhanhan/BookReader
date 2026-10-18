@@ -6,6 +6,7 @@ CREATE TABLE "jobs" (
 	"attempts" integer DEFAULT 0 NOT NULL,
 	"max_attempts" integer DEFAULT 3 NOT NULL,
 	"run_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"locked_at" timestamp with time zone,
 	"last_error" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL

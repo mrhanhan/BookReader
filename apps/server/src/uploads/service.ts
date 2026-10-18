@@ -13,6 +13,7 @@ import { toBookDto } from '../books/dto';
 import { books, uploadSessions, users, type BookRow } from '../db/schema';
 import { AppError } from '../errors';
 import { getLibrary } from '../library/service';
+import { StorageObjectNotFoundError } from '../storage/types';
 import { magicBytesNeeded, sniffMagic } from './magic';
 
 export type CreateUploadInput = z.infer<typeof createUploadSchema>;
@@ -199,10 +200,57 @@ export async function createUpload(
   return { uploadId, putUrl, expiresAt: expiresAt.toISOString() };
 }
 
+/** A session row loaded from Postgres. */
+type UploadSessionRow = typeof uploadSessions.$inferSelect;
+
+/**
+ * Checks the stored object's size and signature. Returns false for user
+ * errors (missing object, wrong size, bad magic); storage transport failures
+ * propagate so the caller can retry without burning the session.
+ */
+async function storedObjectMatches(
+  deps: AppDeps,
+  session: Pick<UploadSessionRow, 'objectKey' | 'size' | 'format'>,
+): Promise<boolean> {
+  const stored = await deps.storage.head(session.objectKey);
+  if (!stored) {
+    return false;
+  }
+  if (
+    stored.size !== session.size ||
+    stored.size > MAX_UPLOAD_BYTES ||
+    session.size > MAX_UPLOAD_BYTES
+  ) {
+    return false;
+  }
+
+  const needed = magicBytesNeeded(session.format);
+
+  let head: Buffer;
+  try {
+    head = await deps.storage.readFirstBytes(session.objectKey, needed);
+  } catch (error) {
+    if (error instanceof StorageObjectNotFoundError) {
+      return false;
+    }
+    throw error;
+  }
+
+  // A short object simply fails the signature check; a short read caused by a
+  // storage fault also fails it, which is safe.
+  return sniffMagic(head, session.format);
+}
+
+type CompletionOutcome =
+  | { kind: 'completed'; book: BookRow }
+  | { kind: 'invalid'; objectKey: string };
+
 /**
  * Validates the uploaded object and turns the session into a book row.
- * Every failure marks the session failed and removes the object so the same
- * content can be retried (and the quota is released).
+ * The session row is locked from the status check until the book insert
+ * commits, so cleanup cannot expire it (and delete its object) in between.
+ * User-caused failures mark the session failed and remove the object so the
+ * same content can be retried and the quota is released.
  */
 export async function completeUpload(
   deps: AppDeps,
@@ -210,49 +258,45 @@ export async function completeUpload(
   uploadId: string,
 ): Promise<BookDto> {
   const now = deps.clock.now();
-  const [session] = await deps.db
-    .select()
-    .from(uploadSessions)
-    .where(and(eq(uploadSessions.id, uploadId), eq(uploadSessions.userId, userId)))
-    .limit(1);
-
-  // Sessions of other members are indistinguishable from missing ones.
-  if (!session) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
-  if (session.status !== 'created' || session.expiresAt.getTime() <= now.getTime()) {
-    throw new AppError(409, ERROR_CODES.CONFLICT);
-  }
-
-  const stored = await deps.storage.head(session.objectKey);
-  let valid =
-    stored !== null &&
-    stored.size === session.size &&
-    stored.size <= MAX_UPLOAD_BYTES &&
-    session.size <= MAX_UPLOAD_BYTES;
-
-  if (valid) {
-    try {
-      const head = await deps.storage.readFirstBytes(
-        session.objectKey,
-        magicBytesNeeded(session.format),
-      );
-      valid = sniffMagic(head, session.format);
-    } catch {
-      valid = false;
-    }
-  }
-
-  if (!valid) {
-    await failSession(deps, session);
-    throw new AppError(422, ERROR_CODES.INVALID_FILE);
-  }
-
   const library = await getLibrary(deps);
+  let lockedSession: UploadSessionRow | undefined;
 
-  let book: BookRow;
+  let outcome: CompletionOutcome;
   try {
-    book = await deps.db.transaction(async (tx) => {
+    outcome = await deps.db.transaction(async (tx) => {
+      const [session] = await tx
+        .select()
+        .from(uploadSessions)
+        .where(and(eq(uploadSessions.id, uploadId), eq(uploadSessions.userId, userId)))
+        .limit(1)
+        .for('update');
+
+      // Sessions of other members are indistinguishable from missing ones.
+      if (!session) {
+        throw new AppError(404, ERROR_CODES.NOT_FOUND);
+      }
+      if (session.status !== 'created') {
+        throw new AppError(409, ERROR_CODES.CONFLICT);
+      }
+      lockedSession = session;
+
+      if (session.expiresAt.getTime() <= now.getTime()) {
+        throw new AppError(409, ERROR_CODES.CONFLICT);
+      }
+
+      if (!(await storedObjectMatches(deps, session))) {
+        const failed = await tx
+          .update(uploadSessions)
+          .set({ status: 'failed' })
+          .where(and(eq(uploadSessions.id, session.id), eq(uploadSessions.status, 'created')))
+          .returning({ objectKey: uploadSessions.objectKey });
+
+        if (failed.length !== 1) {
+          throw new Error('Upload session changed while holding its lock');
+        }
+        return { kind: 'invalid' as const, objectKey: failed[0]!.objectKey };
+      }
+
       const [inserted] = await tx
         .insert(books)
         .values({
@@ -275,28 +319,33 @@ export async function completeUpload(
         throw new Error('The book row could not be inserted');
       }
 
-      await tx
+      const completed = await tx
         .update(uploadSessions)
         .set({ status: 'completed', completedAt: now })
-        .where(and(eq(uploadSessions.id, session.id), eq(uploadSessions.status, 'created')));
+        .where(and(eq(uploadSessions.id, session.id), eq(uploadSessions.status, 'created')))
+        .returning({ id: uploadSessions.id });
 
-      return inserted;
+      if (completed.length !== 1) {
+        throw new Error('Upload session changed while holding its lock');
+      }
+
+      return { kind: 'completed' as const, book: inserted };
     });
   } catch (error) {
-    if (isUniqueViolation(error)) {
+    if (isUniqueViolation(error) && lockedSession) {
       const [existing] = await deps.db
         .select({ id: books.id })
         .from(books)
         .where(
           and(
             eq(books.libraryId, library.id),
-            eq(books.sha256, session.sha256),
+            eq(books.sha256, lockedSession.sha256),
             isNull(books.deletedAt),
           ),
         )
         .limit(1);
 
-      await failSession(deps, session);
+      await failSession(deps, lockedSession);
       throw new AppError(
         409,
         ERROR_CODES.DUPLICATE_BOOK,
@@ -306,8 +355,14 @@ export async function completeUpload(
     throw error;
   }
 
+  if (outcome.kind === 'invalid') {
+    await deps.storage.delete(outcome.objectKey).catch(() => undefined);
+    throw new AppError(422, ERROR_CODES.INVALID_FILE);
+  }
+
+  const book = outcome.book;
   await deps.jobs.enqueue({ type: 'metadata', bookId: book.id });
-  if (session.format === 'mobi' || session.format === 'azw3') {
+  if (book.format === 'mobi' || book.format === 'azw3') {
     await deps.jobs.enqueue({ type: 'convert', bookId: book.id });
   }
 

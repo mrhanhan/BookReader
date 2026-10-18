@@ -172,6 +172,8 @@ export const jobs = pgTable(
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(3),
     runAt: timestamp('run_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When a worker claimed the row; stale leases are reclaimed. */
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
     lastError: text('last_error'),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

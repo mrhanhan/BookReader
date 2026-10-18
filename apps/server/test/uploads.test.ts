@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { expect, it } from 'vitest';
-import { uploadSessions } from '../src/db/schema';
+import { uploadSessions, books } from '../src/db/schema';
 import {
   authHeader,
   buildTestApp,
@@ -210,5 +210,107 @@ it('rejects a completion that races with an already completed upload', async () 
     .from(uploadSessions)
     .where(eq(uploadSessions.id, second.uploadId));
   expect(secondSession?.status).toBe('failed');
+});
+
+it('hides another member\'s upload session', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member', 'upload_owner');
+  const other = await seedUser('member', 'upload_other');
+  const created = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/uploads',
+      headers: await authHeader(owner),
+      payload: {
+        filename: 'private.pdf',
+        size: PDF_HEAD.length,
+        sha256: sha('7'),
+        contentType: 'application/pdf',
+      },
+    })
+  ).json();
+  const key = await findSessionObjectKey(created.uploadId);
+  await fakeStorage.putObject(key, PDF_HEAD, 'application/pdf');
+
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/uploads/${created.uploadId}/complete`,
+    headers: await authHeader(other),
+  });
+  expect(res.statusCode).toBe(404);
+  expect(res.json().error.code).toBe('NOT_FOUND');
+  expect(await fakeStorage.head(key)).not.toBeNull();
+});
+
+it('refuses to complete an expired session', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const created = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/uploads',
+      headers: await authHeader(user),
+      payload: {
+        filename: 'late.pdf',
+        size: PDF_HEAD.length,
+        sha256: sha('8'),
+        contentType: 'application/pdf',
+      },
+    })
+  ).json();
+  const key = await findSessionObjectKey(created.uploadId);
+  await fakeStorage.putObject(key, PDF_HEAD, 'application/pdf');
+  await expireSession(created.uploadId, 25 * 3600 * 1000);
+
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/uploads/${created.uploadId}/complete`,
+    headers: await authHeader(user),
+  });
+  expect(res.statusCode).toBe(409);
+  expect(await testDb.select().from(books)).toHaveLength(0);
+});
+
+it('rejects a stored size that differs from the declared size', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const created = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/uploads',
+      headers: await authHeader(user),
+      payload: {
+        filename: 'truncated.pdf',
+        size: PDF_HEAD.length,
+        sha256: sha('6'),
+        contentType: 'application/pdf',
+      },
+    })
+  ).json();
+  const key = await findSessionObjectKey(created.uploadId);
+  await fakeStorage.putObject(
+    key,
+    Buffer.concat([PDF_HEAD, Buffer.from('trailing bytes')]),
+    'application/pdf',
+  );
+
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/uploads/${created.uploadId}/complete`,
+    headers: await authHeader(user),
+  });
+  expect(res.statusCode).toBe(422);
+  expect(res.json().error.code).toBe('INVALID_FILE');
+  expect(await fakeStorage.head(key)).toBeNull();
+  expect(await testDb.select().from(books)).toHaveLength(0);
+
+  const [session] = await testDb
+    .select({ status: uploadSessions.status })
+    .from(uploadSessions)
+    .where(eq(uploadSessions.id, created.uploadId));
+  expect(session?.status).toBe('failed');
 });
 

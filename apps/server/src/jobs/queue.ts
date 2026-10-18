@@ -1,4 +1,4 @@
-import { and, asc, eq, lte } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, lte, or } from 'drizzle-orm';
 import type { Clock } from '../app';
 import type { Database } from '../db/client';
 import { jobs } from '../db/schema';
@@ -9,6 +9,13 @@ const RETRY_BASE_MS = 60_000;
 
 /** Upper bound so a long-lived failure does not park a job for days. */
 const RETRY_MAX_MS = 60 * 60 * 1000;
+
+/**
+ * How long a worker may hold a job before another worker may steal it. A
+ * crashed worker cannot release its claim, so stale `running` rows are
+ * returned to the pending pool on the next claim.
+ */
+const JOB_LEASE_MS = 5 * 60 * 1000;
 
 function backoffMs(attempts: number): number {
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), RETRY_MAX_MS);
@@ -35,6 +42,20 @@ export class PostgresJobQueue implements JobQueue {
   async claimNext(): Promise<ClaimedJob | null> {
     const now = this.clock.now();
     return this.db.transaction(async (tx) => {
+      // Reclaim jobs whose worker died while holding the lease.
+      await tx
+        .update(jobs)
+        .set({ status: 'pending', lockedAt: null, updatedAt: now })
+        .where(
+          and(
+            eq(jobs.status, 'running'),
+            or(
+              isNull(jobs.lockedAt),
+              lt(jobs.lockedAt, new Date(now.getTime() - JOB_LEASE_MS)),
+            ),
+          ),
+        );
+
       const [row] = await tx
         .select({
           id: jobs.id,
@@ -55,7 +76,7 @@ export class PostgresJobQueue implements JobQueue {
 
       await tx
         .update(jobs)
-        .set({ status: 'running', updatedAt: now })
+        .set({ status: 'running', lockedAt: now, updatedAt: now })
         .where(eq(jobs.id, row.id));
 
       return {
@@ -71,7 +92,7 @@ export class PostgresJobQueue implements JobQueue {
   async complete(jobId: string): Promise<void> {
     await this.db
       .update(jobs)
-      .set({ status: 'done', lastError: null, updatedAt: this.clock.now() })
+      .set({ status: 'done', lockedAt: null, lastError: null, updatedAt: this.clock.now() })
       .where(eq(jobs.id, jobId));
   }
 
@@ -98,6 +119,7 @@ export class PostgresJobQueue implements JobQueue {
           lastError: error.slice(0, 2000),
           status: exhausted ? 'failed' : 'pending',
           runAt: exhausted ? now : new Date(now.getTime() + backoffMs(attempts)),
+          lockedAt: null,
           updatedAt: now,
         })
         .where(eq(jobs.id, jobId));

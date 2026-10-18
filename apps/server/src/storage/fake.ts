@@ -1,4 +1,4 @@
-import type { StorageService, StoredObjectInfo } from './types';
+import { StorageObjectNotFoundError, type StorageService, type StoredObjectInfo } from './types';
 
 /** In-memory storage used by tests and the initial server skeleton. */
 export class FakeStorage implements StorageService {
@@ -45,7 +45,7 @@ export class FakeStorage implements StorageService {
   private requireObject(key: string): Buffer {
     const body = this.objects.get(key);
     if (!body) {
-      throw new Error(`Object not found: ${key}`);
+      throw new StorageObjectNotFoundError(key);
     }
     return body;
   }

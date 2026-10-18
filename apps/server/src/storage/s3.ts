@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { AppConfig } from '../config';
-import type { StorageService, StoredObjectInfo } from './types';
+import { StorageObjectNotFoundError, type StorageService, type StoredObjectInfo } from './types';
 
 function isNotFound(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
@@ -80,13 +80,21 @@ export class S3Storage implements StorageService {
   }
 
   async readFirstBytes(key: string, length: number): Promise<Buffer> {
-    const response = await this.client.send(
-      new GetObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Range: `bytes=0-${Math.max(0, length - 1)}`,
-      }),
-    );
+    let response;
+    try {
+      response = await this.client.send(
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Range: `bytes=0-${Math.max(0, length - 1)}`,
+        }),
+      );
+    } catch (error) {
+      if (isNotFound(error)) {
+        throw new StorageObjectNotFoundError(key, { cause: error });
+      }
+      throw error;
+    }
     const body = response.Body as { transformToByteArray(): Promise<Uint8Array> } | undefined;
     if (!body) {
       throw new Error('S3 returned an empty body');
@@ -95,9 +103,17 @@ export class S3Storage implements StorageService {
   }
 
   async getObject(key: string): Promise<Buffer> {
-    const response = await this.client.send(
-      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
-    );
+    let response;
+    try {
+      response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+    } catch (error) {
+      if (isNotFound(error)) {
+        throw new StorageObjectNotFoundError(key, { cause: error });
+      }
+      throw error;
+    }
     const body = response.Body as { transformToByteArray(): Promise<Uint8Array> } | undefined;
     if (!body) {
       throw new Error('S3 returned an empty body');

@@ -1,5 +1,5 @@
 {
-  "id": "42bf06ee-768e-405b-9f8f-6ddf165052b3",
+  "id": "9d42f265-760d-401d-9514-8d09d255dbdb",
   "prevId": "2843cc22-d0df-4453-9240-d800542e9d94",
   "version": "7",
   "dialect": "postgresql",
@@ -619,6 +619,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "locked_at": {
+          "name": "locked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "last_error": {
           "name": "last_error",
