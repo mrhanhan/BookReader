@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { hashPassword, verifyPassword } from '../src/auth/password';
 import { makeRequireAdmin, makeRequireAuth } from '../src/auth/guards';
 import { hashRefreshToken, newRefreshToken, signAccessToken, verifyAccessToken } from '../src/auth/tokens';
-import { buildTestDeps, seedUser } from './helpers';
+import { buildTestDeps, resetDb, seedUser } from './helpers';
 
 it('hashes passwords with argon2id and verifies them', async () => {
   const hash = await hashPassword('correct horse battery');
@@ -28,6 +28,7 @@ it('creates 30-day refresh tokens stored as sha256 hashes', () => {
   expect(days).toBeGreaterThan(29.9);
 });
 it('guards routes: 401 without a token, 403 for a member on an admin route', async () => {
+  await resetDb();
   const deps = await buildTestDeps();
   const app = Fastify();
   app.get('/auth', { preHandler: makeRequireAuth(deps) }, async () => ({ ok: true }));
