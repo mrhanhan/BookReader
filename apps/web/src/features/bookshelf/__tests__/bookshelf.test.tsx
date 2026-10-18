@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
+import type { BookDto } from '@bookr/shared';
 import { routes } from '../../../app/router';
 import { setTokens } from '../../../api/client';
 import { renderWithProviders, server } from '../../../../test/setup';
@@ -59,4 +60,52 @@ it('shows the remaining retention days from the deletion time', async () => {
   renderWithProviders(<RouterProvider router={router} />);
   expect(await screen.findByText('设计数据密集型应用')).toBeInTheDocument();
   expect(screen.getByText('剩余 20 天')).toBeInTheDocument();
+});
+it('requests the next page and renders its books', async () => {
+  const pageBook = (page: number): BookDto => ({
+    id: `page-book-${page}`,
+    title: page === 1 ? '第一页的书' : '第二页的书',
+    author: '作者',
+    description: null,
+    format: 'epub',
+    size: 1024,
+    coverUrl: null,
+    status: 'unread',
+    progressPercent: 0,
+    categories: [],
+    uploadedBy: { id: 'user-other', displayName: '林舟' },
+    conversionStatus: 'none',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    deletedAt: null,
+  });
+
+  let lastUrl = '';
+  server.use(
+    http.get('/api/books', ({ request }) => {
+      lastUrl = request.url;
+      const page = Number(new URL(request.url).searchParams.get('page') ?? 1);
+      return HttpResponse.json({ items: [pageBook(page)], total: 30, page, pageSize: 24 });
+    }),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  expect(await screen.findByText('第一页的书')).toBeInTheDocument();
+  expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled();
+
+  await userEvent.click(screen.getByRole('button', { name: '下一页' }));
+
+  expect(await screen.findByText('第二页的书')).toBeInTheDocument();
+  expect(lastUrl).toContain('page=2');
+  expect(screen.getByText('第 2 / 2 页')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled();
+
+  // Changing a filter returns to the first page.
+  await userEvent.selectOptions(screen.getByLabelText('格式'), 'epub');
+  expect(await screen.findByText('第一页的书')).toBeInTheDocument();
+  expect(lastUrl).toContain('page=1');
+  expect(lastUrl).toContain('format=epub');
 });

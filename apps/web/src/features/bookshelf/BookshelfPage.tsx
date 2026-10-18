@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { BookDto } from '@bookr/shared';
 import { Button, Dialog, EmptyState } from '@bookr/ui';
 import { Link } from 'react-router';
@@ -85,6 +85,17 @@ export function BookshelfPage() {
     user && user.libraryQuotaBytes > 0 ? user.libraryUsedBytes / user.libraryQuotaBytes : 0;
   const nearingQuota = quotaRatio > 0.9;
   const books = booksQuery.data?.items ?? [];
+  const total = booksQuery.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
+
+  // Deleting the last book on a trailing page leaves the shelf past its end.
+  useEffect(() => {
+    if (!booksQuery.data) return;
+    const lastPage = Math.max(1, Math.ceil(booksQuery.data.total / filters.pageSize));
+    if (filters.page > lastPage) {
+      setFilters((current) => ({ ...current, page: lastPage }));
+    }
+  }, [booksQuery.data, filters.page, filters.pageSize]);
 
   return (
     <section className="flex flex-col gap-6">
@@ -182,6 +193,30 @@ export function BookshelfPage() {
           ))}
         </div>
       )}
+
+      {!booksQuery.isPending && !booksQuery.isError && books.length > 0 && totalPages > 1 ? (
+        <nav aria-label="书架分页" className="flex items-center justify-center gap-4 pt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={filters.page <= 1}
+            onClick={() => setFilters({ ...filters, page: filters.page - 1 })}
+          >
+            上一页
+          </Button>
+          <p className="text-xs tracking-widest text-muted">
+            第 {filters.page} / {totalPages} 页
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={filters.page >= totalPages}
+            onClick={() => setFilters({ ...filters, page: filters.page + 1 })}
+          >
+            下一页
+          </Button>
+        </nav>
+      ) : null}
 
       {editingBook ? (
         <EditBookDialog
