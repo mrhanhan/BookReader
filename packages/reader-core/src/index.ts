@@ -3,5 +3,7 @@ export * from './epub/engine';
 export * from './factory';
 export * from './locator';
 export * from './pdf/engine';
+export * from './reflow/mapping';
+export * from './reflow/pack';
 export * from './settings';
 export * from './types';

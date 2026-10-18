@@ -61,6 +61,7 @@ function settingsFor(mode: ReaderSettings['pdf']['mode']): ReaderSettings {
       zoom: 1,
       crop: 'none',
       cropAdjust: { top: 0, right: 0, bottom: 0, left: 0 },
+      readingMode: 'original',
     },
     epub: {
       flow: 'paginated',
@@ -69,6 +70,12 @@ function settingsFor(mode: ReaderSettings['pdf']['mode']): ReaderSettings {
       lineHeight: 1.8,
       margin: 6,
       spread: 'none',
+    },
+    reflow: {
+      fontFamily: 'serif',
+      fontSize: 19,
+      lineHeight: 1.9,
+      margin: 7,
     },
   };
 }

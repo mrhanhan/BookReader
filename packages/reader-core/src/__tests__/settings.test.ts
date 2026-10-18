@@ -38,6 +38,7 @@ describe('reader settings', () => {
         zoom: 'fit-width',
         crop: 'auto',
         cropAdjust: { top: 0, right: 0, bottom: 0, left: 0 },
+        readingMode: 'original',
       },
       epub: {
         flow: 'paginated',
@@ -47,12 +48,14 @@ describe('reader settings', () => {
         margin: 6,
         spread: 'none',
       },
+      reflow: { fontFamily: 'serif', fontSize: 19, lineHeight: 1.9, margin: 7 },
     });
     expect(mergeReaderSettings(undefined)).toEqual(DEFAULT_READER_SETTINGS);
     expect(Object.isFrozen(DEFAULT_READER_SETTINGS)).toBe(true);
     expect(Object.isFrozen(DEFAULT_READER_SETTINGS.pdf)).toBe(true);
     expect(Object.isFrozen(DEFAULT_READER_SETTINGS.pdf.cropAdjust)).toBe(true);
     expect(Object.isFrozen(DEFAULT_READER_SETTINGS.epub)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_READER_SETTINGS.reflow)).toBe(true);
   });
 
   it('pins the theme and highlight hex values', () => {
@@ -101,10 +104,40 @@ describe('reader settings', () => {
       brightness: 0.1,
       pdf: { zoom: 0.1, cropAdjust: { top: -1, right: 11, bottom: 5.5, left: 0 } },
       epub: { fontSize: 1, lineHeight: 9, margin: 99 },
+      reflow: { fontSize: 1, lineHeight: 9, margin: 99 },
     });
     expect(settings.brightness).toBe(0.6);
     expect(settings.pdf.zoom).toBe(0.5);
     expect(settings.pdf.cropAdjust).toEqual({ top: 0, right: 10, bottom: 5.5, left: 0 });
     expect(settings.epub).toMatchObject({ fontSize: 14, lineHeight: 2.4, margin: 12 });
+    expect(settings.reflow).toEqual({ fontFamily: 'serif', fontSize: 16, lineHeight: 2.4, margin: 16 });
+  });
+
+  it('defaults to original mode and clamps reflow settings', () => {
+    const defaults = mergeReaderSettings({});
+    expect(defaults.pdf.readingMode).toBe('original');
+    expect(defaults.reflow).toEqual({ fontFamily: 'serif', fontSize: 19, lineHeight: 1.9, margin: 7 });
+
+    const clamped = mergeReaderSettings({
+      pdf: { readingMode: 'nonsense' },
+      reflow: { fontFamily: 'mono', fontSize: 99, lineHeight: 0.2, margin: -4 },
+    });
+    expect(clamped.pdf.readingMode).toBe('original');
+    expect(clamped.reflow).toEqual({ fontFamily: 'serif', fontSize: 28, lineHeight: 1.5, margin: 2 });
+  });
+
+  it('keeps each mode when explicitly selected and ignores garbage reflow input', () => {
+    expect(mergeReaderSettings({ pdf: { readingMode: 'reflow' } }).pdf.readingMode).toBe('reflow');
+    expect(mergeReaderSettings({ pdf: { readingMode: 'original' } }).pdf.readingMode).toBe('original');
+    expect(mergeReaderSettings({ reflow: { fontFamily: 'sans' } }).reflow).toEqual({
+      fontFamily: 'sans',
+      fontSize: 19,
+      lineHeight: 1.9,
+      margin: 7,
+    });
+    expect(mergeReaderSettings({ reflow: 'nope' }).reflow).toEqual(DEFAULT_READER_SETTINGS.reflow);
+    expect(mergeReaderSettings({ reflow: { fontSize: Number.NaN, margin: {} } }).reflow).toEqual(
+      DEFAULT_READER_SETTINGS.reflow,
+    );
   });
 });

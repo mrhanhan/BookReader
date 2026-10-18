@@ -4,6 +4,8 @@ import type {
   EpubFlow,
   EpubFontFamily,
   PdfLayoutMode,
+  PdfReadingMode,
+  ReflowFontFamily,
   ReaderSettings,
   ReaderThemeName,
 } from './types';
@@ -33,8 +35,10 @@ export const HIGHLIGHT_HEX: Record<AnnotationColor, string> = {
 const THEMES = ['paper', 'sepia', 'green', 'dark'] as const satisfies readonly ReaderThemeName[];
 const PDF_MODES = ['continuous', 'single', 'double'] as const satisfies readonly PdfLayoutMode[];
 const PDF_CROPS = ['auto', 'none'] as const;
+const PDF_READING_MODES = ['original', 'reflow'] as const satisfies readonly PdfReadingMode[];
 const EPUB_FLOWS = ['paginated', 'scrolled'] as const satisfies readonly EpubFlow[];
 const EPUB_FONTS = ['serif', 'sans'] as const satisfies readonly EpubFontFamily[];
+const REFLOW_FONTS = ['serif', 'sans'] as const satisfies readonly ReflowFontFamily[];
 const EPUB_SPREADS = ['none', 'auto'] as const;
 
 /** Fresh defaults on every call so callers cannot mutate shared state. */
@@ -47,6 +51,7 @@ function defaultReaderSettings(): ReaderSettings {
       zoom: 'fit-width',
       crop: 'auto',
       cropAdjust: { top: 0, right: 0, bottom: 0, left: 0 },
+      readingMode: 'original',
     },
     epub: {
       flow: 'paginated',
@@ -56,6 +61,7 @@ function defaultReaderSettings(): ReaderSettings {
       margin: 6,
       spread: 'none',
     },
+    reflow: { fontFamily: 'serif', fontSize: 19, lineHeight: 1.9, margin: 7 },
   };
 }
 
@@ -63,6 +69,7 @@ function deepFreezeSettings(settings: ReaderSettings): ReaderSettings {
   Object.freeze(settings.pdf.cropAdjust);
   Object.freeze(settings.pdf);
   Object.freeze(settings.epub);
+  Object.freeze(settings.reflow);
   return Object.freeze(settings);
 }
 
@@ -105,6 +112,7 @@ function mergeSettings(value: unknown): ReaderSettings {
   const source = asRecord(value);
   const pdf = asRecord(source.pdf);
   const epub = asRecord(source.epub);
+  const reflow = asRecord(source.reflow);
   const cropAdjust = asRecord(pdf.cropAdjust);
 
   return {
@@ -120,6 +128,7 @@ function mergeSettings(value: unknown): ReaderSettings {
         bottom: pickNumber(cropAdjust.bottom, 0, 0, 10),
         left: pickNumber(cropAdjust.left, 0, 0, 10),
       },
+      readingMode: pickEnum(pdf.readingMode, PDF_READING_MODES, 'original'),
     },
     epub: {
       flow: pickEnum(epub.flow, EPUB_FLOWS, 'paginated'),
@@ -128,6 +137,12 @@ function mergeSettings(value: unknown): ReaderSettings {
       lineHeight: pickNumber(epub.lineHeight, 1.8, 1.4, 2.4),
       margin: pickNumber(epub.margin, 6, 2, 12),
       spread: pickEnum(epub.spread, EPUB_SPREADS, 'none'),
+    },
+    reflow: {
+      fontFamily: pickEnum(reflow.fontFamily, REFLOW_FONTS, 'serif'),
+      fontSize: pickNumber(reflow.fontSize, 19, 16, 28),
+      lineHeight: pickNumber(reflow.lineHeight, 1.9, 1.5, 2.4),
+      margin: pickNumber(reflow.margin, 7, 2, 16),
     },
   };
 }
