@@ -77,33 +77,45 @@ export async function enqueuePendingConversionJobs(deps: AppDeps): Promise<numbe
 export function startDailyCleanup(deps: AppDeps): () => void {
   let inFlight = false;
 
+  /** Runs one sweep; a failure is logged without blocking the next step. */
+  const runStep = async (name: string, step: () => Promise<void>): Promise<void> => {
+    try {
+      await step();
+    } catch (error) {
+      console.error(`[cleanup] ${name} failed with ${errorName(error)}`);
+    }
+  };
+
   const run = async (): Promise<void> => {
     if (inFlight) {
       return;
     }
     inFlight = true;
     try {
-      // Storage and trash failures must not keep the sync sweeps from running.
-      try {
+      await runStep('expired uploads', async () => {
         const uploads = await cleanupExpiredUploads(deps);
+        console.log(`[cleanup] expired ${uploads} upload sessions`);
+      });
+      await runStep('expired reflow uploads', async () => {
         const reflowUploads = await cleanupExpiredReflowUploads(deps);
+        console.log(`[cleanup] expired ${reflowUploads} reflow upload sessions`);
+      });
+      await runStep('trash purge', async () => {
         const purged = await cleanupTrash(deps);
-        console.log(
-          `[cleanup] expired ${uploads} upload sessions, ${reflowUploads} reflow upload sessions and purged ${purged} trashed books`,
-        );
-      } catch (error) {
-        console.error(`[cleanup] storage sweep failed with ${errorName(error)}`);
-      }
-
-      try {
+        console.log(`[cleanup] purged ${purged} trashed books`);
+      });
+      await runStep('sync log prune', async () => {
         const pruned = await pruneSyncLog(deps);
-        const purgedEntities = await purgeDeletedEntities(deps);
         console.log(
-          `[cleanup] pruned ${pruned.pruned} sync changes through revision ${pruned.through} and purged ${purgedEntities.annotations} annotations and ${purgedEntities.bookmarks} bookmarks`,
+          `[cleanup] pruned ${pruned.pruned} sync changes through revision ${pruned.through}`,
         );
-      } catch (error) {
-        console.error(`[cleanup] sync retention failed with ${errorName(error)}`);
-      }
+      });
+      await runStep('tombstone purge', async () => {
+        const purged = await purgeDeletedEntities(deps);
+        console.log(
+          `[cleanup] purged ${purged.annotations} annotations and ${purged.bookmarks} bookmarks`,
+        );
+      });
     } finally {
       inFlight = false;
     }

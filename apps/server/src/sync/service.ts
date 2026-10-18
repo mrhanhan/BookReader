@@ -32,6 +32,7 @@ import {
   markPrunedThrough,
   maxRevision,
   PRUNED_THROUGH_KEY,
+  prunedThrough,
   prunedThroughInTx,
   readUserSettings,
 } from './repo';
@@ -169,7 +170,13 @@ export async function pullChanges(
  * represented by the change log instead.
  */
 export async function buildSnapshot(deps: AppDeps, userId: string): Promise<SyncSnapshot> {
-  const cursor = await maxRevision(deps.db, userId);
+  // The snapshot pins the current full state, so its cursor must clear the
+  // global prune watermark too. Otherwise a user whose own max revision sits
+  // below the watermark would reset, snapshot below it, and reset forever.
+  const cursor = Math.max(
+    await maxRevision(deps.db, userId),
+    await prunedThrough(deps.db),
+  );
 
   const progressRows = await deps.db
     .select()

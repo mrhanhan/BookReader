@@ -238,3 +238,31 @@ it('rejects an unauthenticated pull', async () => {
   expect((await app.inject({ method: 'GET', url: '/api/sync/pull' })).statusCode).toBe(401);
   expect((await app.inject({ method: 'GET', url: '/api/sync/snapshot' })).statusCode).toBe(401);
 });
+
+it('pins the snapshot cursor above the global prune watermark', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  await testDb.transaction((tx) => markPrunedThrough(tx, 10));
+  const logged = await appendChangeInTx(changeInput(user.id, 'below-watermark'));
+  expect(logged.revision).toBeLessThan(10);
+
+  const headers = await authHeader(user);
+  const snapshot = await app.inject({ method: 'GET', url: '/api/sync/snapshot', headers });
+  expect(snapshot.statusCode).toBe(200);
+  // The user's own max revision is below the watermark; the snapshot must
+  // still land above it or the next pull would reset again, forever.
+  expect(snapshot.json().cursor).toBe(10);
+
+  const pull = await app.inject({
+    method: 'GET',
+    url: `/api/sync/pull?since=${snapshot.json().cursor}`,
+    headers,
+  });
+  expect(pull.json()).toEqual({
+    changes: [],
+    cursor: 10,
+    hasMore: false,
+    reset: false,
+  });
+});
