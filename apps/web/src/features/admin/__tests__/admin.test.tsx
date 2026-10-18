@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
+import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES } from '@bookr/shared';
 import { routes } from '../../../app/router';
 import { setTokens } from '../../../api/client';
 import { renderWithProviders, server } from '../../../../test/setup';
@@ -88,4 +89,30 @@ it('redirects members away from the admin page', async () => {
   await waitFor(() => expect(router.state.location.pathname).toBe('/'));
   // Members never see the administration entry point.
   expect(screen.queryByRole('link', { name: '管理' })).toBeNull();
+});
+
+it('tells members to contact an admin when the shared shelf nears capacity', async () => {
+  server.use(
+    http.get('/api/auth/me', () =>
+      HttpResponse.json({
+        id: 'u2',
+        username: 'bob',
+        displayName: 'Bob',
+        role: 'member',
+        timezone: 'Asia/Shanghai',
+        aiEnabled: false,
+        uploadUsedBytes: 0,
+        uploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
+        libraryUsedBytes: LIBRARY_QUOTA_BYTES - 1,
+        libraryQuotaBytes: LIBRARY_QUOTA_BYTES,
+      }),
+    ),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  expect(await screen.findByText('共享书库空间即将用尽，请联系管理员')).toBeInTheDocument();
+  // Members must not be sent to a route that would bounce them home.
+  expect(screen.queryByRole('link', { name: '查看存储用量' })).toBeNull();
 });

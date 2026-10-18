@@ -84,6 +84,7 @@ export function BookshelfPage() {
   const quotaRatio =
     user && user.libraryQuotaBytes > 0 ? user.libraryUsedBytes / user.libraryQuotaBytes : 0;
   const nearingQuota = quotaRatio > 0.9;
+  const isAdmin = user?.role === 'admin';
   const books = booksQuery.data?.items ?? [];
   const total = booksQuery.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
@@ -115,17 +116,21 @@ export function BookshelfPage() {
           className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-highlight/30 bg-highlight/10 px-4 py-3"
         >
           <div>
-            <p className="text-sm font-medium text-highlight">书库空间即将用尽</p>
+            <p className="text-sm font-medium text-highlight">
+              {isAdmin ? '书库空间即将用尽' : '共享书库空间即将用尽，请联系管理员'}
+            </p>
             <p className="mt-0.5 text-xs text-muted">
               已使用 {formatBytes(user.libraryUsedBytes)} / {formatBytes(user.libraryQuotaBytes)}
             </p>
           </div>
-          <Link
-            to="/admin/members"
-            className="text-sm text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            查看存储用量
-          </Link>
+          {isAdmin ? (
+            <Link
+              to="/admin/members"
+              className="text-sm text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              查看存储用量
+            </Link>
+          ) : null}
         </div>
       ) : null}
 
