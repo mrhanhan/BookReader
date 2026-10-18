@@ -7,8 +7,10 @@ import type { Database } from '../db/client';
 import {
   annotationHistory,
   annotations,
+  bookmarks,
   readingProgress,
   type AnnotationRow,
+  type BookmarkRow,
   type ReadingProgressRow,
 } from '../db/schema';
 
@@ -253,5 +255,108 @@ export async function softDeleteAnnotation(
       ),
     )
     .returning({ id: annotations.id });
+  return rows.length > 0;
+}
+
+/** Lists one user's live bookmarks for a book, newest first. */
+export async function listBookmarkRows(
+  db: Database,
+  userId: string,
+  bookId: string,
+): Promise<BookmarkRow[]> {
+  return db
+    .select()
+    .from(bookmarks)
+    .where(
+      and(
+        eq(bookmarks.userId, userId),
+        eq(bookmarks.bookId, bookId),
+        isNull(bookmarks.deletedAt),
+      ),
+    )
+    .orderBy(desc(bookmarks.createdAt), desc(bookmarks.id));
+}
+
+/** Fields written when a reader creates a bookmark. */
+export interface InsertBookmarkInput {
+  userId: string;
+  bookId: string;
+  locator: Locator;
+  label: string | null;
+  now: Date;
+}
+
+/** Inserts a fresh bookmark and returns the stored row. */
+export async function insertBookmark(
+  db: Database,
+  input: InsertBookmarkInput,
+): Promise<BookmarkRow> {
+  const [row] = await db
+    .insert(bookmarks)
+    .values({
+      userId: input.userId,
+      bookId: input.bookId,
+      locator: input.locator,
+      label: input.label,
+      updatedAt: input.now,
+    })
+    .returning();
+
+  if (!row) {
+    throw new Error('Bookmark insert returned no row');
+  }
+  return row;
+}
+
+/**
+ * Renames one user's live bookmark. Returns undefined when nothing matched,
+ * which the service turns into a 404 for missing, deleted and other-user rows.
+ */
+export async function updateBookmarkRow(
+  db: Database,
+  bookmarkId: string,
+  bookId: string,
+  userId: string,
+  label: string | null,
+  updatedAt: Date,
+): Promise<BookmarkRow | undefined> {
+  const [row] = await db
+    .update(bookmarks)
+    .set({ label, updatedAt })
+    .where(
+      and(
+        eq(bookmarks.id, bookmarkId),
+        eq(bookmarks.bookId, bookId),
+        eq(bookmarks.userId, userId),
+        isNull(bookmarks.deletedAt),
+      ),
+    )
+    .returning();
+  return row;
+}
+
+/**
+ * Soft-deletes one user's live bookmark. Returns false when nothing matched,
+ * which the service turns into a 404 for missing, deleted and other-user rows.
+ */
+export async function softDeleteBookmark(
+  db: Database,
+  bookmarkId: string,
+  bookId: string,
+  userId: string,
+  deletedAt: Date,
+): Promise<boolean> {
+  const rows = await db
+    .update(bookmarks)
+    .set({ deletedAt })
+    .where(
+      and(
+        eq(bookmarks.id, bookmarkId),
+        eq(bookmarks.bookId, bookId),
+        eq(bookmarks.userId, userId),
+        isNull(bookmarks.deletedAt),
+      ),
+    )
+    .returning({ id: bookmarks.id });
   return rows.length > 0;
 }

@@ -1,5 +1,5 @@
-import type { AnnotationDto, ReadingProgressDto } from '@bookr/shared';
-import type { AnnotationRow, ReadingProgressRow } from '../db/schema';
+import type { AnnotationDto, BookmarkDto, ReadingProgressDto } from '@bookr/shared';
+import type { AnnotationRow, BookmarkRow, ReadingProgressRow } from '../db/schema';
 
 /** Maps a progress row to the API shape; `deviceId` stays private. */
 export function toProgressDto(row: ReadingProgressRow): ReadingProgressDto {
@@ -30,6 +30,18 @@ export function toAnnotationDto(row: AnnotationRow): AnnotationDto {
     noteText: row.noteText,
     tags: row.tags ?? [],
     revision: row.revision,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** Maps a bookmark row to the API shape; a cleared label stays null. */
+export function toBookmarkDto(row: BookmarkRow): BookmarkDto {
+  return {
+    id: row.id,
+    bookId: row.bookId,
+    locator: row.locator,
+    label: row.label,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

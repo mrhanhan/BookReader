@@ -9,7 +9,7 @@ import type { z } from 'zod';
 import type { AppDeps } from '../app';
 import { AppError } from '../errors';
 import { toAnnotationDto } from './dto';
-import { assertLocatorKind, requireLiveBook, type ReadingActor } from './progress';
+import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
 import {
   findOwnedAnnotationForUpdate,
   insertAnnotation,
