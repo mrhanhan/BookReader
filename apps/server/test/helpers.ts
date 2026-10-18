@@ -12,6 +12,7 @@ import {
 } from '@bookr/shared';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
+import { createUnavailableAiClientFactory } from '../src/ai/types';
 import { buildApp, type AppDeps, type BuildAppOptions, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
 import { newRefreshToken, signAccessToken } from '../src/auth/tokens';
@@ -118,14 +119,28 @@ const DEFAULT_CONFIG: AppConfig = {
   memberUploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
   loginRateLimit: 10,
   corsOrigins: [...DEFAULT_CORS_ORIGINS],
+  ai: {
+    fakeProvider: false,
+    configSecret: 'test-ai-config-secret-at-least-32-chars',
+    contextTokenBudget: 8000,
+    requestTimeoutMs: 60000,
+    bootstrap: null,
+  },
 };
 
-/** Builds a test config, merging top-level overrides and nested S3 settings. */
-export function buildTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+/** Config overrides accepted by the test helpers; `s3` and `ai` are nested. */
+export type TestConfigOverrides = Partial<Omit<AppConfig, 's3' | 'ai'>> & {
+  s3?: Partial<AppConfig['s3']>;
+  ai?: Partial<AppConfig['ai']>;
+};
+
+/** Builds a test config, merging top-level overrides and nested S3/AI settings. */
+export function buildTestConfig(overrides: TestConfigOverrides = {}): AppConfig {
   return {
     ...DEFAULT_CONFIG,
     ...overrides,
     s3: { ...DEFAULT_CONFIG.s3, ...(overrides.s3 ?? {}) },
+    ai: { ...DEFAULT_CONFIG.ai, ...(overrides.ai ?? {}) },
   };
 }
 
@@ -376,7 +391,7 @@ export async function getBookRow(bookId: string): Promise<BookRow | undefined> {
 }
 
 /** Dependency object shared by the app and background jobs in tests. */
-export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise<AppDeps> {
+export async function buildTestDeps(overrides: TestConfigOverrides = {}): Promise<AppDeps> {
   const clock: Clock = { now: () => new Date() };
   return {
     config: buildTestConfig(overrides),
@@ -388,6 +403,7 @@ export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise
     converter: fakeConverter,
     metadataRunner: new InProcessMetadataRunner(),
     syncHub: createSyncHub(),
+    aiClientFactory: createUnavailableAiClientFactory(),
   };
 }
 
@@ -467,7 +483,7 @@ export async function authHeader(
 }
 
 /** Builds the app with fake dependencies, without touching Postgres or S3. */
-export async function buildTestApp(overrides: Partial<AppConfig> = {}): Promise<FastifyInstance> {
+export async function buildTestApp(overrides: TestConfigOverrides = {}): Promise<FastifyInstance> {
   return buildApp(await buildTestDeps(overrides));
 }
 
@@ -476,7 +492,7 @@ export async function buildTestApp(overrides: Partial<AppConfig> = {}): Promise<
  * that need to observe both (for example the sync hub).
  */
 export async function createTestApp(
-  overrides: Partial<AppConfig> = {},
+  overrides: TestConfigOverrides = {},
   options: BuildAppOptions = {},
 ): Promise<{ app: FastifyInstance; deps: AppDeps }> {
   const deps = await buildTestDeps(overrides);

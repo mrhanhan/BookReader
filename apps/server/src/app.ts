@@ -4,6 +4,9 @@ import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { ZodError } from 'zod';
 import { registerAdminRoutes } from './admin/routes';
+import { registerAiAdminRoutes } from './ai/admin';
+import type { AiRuntimeConfig } from './ai/config';
+import type { AiClient } from './ai/types';
 import { registerAuthRoutes } from './auth/routes';
 import type { Converter } from './books/conversion';
 import { registerBookRoutes } from './books/routes';
@@ -45,6 +48,8 @@ export interface AppDeps {
   metadataRunner: MetadataRunner;
   /** Fans committed changes out to open sync streams. */
   syncHub: SyncHub;
+  /** Builds a provider client from the current AI configuration. */
+  aiClientFactory: (config: AiRuntimeConfig) => AiClient;
 }
 
 const LOG_REDACT_PATHS = [
@@ -52,6 +57,7 @@ const LOG_REDACT_PATHS = [
   'req.body.password',
   'req.body.token',
   'req.body.refreshToken',
+  'req.body.apiKey',
   'password',
   'token',
   'refreshToken',
@@ -62,6 +68,9 @@ const LOG_REDACT_PATHS = [
   '*.*.password',
   '*.*.token',
   '*.*.refreshToken',
+  'apiKey',
+  '*.apiKey',
+  '*.*.apiKey',
 ];
 
 const CLIENT_ERROR_CODES: Partial<Record<number, ErrorCode>> = {
@@ -182,6 +191,7 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
 
   registerAuthRoutes(app, deps);
   registerAdminRoutes(app, deps);
+  registerAiAdminRoutes(app, deps);
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
   registerReadingRoutes(app, deps);

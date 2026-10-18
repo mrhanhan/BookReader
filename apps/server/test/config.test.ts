@@ -80,3 +80,80 @@ describe('loadConfig CORS allowlist', () => {
     expect(() => loadConfig({ ...BASE_ENV, CORS_ORIGIN: ' , ,, ' })).toThrow(/CORS_ORIGIN/);
   });
 });
+
+describe('loadConfig AI companion', () => {
+  it('defaults to no provider configuration', () => {
+    const config = loadConfig(BASE_ENV);
+    expect(config.ai).toEqual({
+      fakeProvider: false,
+      contextTokenBudget: 8000,
+      requestTimeoutMs: 60000,
+      bootstrap: null,
+    });
+    expect(config.ai.configSecret).toBeUndefined();
+  });
+
+  it('accepts a dedicated config secret of at least 32 characters', () => {
+    const config = loadConfig({ ...BASE_ENV, AI_CONFIG_SECRET: 'a'.repeat(32) });
+    expect(config.ai.configSecret).toBe('a'.repeat(32));
+    expect(() => loadConfig({ ...BASE_ENV, AI_CONFIG_SECRET: 'too-short' })).toThrow(
+      /AI_CONFIG_SECRET must be at least 32 characters/,
+    );
+  });
+
+  it('treats an empty optional secret as unset', () => {
+    expect(loadConfig({ ...BASE_ENV, AI_CONFIG_SECRET: '' }).ai.configSecret).toBeUndefined();
+  });
+
+  it('parses the fake provider flag', () => {
+    for (const value of ['1', 'true']) {
+      expect(loadConfig({ ...BASE_ENV, AI_FAKE_PROVIDER: value }).ai.fakeProvider).toBe(true);
+    }
+    for (const value of ['0', 'false']) {
+      expect(loadConfig({ ...BASE_ENV, AI_FAKE_PROVIDER: value }).ai.fakeProvider).toBe(false);
+    }
+    expect(() => loadConfig({ ...BASE_ENV, AI_FAKE_PROVIDER: 'yes' })).toThrow(/AI_FAKE_PROVIDER/);
+  });
+
+  it('builds the bootstrap provider from environment defaults', () => {
+    const config = loadConfig({ ...BASE_ENV, AI_API_KEY: 'sk-bootstrap-key' });
+    expect(config.ai.bootstrap).toEqual({
+      apiKey: 'sk-bootstrap-key',
+      baseUrl: 'https://api.deepseek.com/v1',
+      chatModel: 'deepseek-chat',
+      reasonerModel: 'deepseek-reasoner',
+    });
+  });
+
+  it('accepts custom bootstrap provider values', () => {
+    const config = loadConfig({
+      ...BASE_ENV,
+      AI_API_KEY: 'sk-bootstrap-key',
+      AI_BASE_URL: 'http://localhost:11434/v1',
+      AI_CHAT_MODEL: 'qwen-chat',
+      AI_REASONER_MODEL: 'qwen-reasoner',
+    });
+    expect(config.ai.bootstrap).toEqual({
+      apiKey: 'sk-bootstrap-key',
+      baseUrl: 'http://localhost:11434/v1',
+      chatModel: 'qwen-chat',
+      reasonerModel: 'qwen-reasoner',
+    });
+  });
+
+  it('does not bootstrap without an API key', () => {
+    expect(loadConfig({ ...BASE_ENV, AI_API_KEY: '' }).ai.bootstrap).toBeNull();
+  });
+
+  it('validates the context budget and request timeout ranges', () => {
+    expect(loadConfig({ ...BASE_ENV, AI_CONTEXT_TOKEN_BUDGET: '1000' }).ai.contextTokenBudget).toBe(1000);
+    expect(loadConfig({ ...BASE_ENV, AI_CONTEXT_TOKEN_BUDGET: '32000' }).ai.contextTokenBudget).toBe(32000);
+    expect(() => loadConfig({ ...BASE_ENV, AI_CONTEXT_TOKEN_BUDGET: '999' })).toThrow(/AI_CONTEXT_TOKEN_BUDGET/);
+    expect(() => loadConfig({ ...BASE_ENV, AI_CONTEXT_TOKEN_BUDGET: '32001' })).toThrow(/AI_CONTEXT_TOKEN_BUDGET/);
+
+    expect(loadConfig({ ...BASE_ENV, AI_REQUEST_TIMEOUT_MS: '5000' }).ai.requestTimeoutMs).toBe(5000);
+    expect(loadConfig({ ...BASE_ENV, AI_REQUEST_TIMEOUT_MS: '120000' }).ai.requestTimeoutMs).toBe(120000);
+    expect(() => loadConfig({ ...BASE_ENV, AI_REQUEST_TIMEOUT_MS: '4999' })).toThrow(/AI_REQUEST_TIMEOUT_MS/);
+    expect(() => loadConfig({ ...BASE_ENV, AI_REQUEST_TIMEOUT_MS: '120001' })).toThrow(/AI_REQUEST_TIMEOUT_MS/);
+  });
+});

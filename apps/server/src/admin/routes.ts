@@ -21,6 +21,9 @@ const updateMemberSchema = z.object({
   // A quota must be a positive safe integer; the API never stores a negative
   // or fractional allowance.
   uploadQuotaBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  aiEnabled: z.boolean().optional(),
+  aiDailyTokenLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  aiMonthlyTokenLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   password: z.string().min(10).max(128).optional(),
 });
 

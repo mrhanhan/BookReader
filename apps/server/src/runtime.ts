@@ -1,4 +1,5 @@
 import { newId } from '@bookr/shared';
+import { createUnavailableAiClientFactory } from './ai/types';
 import type { AppDeps } from './app';
 import { CalibreConverter } from './books/conversion';
 import { ProcessMetadataRunner } from './books/metadata-runner';
@@ -27,5 +28,6 @@ export function createDeps(
     converter: new CalibreConverter(),
     metadataRunner: new ProcessMetadataRunner(),
     syncHub: createSyncHub(),
+    aiClientFactory: createUnavailableAiClientFactory(),
   };
 }

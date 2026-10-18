@@ -71,6 +71,17 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
       S3_BUCKET: bookr
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (at least 32 characters)}
+      # AI companion. The provider is normally configured through the admin
+      # API; these values only seed an empty config table. The fake provider
+      # defaults to off and must never be enabled in production.
+      AI_CONFIG_SECRET: ${AI_CONFIG_SECRET:-}
+      AI_FAKE_PROVIDER: ${AI_FAKE_PROVIDER:-0}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_CHAT_MODEL: ${AI_CHAT_MODEL:-}
+      AI_REASONER_MODEL: ${AI_REASONER_MODEL:-}
+      AI_CONTEXT_TOKEN_BUDGET: ${AI_CONTEXT_TOKEN_BUDGET:-8000}
+      AI_REQUEST_TIMEOUT_MS: ${AI_REQUEST_TIMEOUT_MS:-60000}
       LIBRARY_QUOTA_BYTES: ${LIBRARY_QUOTA_BYTES:-85899345920}
       MEMBER_UPLOAD_QUOTA_BYTES: ${MEMBER_UPLOAD_QUOTA_BYTES:-21474836480}
       LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-10}

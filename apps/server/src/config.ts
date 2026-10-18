@@ -4,6 +4,13 @@ import {
 } from '@bookr/shared';
 import { z } from 'zod';
 
+/** Default provider endpoint used until an administrator changes it. */
+export const DEFAULT_AI_BASE_URL = 'https://api.deepseek.com/v1';
+/** Default model used for ordinary chat and reader actions. */
+export const DEFAULT_AI_CHAT_MODEL = 'deepseek-chat';
+/** Default model used for reasoning-heavy actions. */
+export const DEFAULT_AI_REASONER_MODEL = 'deepseek-reasoner';
+
 export interface AppConfig {
   port: number;
   host: string;
@@ -33,6 +40,24 @@ export interface AppConfig {
   loginRateLimit: number;
   /** Browser and native-app origins allowed to call the API. */
   corsOrigins: string[];
+  ai: {
+    /** Returns deterministic local output instead of calling a provider. */
+    fakeProvider: boolean;
+    /** Key material for encrypting the provider API key at rest. */
+    configSecret?: string;
+    contextTokenBudget: number;
+    requestTimeoutMs: number;
+    /**
+     * Provider settings used once to seed an empty configuration table.
+     * `null` when `AI_API_KEY` is unset.
+     */
+    bootstrap: {
+      apiKey: string;
+      baseUrl: string;
+      chatModel: string;
+      reasonerModel: string;
+    } | null;
+  };
 }
 
 /**
@@ -73,6 +98,37 @@ const trustProxySchema = z
     return z.NEVER;
   });
 
+/** An optional environment string; an empty value counts as unset. */
+const optionalEnvString = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+/** An optional secret that must be at least 32 characters when present. */
+const optionalEnvSecret = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z.string().min(32).optional(),
+);
+
+/** Accepts `1`/`true` and `0`/`false`; anything else is a configuration error. */
+const envBoolean = z
+  .string()
+  .optional()
+  .transform((value, ctx): boolean => {
+    if (value === undefined || value === '' || value === '0' || value === 'false') {
+      return false;
+    }
+    if (value === '1' || value === 'true') {
+      return true;
+    }
+    ctx.addIssue({
+      code: 'custom',
+      message: 'must be one of 1, true, 0, false',
+      input: value,
+    });
+    return z.NEVER;
+  });
+
 const corsOriginsSchema = z
   .string()
   .default(DEFAULT_CORS_ORIGINS.join(','))
@@ -102,6 +158,14 @@ const configSchema = z.object({
   MEMBER_UPLOAD_QUOTA_BYTES: z.coerce.number().int().positive().default(MEMBER_UPLOAD_QUOTA_BYTES),
   LOGIN_RATE_LIMIT: z.coerce.number().int().positive().default(10),
   CORS_ORIGIN: corsOriginsSchema,
+  AI_CONFIG_SECRET: optionalEnvSecret,
+  AI_FAKE_PROVIDER: envBoolean,
+  AI_API_KEY: optionalEnvString,
+  AI_BASE_URL: optionalEnvString,
+  AI_CHAT_MODEL: optionalEnvString,
+  AI_REASONER_MODEL: optionalEnvString,
+  AI_CONTEXT_TOKEN_BUDGET: z.coerce.number().int().min(1000).max(32000).default(8000),
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(5000).max(120000).default(60000),
 });
 
 function describeIssue(issue: z.ZodIssue, env: NodeJS.ProcessEnv): string {
@@ -154,5 +218,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     memberUploadQuotaBytes: parsed.MEMBER_UPLOAD_QUOTA_BYTES,
     loginRateLimit: parsed.LOGIN_RATE_LIMIT,
     corsOrigins: parsed.CORS_ORIGIN,
+    ai: {
+      fakeProvider: parsed.AI_FAKE_PROVIDER,
+      ...(parsed.AI_CONFIG_SECRET !== undefined
+        ? { configSecret: parsed.AI_CONFIG_SECRET }
+        : {}),
+      contextTokenBudget: parsed.AI_CONTEXT_TOKEN_BUDGET,
+      requestTimeoutMs: parsed.AI_REQUEST_TIMEOUT_MS,
+      bootstrap:
+        parsed.AI_API_KEY !== undefined
+          ? {
+              apiKey: parsed.AI_API_KEY,
+              baseUrl: parsed.AI_BASE_URL ?? DEFAULT_AI_BASE_URL,
+              chatModel: parsed.AI_CHAT_MODEL ?? DEFAULT_AI_CHAT_MODEL,
+              reasonerModel: parsed.AI_REASONER_MODEL ?? DEFAULT_AI_REASONER_MODEL,
+            }
+          : null,
+    },
   };
 }

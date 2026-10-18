@@ -31,6 +31,9 @@ export interface MemberSummary {
   role: Role;
   isActive: boolean;
   uploadQuotaBytes: number;
+  aiEnabled: boolean;
+  aiDailyTokenLimit: number;
+  aiMonthlyTokenLimit: number;
   usedBytes: number;
   createdAt: string;
 }
@@ -53,6 +56,9 @@ export interface InviteSummary {
 export interface UpdateMemberInput {
   isActive?: boolean;
   uploadQuotaBytes?: number;
+  aiEnabled?: boolean;
+  aiDailyTokenLimit?: number;
+  aiMonthlyTokenLimit?: number;
   password?: string;
 }
 
@@ -70,6 +76,9 @@ const MEMBER_COLUMNS = {
   role: users.role,
   isActive: users.isActive,
   uploadQuotaBytes: users.uploadQuotaBytes,
+  aiEnabled: users.aiEnabled,
+  aiDailyTokenLimit: users.aiDailyTokenLimit,
+  aiMonthlyTokenLimit: users.aiMonthlyTokenLimit,
   createdAt: users.createdAt,
 };
 
@@ -186,6 +195,15 @@ export async function updateMember(
   if (input.uploadQuotaBytes !== undefined) {
     patch.uploadQuotaBytes = input.uploadQuotaBytes;
   }
+  if (input.aiEnabled !== undefined) {
+    patch.aiEnabled = input.aiEnabled;
+  }
+  if (input.aiDailyTokenLimit !== undefined) {
+    patch.aiDailyTokenLimit = input.aiDailyTokenLimit;
+  }
+  if (input.aiMonthlyTokenLimit !== undefined) {
+    patch.aiMonthlyTokenLimit = input.aiMonthlyTokenLimit;
+  }
   if (input.password !== undefined) {
     patch.passwordHash = await hashPassword(input.password);
   }
@@ -251,13 +269,30 @@ export async function updateMember(
         .where(and(eq(devices.userId, memberId), isNull(devices.revokedAt)));
     }
 
-    // Audit entries carry identifiers only; passwords and quota values stay
-    // out of the log.
-    if (input.isActive !== undefined || input.uploadQuotaBytes !== undefined) {
+    // Audit entries record the field names and their new values so the change
+    // can be reviewed later; passwords never enter this metadata.
+    const changes: Record<string, unknown> = {};
+    if (input.isActive !== undefined) {
+      changes.isActive = input.isActive;
+    }
+    if (input.uploadQuotaBytes !== undefined) {
+      changes.uploadQuotaBytes = input.uploadQuotaBytes;
+    }
+    if (input.aiEnabled !== undefined) {
+      changes.aiEnabled = input.aiEnabled;
+    }
+    if (input.aiDailyTokenLimit !== undefined) {
+      changes.aiDailyTokenLimit = input.aiDailyTokenLimit;
+    }
+    if (input.aiMonthlyTokenLimit !== undefined) {
+      changes.aiMonthlyTokenLimit = input.aiMonthlyTokenLimit;
+    }
+    if (Object.keys(changes).length > 0) {
       await tx.insert(auditLogs).values({
         userId: actorId,
         action: 'admin.member.update',
         target: memberId,
+        metadata: changes,
       });
     }
     if (input.password !== undefined) {

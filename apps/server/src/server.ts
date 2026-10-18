@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { bootstrapAiConfig } from './ai/config';
 import { buildApp } from './app';
 import { loadConfig } from './config';
 import { closeDb } from './db/client';
@@ -45,6 +46,17 @@ async function main(): Promise<void> {
   const app = buildApp(deps);
 
   await withStartupRetry('database migrations', () => migrate(db));
+
+  if (config.ai.fakeProvider) {
+    app.log.warn('AI fake provider enabled — never use in production');
+  }
+  try {
+    await bootstrapAiConfig(deps);
+  } catch (error) {
+    // A bad bootstrap value must not keep the shelf down; an administrator can
+    // enter the provider settings through the admin API instead.
+    app.log.error({ errorName: errorName(error) }, 'failed to bootstrap AI configuration');
+  }
   await withStartupRetry('S3 bucket creation', () => ensureBucket(config.s3));
 
   try {
