@@ -722,6 +722,7 @@ figure[data-state='failed'] canvas {
 .reader-selection-menu {
   z-index: 50;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   width: max-content;
