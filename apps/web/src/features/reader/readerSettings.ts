@@ -1,7 +1,12 @@
 import { DEFAULT_READER_SETTINGS, mergeReaderSettings } from '@bookr/reader-core';
 import type { ReaderSettings } from '@bookr/reader-core';
+import type { LocalSettingsRow } from '../../sync/types';
 
-/** Persisted reading preferences; exported so tests and migrations agree. */
+/**
+ * Pre-sync global key. Settings are now one document per account in the local
+ * repository; this key is read once so the first reader visit after the
+ * upgrade can migrate the old preference into that account.
+ */
 export const READER_SETTINGS_KEY = 'bookr.reader.settings.v1';
 
 function storage(): Storage | null {
@@ -13,27 +18,40 @@ function storage(): Storage | null {
   }
 }
 
-/** Reads persisted settings, falling back to the defaults for any bad payload. */
-export function loadReaderSettings(): ReaderSettings {
-  const raw = storage()?.getItem(READER_SETTINGS_KEY);
-  if (!raw) {
-    return mergeReaderSettings(DEFAULT_READER_SETTINGS);
-  }
+/**
+ * Reads the legacy global settings, if any. `null` means there is nothing to
+ * migrate; corrupt payloads are dropped instead of blocking the account's
+ * settings row.
+ */
+export function readLegacyReaderSettings(): ReaderSettings | null {
+  const store = storage();
+  const raw = store?.getItem(READER_SETTINGS_KEY);
+  if (!raw) return null;
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return mergeReaderSettings(JSON.parse(raw));
   } catch {
-    return mergeReaderSettings(DEFAULT_READER_SETTINGS);
+    clearLegacyReaderSettings();
+    return null;
   }
-  return mergeReaderSettings(parsed);
 }
 
-/** Merges and clamps settings before writing, so a bad caller cannot persist junk. */
-export function saveReaderSettings(settings: ReaderSettings): void {
+/** Drops the migrated global entry; later opens only read the account row. */
+export function clearLegacyReaderSettings(): void {
   try {
-    storage()?.setItem(READER_SETTINGS_KEY, JSON.stringify(mergeReaderSettings(settings)));
+    storage()?.removeItem(READER_SETTINGS_KEY);
   } catch {
-    // Quota or a blocked store must never break reading.
+    // A blocked store has nothing to clear.
   }
+}
+
+/**
+ * Merges a repository row over the defaults. A missing row (a new account, or
+ * one that never changed a setting) still yields fresh defaults instead of a
+ * previous account's values.
+ */
+export function readerSettingsFromRow(
+  row: LocalSettingsRow | null | undefined,
+): ReaderSettings {
+  return row ? mergeReaderSettings(row.settings) : mergeReaderSettings(DEFAULT_READER_SETTINGS);
 }

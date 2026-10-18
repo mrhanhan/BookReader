@@ -13,7 +13,6 @@ import type {
 } from '@bookr/reader-core';
 import type { Locator } from '@bookr/shared';
 import { ReaderPage } from '../ReaderPage';
-import { READER_SETTINGS_KEY, saveReaderSettings } from '../readerSettings';
 import { setTokens } from '../../../api/client';
 import { book, server } from '../../../../test/setup';
 import {
@@ -68,10 +67,18 @@ function settingsFor(readingMode: PdfReadingMode): ReaderSettings {
 }
 
 function storedReadingMode(): unknown {
-  const stored = JSON.parse(localStorage.getItem(READER_SETTINGS_KEY) ?? 'null') as
-    | { pdf?: { readingMode?: unknown } }
-    | null;
-  return stored?.pdf?.readingMode;
+  const row = repo.settingsRows.get('user-reader');
+  return (row?.settings as { pdf?: { readingMode?: unknown } } | undefined)?.pdf?.readingMode;
+}
+
+/** Seeds the account's settings row; a synced row would arrive the same way. */
+function seedSettings(settings: ReaderSettings): void {
+  repo.settingsRows.set('user-reader', {
+    userId: 'user-reader',
+    settings: { ...settings },
+    clientUpdatedAt: new Date().toISOString(),
+    dirty: false,
+  });
 }
 
 interface OpenCall {
@@ -156,7 +163,7 @@ async function renderReader({
   switcherTo,
 }: RenderOptions = {}) {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
-  if (settings) saveReaderSettings(settings);
+  if (settings) seedSettings(settings);
   if (progress && typeof progress === 'object' && 'locator' in progress) {
     repo.seedProgress('user-reader', BOOK_ID, (progress as { locator: Locator }).locator);
   }

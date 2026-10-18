@@ -215,7 +215,7 @@ it('flushes the throttled position to the legacy buffer synchronously on page hi
   save.mockRestore();
 });
 
-it('opens a reload at the newer legacy buffer and writes it back to Dexie', async () => {
+it('opens a reload at the newer legacy buffer and queues it for sync', async () => {
   const legacyKey = `${PROGRESS_KEY_PREFIX}${USER}.${BOOK_ID}`;
   const storedAt = Date.parse('2026-01-01T00:00:00.000Z');
   const buffered: Locator = { kind: 'pdf', page: 9, percent: 0.82 };
@@ -236,8 +236,12 @@ it('opens a reload at the newer legacy buffer and writes it back to Dexie', asyn
   expect(localStorage.getItem(legacyKey)).toBeNull();
   const stored = await repo.progressFor(USER, BOOK_ID);
   expect(stored?.locator).toEqual(buffered);
-  expect(stored?.dirty).toBe(false);
-  expect(repo.outbox.filter((row) => row.entityType === 'reading_progress')).toHaveLength(0);
+  // The buffered position is a real page turn that never reached Dexie; it is
+  // written back dirty and queued so the server learns the last position.
+  expect(stored?.dirty).toBe(true);
+  const queued = repo.outbox.filter((row) => row.entityType === 'reading_progress');
+  expect(queued).toHaveLength(1);
+  expect(queued[0]?.payload).toEqual({ bookId: BOOK_ID, locator: buffered });
 });
 
 it('does not overwrite progress applied from the server before the first write', async () => {

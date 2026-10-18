@@ -13,6 +13,7 @@ import type {
   SyncEntityType,
 } from '@bookr/shared';
 import {
+  DEFAULT_READER_SETTINGS,
   createReaderEngine,
   locatorForMode,
   mergeReaderSettings,
@@ -49,7 +50,11 @@ import { useOfflineSession } from '../../offline/offlineContext';
 import { bookFromShelfSnapshot } from '../../offline/shelfSnapshot';
 import { useSync } from '../../sync/SyncProvider';
 import { Toast } from '../bookshelf/Toast';
-import { loadReaderSettings, saveReaderSettings } from './readerSettings';
+import {
+  clearLegacyReaderSettings,
+  readLegacyReaderSettings,
+  readerSettingsFromRow,
+} from './readerSettings';
 import { readLocalProgress } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
@@ -258,7 +263,11 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const bookId = book?.id ?? null;
   const kind: ReaderKind | null = book ? readerKindForFormat(book.format) : null;
 
-  const [settings, setSettings] = useState<ReaderSettings>(() => loadReaderSettings());
+  // Settings are per account and live in the local repository. The defaults
+  // only cover the moment before the account's document is loaded.
+  const [settings, setSettings] = useState<ReaderSettings>(() =>
+    mergeReaderSettings(DEFAULT_READER_SETTINGS),
+  );
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -330,11 +339,20 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const changeSettings = useCallback(
     (next: ReaderSettings) => {
       const merged = mergeReaderSettings(next);
+      settingsRef.current = merged;
       setSettings(merged);
-      saveReaderSettings(merged);
       engine?.setSettings(merged);
+      if (!userId) return;
+
+      // The repository row is the source of truth; the outbox entry it writes
+      // is what carries the change to other devices. A failed local write must
+      // never break reading, and the next change retries with the newer value.
+      void repo
+        .saveSettings(userId, { ...merged })
+        .then(() => requestSync('settings'))
+        .catch(() => undefined);
     },
-    [engine],
+    [engine, repo, requestSync, userId],
   );
 
   /**
@@ -536,13 +554,14 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   }, [bookId]);
 
   // Resolve the file URL while this open's sync settles, then read the
-  // position the reader should open at. Waiting for the pull (bounded by
-  // FIRST_SYNC_WAIT_MS) keeps a stale local position from hiding a newer one
-  // from another device without delaying offline or timed-out opens. The
-  // source resolver signs fresh URLs online, falls back to the device copy,
-  // and is the only path while offline. A local-store failure must fall back
-  // to opening at the start instead of blocking the book. Progress belongs to
-  // the signed-in account, so nothing is read until that account is known.
+  // settings and the position the reader should open at. Waiting for the pull
+  // (bounded by FIRST_SYNC_WAIT_MS) keeps a stale local position or an old
+  // settings document from hiding what another device wrote, without delaying
+  // offline or timed-out opens. The source resolver signs fresh URLs online,
+  // falls back to the device copy, and is the only path while offline. A
+  // local-store failure must fall back to opening at the start instead of
+  // blocking the book. Progress and settings belong to the signed-in account,
+  // so nothing is read until that account is known.
   const wantsReflow = book?.reflowAvailable === true;
   useEffect(() => {
     if (!bookId || !userId) return;
@@ -562,6 +581,39 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           }),
           waitForSync(FIRST_SYNC_WAIT_MS),
         ]);
+        if (cancelled) return;
+
+        const storedSettings = await repo.settingsFor(userId).catch(() => null);
+        if (cancelled) return;
+        // A row without a legacy entry is still authoritative for this account
+        // (including "this account never changed anything" → defaults).
+        let loadedSettings = readerSettingsFromRow(storedSettings);
+        if (storedSettings !== null) {
+          // The account row wins; a legacy entry left behind by a failed
+          // migration must not leak into another account on this browser.
+          clearLegacyReaderSettings();
+        } else {
+          // First open after the upgrade: adopt the old global document for
+          // this account, persist it there and push it on the next sync.
+          const legacy = readLegacyReaderSettings();
+          if (legacy !== null) {
+            loadedSettings = legacy;
+            // Persist in the background so a slow or blocked local store never
+            // delays opening the book. The global entry is dropped only after
+            // the account row landed, so a failure retries on the next open.
+            void repo
+              .saveSettings(userId, { ...legacy })
+              .then(() => {
+                clearLegacyReaderSettings();
+                requestSync('settings');
+              })
+              .catch(() => undefined);
+          }
+        }
+        if (cancelled) return;
+        settingsRef.current = loadedSettings;
+        setSettings(loadedSettings);
+
         const progress = await readLocalProgress(repo, userId, bookId).catch(() => null);
         if (cancelled) return;
         setSource({ ...resolved, initialLocator: progress?.locator });
@@ -579,7 +631,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId, cache, repo, userId, waitForSync, wantsReflow]);
+  }, [bookId, cache, repo, requestSync, userId, waitForSync, wantsReflow]);
 
   const initialLocator = source?.initialLocator;
 

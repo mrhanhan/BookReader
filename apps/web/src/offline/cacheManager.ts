@@ -12,6 +12,8 @@ export interface CacheManager {
   cacheFromUrl(userId: string, bookId: string, kind: CacheKind, url: string): Promise<number>;
   /** Returns a stable object URL for a cached file, or null when it is absent. */
   cachedUrl(userId: string, bookId: string, kind: CacheKind): Promise<string | null>;
+  /** Epoch milliseconds of the last download, or null when no cache row exists. */
+  cachedAt(userId: string, bookId: string): Promise<number | null>;
   touch(userId: string, bookId: string): Promise<void>;
   pin(userId: string, bookId: string): Promise<void>;
   unpin(userId: string, bookId: string): Promise<void>;
@@ -216,6 +218,10 @@ export function createCacheManager(deps: {
       } finally {
         if (pendingUrls.get(key) === task) pendingUrls.delete(key);
       }
+    },
+
+    async cachedAt(userId, bookId) {
+      return (await rowFor(userId, bookId))?.cachedAt ?? null;
     },
 
     async touch(userId, bookId) {

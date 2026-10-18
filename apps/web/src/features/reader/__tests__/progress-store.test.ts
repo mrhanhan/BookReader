@@ -103,7 +103,7 @@ it('writes the synchronous buffer under the per-account key', () => {
   });
 });
 
-it('uses a newer legacy buffer and writes it back to Dexie without queueing a sync', async () => {
+it('uses a newer legacy buffer and queues the buffered position for sync', async () => {
   const legacyKey = `${PROGRESS_KEY_PREFIX}user-a.b`;
   const storedAt = 1_700_000_000_000;
   const bufferedAt = storedAt + 4_000;
@@ -119,8 +119,17 @@ it('uses a newer legacy buffer and writes it back to Dexie without queueing a sy
   const stored = await repo.progressFor('user-a', 'b');
   expect(stored?.locator).toEqual(buffered);
   expect(stored?.clientUpdatedAt).toBe(new Date(bufferedAt).toISOString());
-  expect(stored?.dirty).toBe(false);
-  expect(await repo.pendingCount('user-a')).toBe(0);
+  expect(stored?.dirty).toBe(true);
+  // The buffer held the last position before the page died; that position must
+  // reach the server like any other page turn.
+  expect(await repo.pendingCount('user-a')).toBe(1);
+  expect(repo.outbox[0]).toMatchObject({
+    entityType: 'reading_progress',
+    entityId: 'b',
+    op: 'upsert',
+    payload: { bookId: 'b', locator: buffered },
+    clientUpdatedAt: new Date(bufferedAt).toISOString(),
+  });
 });
 
 it('keeps the Dexie row aligned by the first pull over an older legacy buffer', async () => {

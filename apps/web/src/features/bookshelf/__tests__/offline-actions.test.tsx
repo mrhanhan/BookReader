@@ -250,6 +250,30 @@ it('renders the cached shelf on a cold offline start', async () => {
   );
 });
 
+it('shows a cached book that the shelf snapshot never captured', async () => {
+  const session = createSession();
+  // Downloaded after the snapshot was written (for example from page two), so
+  // no snapshot row exists for it.
+  await session.cache.cacheFromUrl(
+    USER,
+    'book-page-two',
+    'book',
+    'https://files.test/cached-page-two.epub',
+  );
+  server.use(http.get('/api/books', () => HttpResponse.error()));
+  setOnline(false);
+
+  renderShelf(session);
+
+  expect(await screen.findByText('当前离线，显示本机缓存的书架。')).toBeInTheDocument();
+  const card = await cardFor('未知图书');
+  expect(await within(card).findByText('离线')).toBeInTheDocument();
+  expect(within(card).getByRole('link', { name: '阅读《未知图书》' })).toHaveAttribute(
+    'href',
+    '/books/book-page-two/read',
+  );
+});
+
 it('keeps shelf snapshots per account', async () => {
   const session = createSession();
   // Another account already cached the same book id with different metadata.

@@ -24,6 +24,27 @@ import { Toast } from './Toast';
 import { UploadDialog } from './UploadDialog';
 
 const SHELF_VIEW_KEY = 'bookr.shelf.view';
+/** Shown for a cached book whose shelf snapshot no longer carries metadata. */
+const UNKNOWN_BOOK_TITLE = '未知图书';
+
+/**
+ * Builds a shelf entry for a book that exists on this device but is missing
+ * from the metadata snapshot. Only the cache row is available, so title and
+ * format fall back to placeholder values; the cached file still opens.
+ */
+function bookFromCachedRow(row: OfflineBookRow): BookDto {
+  return bookFromShelfSnapshot({
+    id: row.bookId,
+    userId: row.userId,
+    title: UNKNOWN_BOOK_TITLE,
+    author: null,
+    format: 'epub',
+    coverUrl: null,
+    updatedAt: new Date(row.cachedAt).toISOString(),
+    reflowAvailable: false,
+    deletedAt: null,
+  });
+}
 
 /** Absence of an offline signal counts as online, as jsdom reports. */
 function isOnlineNow(): boolean {
@@ -209,7 +230,12 @@ export function BookshelfPage() {
     deleteBook.mutate(target.id, {
       onSuccess: () => {
         // Drop the snapshot immediately; the next full load would prune it too.
-        if (userId) void db.shelf.delete([userId, target.id]).catch(() => undefined);
+        if (userId) {
+          // A trashed book must not reappear through the offline-only merge:
+          // drop its snapshot and downloaded copy together.
+          void db.shelf.delete([userId, target.id]).catch(() => undefined);
+          void cache.remove(userId, target.id).catch(() => undefined);
+        }
         setDeletingBook(null);
         setToast('已移入回收站');
       },
@@ -272,10 +298,22 @@ export function BookshelfPage() {
   const nearingQuota = quotaRatio > 0.9;
   const isAdmin = user?.role === 'admin';
   // Offline, or after a failed library request, the shelf falls back to the
-  // metadata snapshot so books downloaded to this device stay openable.
-  const fallbackBooks = cachedShelfRows
-    ?.filter((row) => row.deletedAt == null)
-    .map(bookFromShelfSnapshot);
+  // metadata snapshot so books downloaded to this device stay openable. The
+  // snapshot can miss a book downloaded after it was written (for example from
+  // page two, or after a filtered load pruned it), so cached books absent from
+  // it are merged in with placeholder metadata instead of becoming invisible.
+  const fallbackBooks = useMemo(() => {
+    if (cachedShelfRows === undefined) return undefined;
+    const visible = cachedShelfRows.filter((row) => row.deletedAt == null);
+    // Tombstones still count as represented: a trashed book whose cache has
+    // not been cleaned up yet must not come back as an unknown title.
+    const represented = new Set(cachedShelfRows.map((row) => row.id));
+    const cachedOnly = (offlineRows ?? [])
+      .filter((row) => !represented.has(row.bookId) && cachedFileIds.has(row.bookId))
+      .sort((left, right) => right.cachedAt - left.cachedAt)
+      .map(bookFromCachedRow);
+    return [...visible.map(bookFromShelfSnapshot), ...cachedOnly];
+  }, [cachedFileIds, cachedShelfRows, offlineRows]);
   const usingCachedShelf =
     booksQuery.data === undefined &&
     fallbackBooks !== undefined &&

@@ -3,23 +3,60 @@ import { createElement } from 'react';
 import { render, screen } from '@testing-library/react';
 import { DEFAULT_READER_SETTINGS } from '@bookr/reader-core';
 import { SettingsPanel } from '../SettingsPanel';
-import { loadReaderSettings, saveReaderSettings, READER_SETTINGS_KEY } from '../readerSettings';
+import {
+  READER_SETTINGS_KEY,
+  clearLegacyReaderSettings,
+  readLegacyReaderSettings,
+  readerSettingsFromRow,
+} from '../readerSettings';
+import type { LocalSettingsRow } from '../../../sync/types';
 
 beforeEach(() => localStorage.clear());
 
-it('returns defaults when nothing is stored or the payload is corrupt', () => {
-  expect(loadReaderSettings()).toEqual(DEFAULT_READER_SETTINGS);
+function settingsRow(settings: Record<string, unknown>): LocalSettingsRow {
+  return {
+    userId: 'user-reader',
+    settings,
+    clientUpdatedAt: '2026-05-01T00:00:00.000Z',
+    dirty: false,
+  };
+}
+
+it('returns null when nothing was stored or the payload is corrupt', () => {
+  expect(readLegacyReaderSettings()).toBeNull();
+
   localStorage.setItem(READER_SETTINGS_KEY, '{not json');
-  expect(loadReaderSettings()).toEqual(DEFAULT_READER_SETTINGS);
+  expect(readLegacyReaderSettings()).toBeNull();
+  // The unusable entry is dropped so it cannot shadow the account row forever.
+  expect(localStorage.getItem(READER_SETTINGS_KEY)).toBeNull();
 });
 
-it('round-trips a merged settings object', () => {
-  saveReaderSettings({
-    ...DEFAULT_READER_SETTINGS,
+it('round-trips legacy settings through the merge', () => {
+  localStorage.setItem(
+    READER_SETTINGS_KEY,
+    JSON.stringify({ theme: 'dark', epub: { fontSize: 24 } }),
+  );
+
+  expect(readLegacyReaderSettings()).toMatchObject({
     theme: 'dark',
-    epub: { ...DEFAULT_READER_SETTINGS.epub, fontSize: 24 },
+    epub: { fontSize: 24 },
   });
-  expect(loadReaderSettings()).toMatchObject({ theme: 'dark', epub: { fontSize: 24 } });
+});
+
+it('clears the migrated legacy entry', () => {
+  localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify({ theme: 'sepia' }));
+  clearLegacyReaderSettings();
+  expect(localStorage.getItem(READER_SETTINGS_KEY)).toBeNull();
+});
+
+it('merges a repository row over the defaults', () => {
+  expect(readerSettingsFromRow(null)).toEqual(DEFAULT_READER_SETTINGS);
+  expect(readerSettingsFromRow(settingsRow({ theme: 'green', brightness: 0.8 }))).toMatchObject({
+    theme: 'green',
+    brightness: 0.8,
+    // Fields the row does not carry keep their defaults.
+    pdf: DEFAULT_READER_SETTINGS.pdf,
+  });
 });
 
 it('shows reflow typography only for the reflow kind', () => {

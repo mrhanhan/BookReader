@@ -118,12 +118,12 @@ function timeOf(clientUpdatedAt: string): number | null {
  *
  * The Dexie row and the synchronous legacy buffer can disagree after a page
  * was closed mid-write, so the newer timestamp wins. When the buffer is newer
- * it is imported through the repository's conflict-aware apply path: the row
- * becomes `dirty: false` and no outbox entry is created, exactly like a
- * position pulled from another device. A row that was already aligned with
- * the server after the first pull keeps its newer timestamp and wins. The
- * legacy key is dropped once the comparison is settled so migration happens
- * once.
+ * it is written back through `saveProgress`, which also enqueues one
+ * `reading_progress` upsert: the last flushed position must reach the server
+ * even though it was never an explicit open (the first-visit import path
+ * below stays outbox-free). A row that was already aligned with the server
+ * after the first pull keeps its newer timestamp and wins. The legacy key is
+ * dropped once the comparison is settled so migration happens once.
  */
 export async function readLocalProgress(
   repo: LocalRepository,
@@ -159,28 +159,15 @@ export async function readLocalProgress(
     return { locator: current.locator, savedAt: currentAt ?? Date.now() };
   }
 
-  const at = new Date(legacy.savedAt).toISOString();
   try {
-    await repo.applyServerChange(userId, {
-      revision: 0,
-      entityType: 'reading_progress',
-      entityId: bookId,
-      op: 'upsert',
-      payload: {
-        bookId,
-        locator: legacy.locator,
-        percent: legacy.locator.percent,
-        updatedAt: at,
-        clientUpdatedAt: at,
-      },
-      clientUpdatedAt: at,
-      serverUpdatedAt: at,
-    });
-    const merged = await repo.progressFor(userId, bookId);
+    // Writing through the normal save path marks the row dirty and queues the
+    // upsert, so the buffered last position is pushed like any other page turn.
+    const saved = await repo.saveProgress(userId, bookId, legacy.locator, legacy.savedAt);
     forgetLegacyProgress(userId, bookId);
-    return merged
-      ? { locator: merged.locator, savedAt: timeOf(merged.clientUpdatedAt) ?? legacy.savedAt }
-      : legacy;
+    return {
+      locator: saved.locator,
+      savedAt: timeOf(saved.clientUpdatedAt) ?? legacy.savedAt,
+    };
   } catch {
     // Keep the buffer for the next open and still open at its position.
     return legacy;

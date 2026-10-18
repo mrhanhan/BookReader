@@ -58,7 +58,11 @@ function restoreProperty(
 }
 
 function storedSettings(): unknown {
-  return JSON.parse(localStorage.getItem('bookr.reader.settings.v1') ?? 'null');
+  return repo.settingsRows.get('user-reader')?.settings ?? null;
+}
+
+function settingsOutbox() {
+  return repo.outbox.filter((row) => row.entityType === 'reader_settings');
 }
 
 it('applies and persists theme, zoom and crop changes', async () => {
@@ -69,6 +73,13 @@ it('applies and persists theme, zoom and crop changes', async () => {
     expect.objectContaining({ theme: 'dark' }),
   );
   expect(storedSettings()).toMatchObject({ theme: 'dark' });
+  // The change is persisted per account and queued for the next sync.
+  expect(settingsOutbox()).toHaveLength(1);
+  expect(settingsOutbox()[0]).toMatchObject({
+    entityId: 'user-reader',
+    op: 'upsert',
+    payload: { settings: expect.objectContaining({ theme: 'dark' }) },
+  });
 
   await userEvent.selectOptions(screen.getByLabelText('缩放'), 'fit-page');
   expect(engine.setSettings).toHaveBeenLastCalledWith(

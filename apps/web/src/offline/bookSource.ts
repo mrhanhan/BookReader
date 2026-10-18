@@ -30,10 +30,19 @@ export interface ResolveBookSourceDeps {
   userId: string;
   bookId: string;
   reflowAvailable: boolean;
+  /** Test seam for the cached-copy refresh window; production uses `Date.now`. */
+  now?: () => number;
   /** 生产传 api/reading 的 fetchReaderFile / fetchReflowFile；测试注入假实现。 */
   fetchFile: (bookId: string) => Promise<{ url: string }>;
   fetchReflow: (bookId: string) => Promise<{ url: string } | null>;
 }
+
+/**
+ * How long a downloaded copy is trusted. Opening a cached book is the moment
+ * its bytes may have drifted from the server (a re-converted file, an updated
+ * pack), so it is refreshed once a day instead of on every open.
+ */
+export const CACHE_REFRESH_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /** The cached pack URL, but only for books that actually have a pack. */
 async function cachedReflowUrl(deps: ResolveBookSourceDeps): Promise<string | null> {
@@ -46,12 +55,70 @@ async function cachedReflowUrl(deps: ResolveBookSourceDeps): Promise<string | nu
  * True when the account already keeps this book on the device: either it is
  * pinned, or a cached file exists. The cache row itself is written with the
  * file, so a readable cached URL means the row is present. Probing failures
- * count as "not cached": they only skip the background refresh.
+ * count as "not cached": a broken probe only makes the caller try a download,
+ * which fails silently and leaves reading on the signed URL.
  */
 async function hasCachedCopy(deps: ResolveBookSourceDeps): Promise<boolean> {
   if (await deps.cache.isPinned(deps.userId, deps.bookId).catch(() => false)) return true;
   const url = await deps.cache.cachedUrl(deps.userId, deps.bookId, 'book').catch(() => null);
   return url !== null;
+}
+
+/**
+ * Downloads every copy this account should keep. Failures are collected rather
+ * than propagated: the caller runs in the background and reading continues
+ * with the signed URL.
+ */
+async function downloadCachedCopies(
+  deps: ResolveBookSourceDeps,
+  fileUrl: string,
+  reflowUrl: string | null,
+): Promise<void> {
+  const writes: Promise<unknown>[] = [
+    deps.cache.cacheFromUrl(deps.userId, deps.bookId, 'book', fileUrl),
+  ];
+  if (reflowUrl !== null) {
+    writes.push(deps.cache.cacheFromUrl(deps.userId, deps.bookId, 'reflow', reflowUrl));
+  }
+  await Promise.allSettled(writes);
+}
+
+/**
+ * Caches a book this account does not keep on the device yet, then puts it
+ * into the recent-five window. Runs in the background: reading the freshly
+ * signed URL must never wait for the download, and a failure only means the
+ * book stays online-only.
+ */
+async function cacheNewCopy(
+  deps: ResolveBookSourceDeps,
+  fileUrl: string,
+  reflowUrl: string | null,
+): Promise<void> {
+  await downloadCachedCopies(deps, fileUrl, reflowUrl);
+  // The download created the row with a fresh timestamp; touching it again
+  // keeps the LRU ordering explicit. Without `keepBookId` the five-slot window
+  // is strict, and the just-downloaded (newest) book always survives.
+  await deps.cache.touch(deps.userId, deps.bookId).catch(() => undefined);
+  await deps.cache.enforceLru(deps.userId).catch(() => undefined);
+}
+
+/**
+ * True when the downloaded copy must be replaced: its row is older than the
+ * refresh window, the row is missing (a pinned placeholder that never landed),
+ * or the file itself disappeared while the row survived.
+ */
+async function needsRefresh(deps: ResolveBookSourceDeps): Promise<boolean> {
+  const cachedAt = await deps.cache
+    .cachedAt(deps.userId, deps.bookId)
+    .catch(() => null);
+  const now = deps.now?.() ?? Date.now();
+  if (cachedAt !== null && now - cachedAt < CACHE_REFRESH_AFTER_MS) {
+    const fileUrl = await deps.cache
+      .cachedUrl(deps.userId, deps.bookId, 'book')
+      .catch(() => null);
+    return fileUrl === null;
+  }
+  return true;
 }
 
 /**
@@ -64,13 +131,8 @@ async function refreshCachedCopy(
   fileUrl: string,
   reflowUrl: string | null,
 ): Promise<void> {
-  const writes = [
-    deps.cache.cacheFromUrl(deps.userId, deps.bookId, 'book', fileUrl),
-  ];
-  if (reflowUrl !== null) {
-    writes.push(deps.cache.cacheFromUrl(deps.userId, deps.bookId, 'reflow', reflowUrl));
-  }
-  await Promise.all(writes).catch(() => undefined);
+  if (!(await needsRefresh(deps))) return;
+  await downloadCachedCopies(deps, fileUrl, reflowUrl);
 }
 
 async function resolveOnline(deps: ResolveBookSourceDeps): Promise<ResolvedBookSource> {
@@ -99,7 +161,12 @@ async function resolveOnline(deps: ResolveBookSourceDeps): Promise<ResolvedBookS
       : null);
 
   if (await hasCachedCopy(deps)) {
+    // The account keeps this book on the device: only an aged or missing copy
+    // needs downloading again, so a normal re-open reads the cached bytes.
     void refreshCachedCopy(deps, file.url, reflow?.url ?? null);
+  } else {
+    // First online open: cache it silently and count it among the recent five.
+    void cacheNewCopy(deps, file.url, reflow?.url ?? null);
   }
 
   return { fileUrl: file.url, reflowUrl, offline: false };
@@ -118,7 +185,10 @@ async function resolveOffline(deps: ResolveBookSourceDeps): Promise<ResolvedBook
 /**
  * Picks the URL the reader should open: a signed URL while online (falling
  * back to the downloaded copy), and only the downloaded copy while offline.
- * A successful open also refreshes the book's position in the offline LRU.
+ * A successful online open keeps a copy on the device: a book this account
+ * does not have yet is downloaded silently and joins the recent-five LRU,
+ * while an existing copy is refreshed only when it is old or missing. A
+ * successful open also refreshes the book's position in the offline LRU.
  */
 export async function resolveBookSource(
   deps: ResolveBookSourceDeps,
