@@ -545,3 +545,53 @@ it('resets fallback state when the book changes after a failed reflow', async ()
     expect(last?.options?.initialLocator).toBeUndefined();
   });
 });
+
+it('silently cancels an in-flight switch after navigation', async () => {
+  const { openCalls } = await renderReader({
+    settings: settingsFor('original'),
+    progress: pdfProgress(120),
+    switcherTo: 'book-second',
+  });
+  await waitFor(() => expect(openCalls.at(-1)?.kind).toBe('pdf'));
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let fileCalls = 0;
+  server.use(
+    http.get('/api/books/:id/reflow', () =>
+      HttpResponse.json({
+        url: NEW_REFLOW_URL,
+        schemaVersion: 1,
+        pageCount: PAGE_COUNT,
+        expiresIn: 3600,
+      }),
+    ),
+    http.get('/api/books/:id/file', async () => {
+      fileCalls += 1;
+      // Hold the switch's PDF re-sign; the next book's own file request is
+      // allowed through so it can finish loading.
+      if (fileCalls === 1) await gate;
+      return HttpResponse.json({ url: PDF_URL, format: 'pdf', expiresIn: 3600 });
+    }),
+  );
+
+  await userEvent.click(await screen.findByRole('button', { name: '重排' }));
+  await waitFor(() => expect(fileCalls).toBe(1));
+
+  // Navigate while the switch's re-sign is still pending, then let it land.
+  await userEvent.click(screen.getByRole('button', { name: '换书' }));
+  await waitFor(() => expect(fileCalls).toBeGreaterThanOrEqual(2));
+  release();
+
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '目录' })).toBeInTheDocument(),
+  );
+  // The aborted switch must not toast, flip the stored mode or open reflow for
+  // the book the reader is now on.
+  expect(screen.queryByText('无法获取重排包，请稍后重试')).toBeNull();
+  expect(storedReadingMode()).toBe('original');
+  expect(openCalls.filter((call) => call.kind === 'reflow')).toHaveLength(0);
+  expect(openCalls.at(-1)?.kind).toBe('pdf');
+});

@@ -355,10 +355,15 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const fallbackToOriginal = useCallback(async () => {
     if (reflowFallbackRef.current) return;
     reflowFallbackRef.current = true;
+    // A navigation can win the race with the re-signing request; the old
+    // book's failure must not toast on or repersist settings for the new one.
+    const startedFor = bookIdRef.current;
 
     const current = pendingLocatorRef.current ?? currentLocatorRef.current;
     pendingLocatorRef.current = current ? locatorForMode(current, 'original') : null;
     await refreshSourceFor('original');
+    if (bookIdRef.current !== startedFor) return;
+
     showToast(REFLOW_FALLBACK_MESSAGE);
     const latest = settingsRef.current;
     changeSettings({
@@ -375,6 +380,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
    */
   const switchReadingMode = useCallback(
     async (next: PdfReadingMode) => {
+      // Re-signing can outlive the current book; a changed id is a silent
+      // cancel, not a refresh failure on the next book.
+      const startedFor = bookIdRef.current;
       if (next === 'reflow') {
         // The pack URL is required; the PDF URL feeds `sourcePdfUrl` for
         // visual blocks, so re-sign both in parallel. A failed PDF refresh
@@ -383,6 +391,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           refreshSourceFor('reflow'),
           refreshSourceFor('original'),
         ]);
+        if (bookIdRef.current !== startedFor) return;
         if (!refreshed) {
           showToast(REFLOW_REFRESH_FAILED_MESSAGE);
           return;
@@ -391,6 +400,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       } else {
         // Best-effort: an expired URL is retried, but the old one may still work.
         await refreshSourceFor('original');
+        if (bookIdRef.current !== startedFor) return;
       }
 
       let current = currentLocatorRef.current;
