@@ -120,6 +120,8 @@ function validationErrorBody(error: ZodError): ApiErrorBody {
 export interface BuildAppOptions {
   /** Destination for request logs; enabling it turns logging on in tests. */
   logStream?: NodeJS.WritableStream;
+  /** Overrides the sync stream ping/revalidation period; tests shorten it. */
+  streamPingIntervalMs?: number;
 }
 
 /**
@@ -183,7 +185,13 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
   registerReadingRoutes(app, deps);
-  registerSyncRoutes(app, deps);
+  registerSyncRoutes(
+    app,
+    deps,
+    options.streamPingIntervalMs !== undefined
+      ? { pingIntervalMs: options.streamPingIntervalMs }
+      : {},
+  );
   registerDeviceRoutes(app, deps);
   registerCategoryRoutes(app, deps);
 

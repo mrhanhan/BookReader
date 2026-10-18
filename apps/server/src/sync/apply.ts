@@ -313,6 +313,16 @@ async function applyAnnotationUpsert(
       }
       const storedTime = storedTimeOf(stored);
       if (clientTime.getTime() < storedTime.getTime()) {
+        // The incoming edit loses the race, but its text is still user work.
+        // Archive it before skipping so a late offline edit never vanishes.
+        if (write.noteText !== null && write.noteText !== stored.noteText) {
+          await insertAnnotationHistory(tx, {
+            annotationId: stored.id,
+            noteText: write.noteText,
+            editedAt: now,
+            deviceId: actor.deviceId ?? null,
+          });
+        }
         return skipped();
       }
       if (

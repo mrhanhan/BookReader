@@ -1,7 +1,15 @@
 import { newId, syncKey, type SyncPushChange } from '@bookr/shared';
 import type { FastifyInstance } from 'fastify';
 import { expect, it } from 'vitest';
-import { annotationHistory, annotations, bookmarks, readingProgress, userSettings } from '../src/db/schema';
+import { newRefreshToken } from '../src/auth/tokens';
+import {
+  annotationHistory,
+  annotations,
+  bookmarks,
+  devices,
+  readingProgress,
+  userSettings,
+} from '../src/db/schema';
 import { maxRevision } from '../src/sync/repo';
 import {
   authHeader,
@@ -42,6 +50,23 @@ async function push(
     headers: await authHeader(user),
     payload: { changes },
   });
+}
+
+/** Adds a second active device session for the same user. */
+async function seedSecondDevice(userId: string): Promise<string> {
+  const refresh = newRefreshToken();
+  const [device] = await testDb
+    .insert(devices)
+    .values({
+      userId,
+      refreshTokenHash: refresh.hash,
+      refreshExpiresAt: refresh.expiresAt,
+    })
+    .returning({ id: devices.id });
+  if (!device) {
+    throw new Error('seedSecondDevice could not insert a device');
+  }
+  return device.id;
 }
 
 function progressChange(bookId: string, at: string): SyncPushChange {
@@ -166,6 +191,42 @@ it('archives the replaced note text when a newer edit wins', async () => {
   expect(row).toMatchObject({ noteText: '第二版', revision: 2 });
 });
 
+it('archives the losing note text when a late older edit arrives', async () => {
+  const { app, user, bookId } = await setup();
+  const annotationId = newId();
+  const otherDeviceId = await seedSecondDevice(user.id);
+
+  // Device B edits later; its version becomes the stored one.
+  await push(
+    app,
+    { id: user.id, role: user.role, deviceId: otherDeviceId },
+    [annotationChange(annotationId, bookId, T2, '最新文本')],
+  );
+
+  // Device A was offline and its older edit arrives afterwards. It loses the
+  // race, but the text must still be recoverable from the history.
+  const stale = await push(app, user, [annotationChange(annotationId, bookId, T1, '较旧文本')]);
+
+  expect(stale.json().skipped).toEqual([syncKey('annotation', annotationId)]);
+  const history = await testDb.select().from(annotationHistory);
+  expect(history).toHaveLength(1);
+  expect(history[0]).toMatchObject({ noteText: '较旧文本', deviceId: user.deviceId });
+
+  const [row] = await testDb.select().from(annotations);
+  expect(row).toMatchObject({ noteText: '最新文本', revision: 1 });
+});
+
+it('does not archive a losing edit with identical or empty note text', async () => {
+  const { app, user, bookId } = await setup();
+  const annotationId = newId();
+
+  await push(app, user, [annotationChange(annotationId, bookId, T2, '相同文本')]);
+  const stale = await push(app, user, [annotationChange(annotationId, bookId, T1, '相同文本')]);
+
+  expect(stale.json().skipped).toEqual([syncKey('annotation', annotationId)]);
+  expect(await testDb.select().from(annotationHistory)).toEqual([]);
+});
+
 it('falls back to the receive time for a clock far in the future', async () => {
   const { app, user, bookId } = await setup();
   const future = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -278,6 +339,33 @@ it('rejects more than 100 changes', async () => {
   const response = await push(app, user, changes);
   expect(response.statusCode).toBe(400);
 });
+
+it('accepts a legal batch larger than the default 1 MiB body limit', async () => {
+  const { app, user, bookId } = await setup();
+  // 60 annotations with the maximum selected and note text is about 1.2 MiB,
+  // still within the protocol's 100-change and 10 KB-per-field limits.
+  const text = 'x'.repeat(10_000);
+  const changes: SyncPushChange[] = Array.from({ length: 60 }, (_, index) => ({
+    entityType: 'annotation',
+    entityId: newId(),
+    op: 'upsert',
+    clientUpdatedAt: new Date(Date.UTC(2026, 9, 1, 0, 0, index)).toISOString(),
+    payload: {
+      bookId,
+      type: 'note',
+      color: 'yellow',
+      locator,
+      selectedText: text,
+      noteText: text,
+      tags: [],
+    },
+  }));
+
+  const response = await push(app, user, changes);
+
+  expect(response.statusCode).toBe(200);
+  expect(response.json().applied).toHaveLength(changes.length);
+}, 30_000);
 
 it('keeps each user on their own pull cursor', async () => {
   const { app, user, bookId } = await setup();

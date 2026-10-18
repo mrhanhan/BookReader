@@ -4,11 +4,13 @@ import {
   syncPushRequestSchema,
   type SyncChangeEnvelope,
 } from '@bookr/shared';
+import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../app';
 import { makeRequireAuth } from '../auth/guards';
 import { SYNC_STREAM_TOKEN_TTL_SECONDS, signSyncStreamToken, verifySyncStreamToken } from '../auth/tokens';
+import { devices, users } from '../db/schema';
 import { AppError } from '../errors';
 import { applyPush, buildSnapshot, pullChanges } from './service';
 
@@ -20,6 +22,18 @@ const STREAM_PING_INTERVAL_MS = 25_000;
 
 /** How long a client may stay unreadable before its stream is dropped. */
 const STREAM_BACKPRESSURE_TIMEOUT_MS = 5_000;
+
+/**
+ * A full push may carry 100 annotations of 10 KB selected text and 10 KB note
+ * text each, which is roughly 2 MiB. Fastify's 1 MiB default would reject a
+ * legitimate batch with 413, so the route gets its own ceiling.
+ */
+const SYNC_PUSH_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/** Tuning knobs the app passes down; tests shorten the stream period. */
+export interface SyncRouteOptions {
+  pingIntervalMs?: number;
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -39,6 +53,46 @@ function unauthorized(): AppError {
   return new AppError(401, ERROR_CODES.UNAUTHORIZED);
 }
 
+/**
+ * Cheap authorization re-check for a stream: the account must still be active
+ * and, when the token is device-bound, that device must not have been revoked.
+ * Run at stream open and again on every ping so account disabling and device
+ * revocation close an already-open stream instead of waiting for its token.
+ */
+async function isStreamAuthorized(
+  deps: AppDeps,
+  userId: string,
+  deviceId: string | undefined,
+): Promise<boolean> {
+  const [user] = await deps.db
+    .select({ isActive: users.isActive })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user || !user.isActive) {
+    return false;
+  }
+  if (deviceId === undefined) {
+    // Legacy tokens predate device binding; there is no device to check.
+    return true;
+  }
+  if (!UUID_RE.test(deviceId)) {
+    return false;
+  }
+  const [device] = await deps.db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.id, deviceId),
+        eq(devices.userId, userId),
+        isNull(devices.revokedAt),
+      ),
+    )
+    .limit(1);
+  return device !== undefined;
+}
+
 /** One change frame; the revision doubles as the SSE event id so clients can resume. */
 function changeFrame(change: SyncChangeEnvelope): string {
   return `id: ${change.revision}\nevent: change\ndata: ${JSON.stringify(change)}\n\n`;
@@ -54,9 +108,11 @@ async function openStream(
   deps: AppDeps,
   reply: FastifyReply,
   userId: string,
+  deviceId: string | undefined,
   since: number,
   activeStreams: Set<() => void>,
   isClosing: () => boolean,
+  pingIntervalMs: number,
 ): Promise<void> {
   reply.hijack();
   const raw = reply.raw;
@@ -189,14 +245,38 @@ async function openStream(
   }
   live = true;
 
+  let revalidating = false;
   ping = setInterval(() => {
-    write(': ping\n\n');
-  }, STREAM_PING_INTERVAL_MS);
+    if (revalidating) {
+      return;
+    }
+    revalidating = true;
+    void isStreamAuthorized(deps, userId, deviceId)
+      .then((authorized) => {
+        if (!authorized) {
+          cleanup();
+          return;
+        }
+        write(': ping\n\n');
+      })
+      .catch(() => {
+        // A failed check must not keep a stream that may already be invalid.
+        cleanup();
+      })
+      .finally(() => {
+        revalidating = false;
+      });
+  }, pingIntervalMs);
   ping.unref();
 }
 
 /** Registers the per-user sync endpoints. */
-export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
+export function registerSyncRoutes(
+  app: FastifyInstance,
+  deps: AppDeps,
+  options: SyncRouteOptions = {},
+): void {
+  const pingIntervalMs = options.pingIntervalMs ?? STREAM_PING_INTERVAL_MS;
   const requireAuth = makeRequireAuth(deps);
   // Open SSE responses keep the server from closing; preClose ends them first
   // and waits for their handlers so no transaction outlives the app. Ordinary
@@ -221,10 +301,14 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
     return buildSnapshot(deps, request.user!.id);
   });
 
-  app.post('/api/sync/push', { preHandler: requireAuth }, async (request) => {
-    const { changes } = syncPushRequestSchema.parse(request.body);
-    return applyPush(deps, request.user!, changes);
-  });
+  app.post(
+    '/api/sync/push',
+    { preHandler: requireAuth, bodyLimit: SYNC_PUSH_BODY_LIMIT_BYTES },
+    async (request) => {
+      const { changes } = syncPushRequestSchema.parse(request.body);
+      return applyPush(deps, request.user!, changes);
+    },
+  );
 
   // EventSource cannot send headers, so the short-lived stream token rides in
   // the query string instead of the Authorization header.
@@ -248,13 +332,21 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
 
     let userId: string;
+    let deviceId: string | undefined;
     try {
       const claims = await verifySyncStreamToken(parsed.data.token, deps.config.jwtSecret);
       if (!UUID_RE.test(claims.sub)) {
         throw new Error('Invalid subject');
       }
       userId = claims.sub;
+      deviceId = claims.deviceId;
     } catch {
+      throw unauthorized();
+    }
+
+    // The token may have been minted before the device was revoked or the
+    // account disabled, so verify the current state before hijacking.
+    if (!(await isStreamAuthorized(deps, userId, deviceId))) {
       throw unauthorized();
     }
 
@@ -262,9 +354,11 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
       deps,
       reply,
       userId,
+      deviceId,
       parsed.data.since,
       activeStreams,
       () => closing,
+      pingIntervalMs,
     );
     runningStreams.add(stream);
     try {

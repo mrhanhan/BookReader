@@ -129,9 +129,12 @@ export async function recordChange(
 }
 
 /**
- * Reads one page of the caller's change log. A cursor older than the retained
+ * Reads one page of the caller's change log. A cursor below the retained
  * window is answered with `reset` so the client rebuilds from a snapshot
- * instead of silently missing pruned changes.
+ * instead of silently missing pruned changes. That includes `since = 0`: a
+ * fresh device asking from the beginning cannot have the pruned history, so it
+ * must snapshot rather than receive a partial log. Only `since = 0` with an
+ * untouched log (watermark still 0) is a valid full replay.
  *
  * The returned cursor is the revision of the last change in this page (or
  * `since` when the page is empty). Returning the user's global high-water mark
@@ -152,7 +155,7 @@ export async function pullChanges(
     async (tx) => {
       const watermark = await prunedThroughInTx(tx);
 
-      if (since > 0 && since < watermark) {
+      if (since < watermark) {
         return { changes: [], cursor: since, hasMore: false, reset: true };
       }
 

@@ -105,13 +105,19 @@ it('returns reset when the cursor predates the retention watermark', async () =>
     reset: true,
   });
 
+  // A fresh device starts at 0; with pruned history it cannot replay the log
+  // from the beginning, so it must snapshot too instead of missing old rows.
   const fromStart = await app.inject({
     method: 'GET',
     url: '/api/sync/pull?since=0',
     headers: await authHeader(user),
   });
-  expect(fromStart.json()).toMatchObject({ reset: false, hasMore: false });
-  expect(fromStart.json().changes).toHaveLength(1);
+  expect(fromStart.json()).toEqual({
+    changes: [],
+    cursor: 0,
+    hasMore: false,
+    reset: true,
+  });
 });
 
 it('snapshots live entities only and includes the cursor', async () => {

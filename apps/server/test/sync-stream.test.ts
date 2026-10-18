@@ -1,11 +1,12 @@
 import { connect } from 'node:net';
 import { Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { expect, it } from 'vitest';
 import { redactRequestUrl, type AppDeps, type BuildAppOptions } from '../src/app';
 import { signSyncStreamToken } from '../src/auth/tokens';
-import { syncChanges } from '../src/db/schema';
+import { devices, syncChanges } from '../src/db/schema';
 import { listChanges, markPrunedThrough } from '../src/sync/repo';
 import {
   authHeader,
@@ -14,6 +15,7 @@ import {
   resetDb,
   seedBook,
   seedUser,
+  setUserInactive,
   testDb,
 } from './helpers';
 
@@ -128,6 +130,21 @@ async function drainFor(stream: OpenStream, ms: number): Promise<string> {
     }
   }
   return stream.text;
+}
+
+/** Reads until the server ends the stream, failing if it stays open. */
+async function waitForEnd(stream: OpenStream, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const outcome = await nextChunk(stream, deadline - Date.now());
+    if (outcome === 'done') {
+      return;
+    }
+    if (outcome === 'timeout') {
+      break;
+    }
+  }
+  throw new Error(`Stream did not close; received ${JSON.stringify(stream.text)}`);
 }
 
 async function waitForSubscribers(
@@ -276,6 +293,69 @@ it('unsubscribes after the client disconnects', async () => {
   await waitForSubscribers(deps, user.id, 1);
 
   stream.controller.abort();
+  await waitForSubscribers(deps, user.id, 0);
+  await stopServer(app);
+});
+
+it('refuses a stream token whose device was revoked or user was disabled', async () => {
+  await resetDb();
+  const { app, url } = await startServer();
+  const revoked = await seedUser('member', 'revoked-device');
+  const disabled = await seedUser('member', 'disabled-account');
+
+  // Mint the tokens first: they stay cryptographically valid for 60 seconds.
+  const revokedToken = await fetchStreamToken(app, await authHeader(revoked));
+  const disabledToken = await fetchStreamToken(app, await authHeader(disabled));
+
+  await testDb
+    .update(devices)
+    .set({ revokedAt: new Date() })
+    .where(eq(devices.id, revoked.deviceId));
+  await setUserInactive(app, disabled.username);
+
+  for (const token of [revokedToken, disabledToken]) {
+    const response = await fetch(
+      `${url}/api/sync/stream?token=${encodeURIComponent(token)}&since=0`,
+    );
+    expect(response.status).toBe(401);
+    await response.text();
+  }
+
+  await stopServer(app);
+});
+
+it('closes an open stream when its device is revoked', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer({ streamPingIntervalMs: 100 });
+  const user = await seedUser('member');
+  const token = await fetchStreamToken(app, await authHeader(user));
+
+  const stream = await openStream(url, token, 0);
+  await waitForSubscribers(deps, user.id, 1);
+
+  await testDb
+    .update(devices)
+    .set({ revokedAt: new Date() })
+    .where(eq(devices.id, user.deviceId));
+
+  // The revalidation runs on the ping timer; two cycles is 200 ms here.
+  await waitForEnd(stream, 2_000);
+  await waitForSubscribers(deps, user.id, 0);
+  await stopServer(app);
+});
+
+it('closes an open stream when its user is disabled', async () => {
+  await resetDb();
+  const { app, deps, url } = await startServer({ streamPingIntervalMs: 100 });
+  const user = await seedUser('member');
+  const token = await fetchStreamToken(app, await authHeader(user));
+
+  const stream = await openStream(url, token, 0);
+  await waitForSubscribers(deps, user.id, 1);
+
+  await setUserInactive(app, user.username);
+
+  await waitForEnd(stream, 2_000);
   await waitForSubscribers(deps, user.id, 0);
   await stopServer(app);
 });
