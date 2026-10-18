@@ -5,7 +5,6 @@ import { annotations, bookmarks, readingProgress } from '../src/db/schema';
 import {
   appendChange,
   markPrunedThrough,
-  maxRevision,
   upsertUserSettings,
   type AppendChangeInput,
 } from '../src/sync/repo';
@@ -148,6 +147,9 @@ it('snapshots live entities only and includes the cursor', async () => {
     }),
   );
 
+  // The snapshot cursor is the caller's latest revision, not a reset value.
+  const logged = await appendChangeInTx(changeInput(user.id, 'last-change'));
+
   const response = await app.inject({
     method: 'GET',
     url: '/api/sync/snapshot',
@@ -157,7 +159,7 @@ it('snapshots live entities only and includes the cursor', async () => {
   const snapshot = response.json();
 
   expect(snapshot).toMatchObject({
-    cursor: await maxRevision(testDb),
+    cursor: logged.revision,
     progress: [
       { bookId: newer.id, locator, percent: locator.percent },
       { bookId: older.id, locator, percent: locator.percent },

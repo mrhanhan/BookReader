@@ -123,7 +123,7 @@ export async function pullChanges(
   since: number,
   limit: number,
 ): Promise<SyncPullResult> {
-  const cursor = await maxRevision(deps.db);
+  const cursor = await maxRevision(deps.db, userId);
   const watermark = await prunedThrough(deps.db);
 
   if (since > 0 && since < watermark) {
@@ -140,7 +140,7 @@ export async function pullChanges(
  * represented by the change log instead.
  */
 export async function buildSnapshot(deps: AppDeps, userId: string): Promise<SyncSnapshot> {
-  const cursor = await maxRevision(deps.db);
+  const cursor = await maxRevision(deps.db, userId);
 
   const progressRows = await deps.db
     .select()
@@ -177,7 +177,7 @@ export async function buildSnapshot(deps: AppDeps, userId: string): Promise<Sync
       ? settingsChangePayload(
           settings.payload,
           settings.clientUpdatedAt,
-          settings.clientUpdatedAt,
+          settings.updatedAt,
         )
       : null,
   };

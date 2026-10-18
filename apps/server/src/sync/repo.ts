@@ -34,13 +34,24 @@ function toEnvelope(row: SyncChangeRow): SyncChangeEnvelope {
 }
 
 /**
- * Appends one accepted change and returns its envelope. The revision comes
- * from the bigserial, so concurrent transactions receive increasing numbers.
+ * Serializes writes to one user's change log for the rest of the transaction.
+ * Advisory locks are reentrant, so `appendChange` may take the same lock again.
+ */
+export async function lockUserChanges(tx: Transaction, userId: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${userId}))`);
+}
+
+/**
+ * Appends one accepted change and returns its envelope. The user-scoped
+ * advisory lock makes revisions visible per user in commit order, so a client
+ * cursor can never jump over a transaction that commits later.
  */
 export async function appendChange(
   tx: Transaction,
   input: AppendChangeInput,
 ): Promise<SyncChangeEnvelope> {
+  await lockUserChanges(tx, input.userId);
+
   const [row] = await tx
     .insert(syncChanges)
     .values({
@@ -84,11 +95,12 @@ export async function listChanges(
   };
 }
 
-/** Returns the newest revision in the log, or 0 when the log is empty. */
-export async function maxRevision(db: Database): Promise<number> {
+/** Returns the newest revision in one user's log, or 0 when it is empty. */
+export async function maxRevision(db: Database, userId: string): Promise<number> {
   const [row] = await db
     .select({ value: sql<string>`coalesce(max(${syncChanges.revision}), 0)` })
-    .from(syncChanges);
+    .from(syncChanges)
+    .where(eq(syncChanges.userId, userId));
   return Number(row?.value ?? 0);
 }
 
@@ -117,7 +129,11 @@ export async function markPrunedThrough(tx: Transaction, revision: number): Prom
 export async function readUserSettings(
   db: Database,
   userId: string,
-): Promise<{ payload: Record<string, unknown>; clientUpdatedAt: Date } | null> {
+): Promise<{
+  payload: Record<string, unknown>;
+  clientUpdatedAt: Date;
+  updatedAt: Date;
+} | null> {
   const [row] = await db
     .select()
     .from(userSettings)
@@ -127,7 +143,11 @@ export async function readUserSettings(
   if (!row) {
     return null;
   }
-  return { payload: row.payload, clientUpdatedAt: row.clientUpdatedAt };
+  return {
+    payload: row.payload,
+    clientUpdatedAt: row.clientUpdatedAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
 /** Replaces a user's synced reader settings in place. */

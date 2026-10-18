@@ -80,7 +80,20 @@ it('paginates with hasMore', async () => {
   expect(next.rows.map((row) => row.revision)).toEqual([third.revision]);
   expect(next.hasMore).toBe(false);
 
-  expect(await maxRevision(testDb)).toBe(third.revision);
+  expect(await maxRevision(testDb, user.id)).toBe(third.revision);
+});
+
+it('scopes the revision high-water mark to one user', async () => {
+  await resetDb();
+  const alice = await seedUser('member', 'alice');
+  const bob = await seedUser('member', 'bob');
+
+  const aliceChange = await appendChangeInTx(changeInput(alice.id, { entityId: 'alice-book' }));
+  const bobChange = await appendChangeInTx(changeInput(bob.id, { entityId: 'bob-book' }));
+
+  expect(bobChange.revision).toBeGreaterThan(aliceChange.revision);
+  expect(await maxRevision(testDb, alice.id)).toBe(aliceChange.revision);
+  expect(await maxRevision(testDb, bob.id)).toBe(bobChange.revision);
 });
 
 it("never returns another user's changes", async () => {
@@ -138,6 +151,7 @@ it('upserts user settings in place', async () => {
   expect(await readUserSettings(testDb, user.id)).toEqual({
     payload: { theme: 'dark', fontSize: 18 },
     clientUpdatedAt: secondAt,
+    updatedAt: secondAt,
   });
   expect(await readUserSettings(testDb, other.id)).toBeNull();
 });
