@@ -139,7 +139,7 @@ export function DeviceList() {
         </div>
       ) : devices.length === 0 ? (
         <p className="mt-4 rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
-          没有其他已登录的设备。
+          暂无已登录设备。
         </p>
       ) : (
         <ul aria-label="已登录设备" className="mt-3 divide-y divide-border">

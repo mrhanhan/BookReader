@@ -10,15 +10,11 @@ import { SyncStatusBadge } from './SyncStatusBadge';
 export function SettingsPage() {
   const { state, syncNow } = useSync();
   const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
 
   async function handleSyncNow() {
     setSyncing(true);
-    setSyncError(null);
     try {
       await syncNow('settings');
-    } catch {
-      setSyncError('同步失败，请稍后重试');
     } finally {
       setSyncing(false);
     }
@@ -73,9 +69,9 @@ export function SettingsPage() {
           </div>
         </dl>
 
-        {syncError ? (
+        {state.status === 'error' ? (
           <p role="alert" className="mt-3 text-xs text-highlight">
-            {syncError}
+            同步失败，请检查网络后重试。
           </p>
         ) : null}
       </section>

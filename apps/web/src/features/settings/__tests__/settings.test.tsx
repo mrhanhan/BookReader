@@ -100,6 +100,22 @@ it('shows the sync state and lets the user sync now', async () => {
   expect(syncNow).toHaveBeenCalledTimes(1);
 });
 
+it('surfaces a sync failure', async () => {
+  const { engine } = createEngine({
+    status: 'error',
+    pending: 2,
+    lastSyncedAt: null,
+    conflicts: 0,
+  });
+
+  renderSettings(engine);
+
+  const syncSection = await screen.findByRole('region', { name: '同步' });
+  expect(await within(syncSection).findByRole('alert')).toHaveTextContent(
+    '同步失败，请检查网络后重试。',
+  );
+});
+
 it('lists cached books with sizes and clears unpinned ones', async () => {
   const session = createSession();
   await session.cache.cacheFromUrl(
@@ -117,8 +133,8 @@ it('lists cached books with sizes and clears unpinned ones', async () => {
   // Titles come from the book API; the sizes come from the local cache rows.
   expect(await screen.findByText('三体')).toBeInTheDocument();
   expect(screen.getByText('深入理解计算机系统')).toBeInTheDocument();
-  expect(screen.getByText('2 KB')).toBeInTheDocument();
-  expect(screen.getByText('4 KB')).toBeInTheDocument();
+  expect(screen.getByText('EPUB · 2 KB')).toBeInTheDocument();
+  expect(screen.getByText('PDF · 4 KB')).toBeInTheDocument();
   expect(screen.getByText(/已用 6 KB/)).toBeInTheDocument();
   expect(
     screen.getByRole('switch', { name: '固定《深入理解计算机系统》' }),
@@ -162,6 +178,43 @@ it('pins and removes a cached book', async () => {
   await waitFor(async () => {
     expect(await session.db.offlineBooks.get([USER, BOOK_THREE_BODY])).toBeUndefined();
   });
+});
+
+it('uses the on-device shelf snapshot when the book API is unavailable', async () => {
+  const session = createSession();
+  await session.cache.cacheFromUrl(
+    USER,
+    BOOK_THREE_BODY,
+    'book',
+    'https://files.test/small.epub',
+  );
+  await session.db.shelf.put({
+    id: BOOK_THREE_BODY,
+    userId: USER,
+    title: '三体（本机快照）',
+    author: '刘慈欣',
+    format: 'epub',
+    coverUrl: null,
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    reflowAvailable: true,
+  });
+  server.use(
+    http.get('/api/books/:id', () =>
+      HttpResponse.json(
+        { error: { code: 'INTERNAL', message: 'offline' } },
+        { status: 500 },
+      ),
+    ),
+  );
+
+  const { engine } = createEngine();
+  renderSettings(engine, session);
+
+  expect(await screen.findByText('三体（本机快照）')).toBeInTheDocument();
+  // The snapshot also carries format and reflow availability.
+  expect(screen.getByText('EPUB · 2 KB')).toBeInTheDocument();
+  expect(screen.getByText('可重排')).toBeInTheDocument();
+  expect(screen.queryByText('未知图书')).toBeNull();
 });
 
 it('renames and revokes a device', async () => {

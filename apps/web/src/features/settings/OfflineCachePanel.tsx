@@ -8,7 +8,13 @@ import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
 import { formatBytes } from '../../lib/format';
 import { useOfflineSession } from '../../offline/offlineContext';
-import type { OfflineBookRow } from '../../sync/types';
+import type { CachedShelfBook, OfflineBookRow } from '../../sync/types';
+
+interface CachedBookInfo {
+  title: string;
+  format: string | null;
+  reflowAvailable: boolean;
+}
 
 /**
  * Shows what this account keeps on the device and lets the reader pin, remove
@@ -28,6 +34,20 @@ export function OfflineCachePanel() {
     [db, userId],
   );
 
+  // Every successful shelf load writes this snapshot, so titles stay readable
+  // without the library API.
+  const shelfRows = useLiveQuery(
+    () =>
+      userId === null
+        ? Promise.resolve([] as CachedShelfBook[])
+        : db.shelf.where('userId').equals(userId).toArray(),
+    [db, userId],
+  );
+  const shelfById = useMemo(
+    () => new Map((shelfRows ?? []).map((row) => [row.id, row])),
+    [shelfRows],
+  );
+
   // Pinned placeholders without bytes are download intents, not cached books.
   const cachedRows = useMemo(
     () =>
@@ -40,6 +60,10 @@ export function OfflineCachePanel() {
     [rows],
   );
   const cachedIds = useMemo(() => cachedRows.map((row) => row.bookId), [cachedRows]);
+  // `clearUnpinned` drops every unpinned row, including zero-byte ones, so the
+  // confirmation must count the same way.
+  const unpinnedCount = (rows ?? []).filter((row) => !row.pinned).length;
+  const loaded = rows !== undefined;
 
   const [usage, setUsage] = useState<{ bytes: number; quota: number | null } | null>(null);
   const rowsFingerprint = cachedRows
@@ -66,9 +90,17 @@ export function OfflineCachePanel() {
     };
   }, [cache, userId, rowsFingerprint]);
 
-  // Titles live on the server; the cached bytes only know their book ids.
-  const titleQueries = useQueries({
-    queries: cachedIds.map((bookId) => ({
+  // Only books missing from the snapshot ask the API, so an offline device
+  // still renders the ones it already knows about.
+  const snapshotLoaded = shelfRows !== undefined;
+  const missingIds = useMemo(
+    () =>
+      snapshotLoaded ? cachedIds.filter((bookId) => !shelfById.has(bookId)) : [],
+    [cachedIds, shelfById, snapshotLoaded],
+  );
+
+  const bookQueries = useQueries({
+    queries: missingIds.map((bookId) => ({
       queryKey: ['book', bookId] as const,
       queryFn: async () => {
         const result = await apiFetch<{ book: BookDto }>(
@@ -79,25 +111,49 @@ export function OfflineCachePanel() {
     })),
   });
 
-  const bookLabels = useMemo(() => {
-    const labels = new Map<string, { title: string | null; failed: boolean }>();
-    cachedIds.forEach((bookId, index) => {
-      const query = titleQueries[index];
-      labels.set(bookId, {
+  const fallbackById = useMemo(() => {
+    const fallbacks = new Map<
+      string,
+      { title: string | null; format: string | null; reflowAvailable: boolean; failed: boolean }
+    >();
+    missingIds.forEach((bookId, index) => {
+      const query = bookQueries[index];
+      fallbacks.set(bookId, {
         title: query?.data?.title ?? null,
+        format: query?.data?.format ?? null,
+        reflowAvailable: query?.data?.reflowAvailable === true,
         failed: query?.isError === true,
       });
     });
-    return labels;
-  }, [cachedIds, titleQueries]);
+    return fallbacks;
+  }, [bookQueries, missingIds]);
 
-  const labelFor = useCallback(
-    (bookId: string): string => {
-      const entry = bookLabels.get(bookId);
-      if (entry?.title) return entry.title;
-      return entry?.failed ? '未知图书' : '正在读取书名…';
+  const infoFor = useCallback(
+    (bookId: string): CachedBookInfo => {
+      const snapshot = shelfById.get(bookId);
+      if (snapshot) {
+        return {
+          title: snapshot.title,
+          format: snapshot.format,
+          reflowAvailable: snapshot.reflowAvailable === true,
+        };
+      }
+
+      const fallback = fallbackById.get(bookId);
+      if (fallback?.title) {
+        return {
+          title: fallback.title,
+          format: fallback.format,
+          reflowAvailable: fallback.reflowAvailable,
+        };
+      }
+      return {
+        title: fallback?.failed ? '未知图书' : '正在读取书名…',
+        format: null,
+        reflowAvailable: false,
+      };
     },
-    [bookLabels],
+    [fallbackById, shelfById],
   );
 
   const [busyBookId, setBusyBookId] = useState<string | null>(null);
@@ -106,11 +162,9 @@ export function OfflineCachePanel() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
 
-  const unpinnedCount = cachedRows.filter((row) => !row.pinned).length;
-
   async function togglePinned(row: OfflineBookRow) {
     if (userId === null) return;
-    const title = labelFor(row.bookId);
+    const title = infoFor(row.bookId).title;
     setBusyBookId(row.bookId);
     setError(null);
     try {
@@ -130,7 +184,7 @@ export function OfflineCachePanel() {
 
   async function removeBook(row: OfflineBookRow) {
     if (userId === null) return;
-    const title = labelFor(row.bookId);
+    const title = infoFor(row.bookId).title;
     setBusyBookId(row.bookId);
     setError(null);
     try {
@@ -182,19 +236,21 @@ export function OfflineCachePanel() {
         <Button
           variant="ghost"
           size="sm"
-          disabled={unpinnedCount === 0}
+          disabled={!loaded || unpinnedCount === 0}
           onClick={() => setConfirmClear(true)}
         >
           清理未固定的缓存
         </Button>
       </div>
 
-      <p className="mt-4 text-sm text-muted">
-        已用 {formatBytes(usedBytes)}
-        {usage?.quota != null
-          ? ` / ${formatBytes(usage.quota)}`
-          : '（本机配额未知）'}
-      </p>
+      {loaded ? (
+        <p className="mt-4 text-sm text-muted">
+          已用 {formatBytes(usedBytes)}
+          {usage?.quota != null
+            ? ` / ${formatBytes(usage.quota)}`
+            : '（本机配额未知）'}
+        </p>
+      ) : null}
 
       {feedback ? (
         <p role="status" aria-live="polite" className="mt-2 text-xs text-accent">
@@ -207,25 +263,43 @@ export function OfflineCachePanel() {
         </p>
       ) : null}
 
-      {cachedRows.length === 0 ? (
+      {!loaded ? (
+        <p role="status" className="py-8 text-center text-sm tracking-widest text-muted">
+          正在读取本机缓存…
+        </p>
+      ) : cachedRows.length === 0 ? (
         <p className="mt-4 rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
           还没有缓存任何书籍。在书架上选择“下载到本机”即可离线阅读。
         </p>
       ) : (
         <ul aria-label="已缓存的书籍" className="mt-3 divide-y divide-border">
           {cachedRows.map((row) => {
-            const title = labelFor(row.bookId);
+            const info = infoFor(row.bookId);
+            const title = info.title;
             const busy = busyBookId === row.bookId;
+            const details = [
+              info.format === null ? null : info.format.toUpperCase(),
+              formatBytes(row.bytes),
+            ]
+              .filter((part): part is string => part !== null)
+              .join(' · ');
             return (
               <li
                 key={row.bookId}
                 className="flex flex-wrap items-center justify-between gap-3 py-3"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm text-ink" title={title}>
-                    {title}
+                  <p className="flex flex-wrap items-center gap-2 text-sm text-ink">
+                    <span className="truncate" title={title}>
+                      {title}
+                    </span>
+                    {info.reflowAvailable ? (
+                      <span className="rounded-sm border border-accent/40 px-1.5 py-0.5 text-[10px] tracking-wider text-accent">
+                        可重排
+                      </span>
+                    ) : null}
                   </p>
-                  <p className="mt-0.5 text-xs text-muted">{formatBytes(row.bytes)}</p>
+                  <p className="mt-0.5 text-xs text-muted">{details}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
