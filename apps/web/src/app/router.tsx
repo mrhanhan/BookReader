@@ -1,12 +1,13 @@
 import { createBrowserRouter, Navigate, Outlet, useLocation } from 'react-router';
 import type { RouteObject } from 'react-router';
+import type { ReactNode } from 'react';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RegisterPage } from '../features/auth/RegisterPage';
+import { MembersPage } from '../features/admin/MembersPage';
 import { BookshelfPage } from '../features/bookshelf/BookshelfPage';
 import { TrashPage } from '../features/bookshelf/TrashPage';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './auth';
-import { AdminPage } from './pages';
 
 function RequireAuth() {
   const { user, loading } = useAuth();
@@ -31,6 +32,25 @@ function RequireAuth() {
   return <Outlet />;
 }
 
+/** Administration is invisible to members, even by direct URL. */
+function RequireAdmin({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <p role="status" className="py-16 text-center text-sm tracking-widest text-muted">
+        正在核对名册…
+      </p>
+    );
+  }
+
+  if (user?.role !== 'admin') {
+    return <Navigate to="/" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 /** Route table shared by the browser router and `createMemoryRouter` in tests. */
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -43,7 +63,15 @@ export const routes: RouteObject[] = [
         children: [
           { index: true, element: <BookshelfPage /> },
           { path: 'trash', element: <TrashPage /> },
-          { path: 'admin', element: <AdminPage /> },
+          { path: 'admin', element: <Navigate to="/admin/members" replace /> },
+          {
+            path: 'admin/members',
+            element: (
+              <RequireAdmin>
+                <MembersPage />
+              </RequireAdmin>
+            ),
+          },
         ],
       },
     ],

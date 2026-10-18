@@ -6,13 +6,16 @@ import { useAuth } from './auth';
 const NAV_ITEMS = [
   { to: '/', label: '书架', end: true },
   { to: '/trash', label: '回收站', end: false },
-  { to: '/admin', label: '管理', end: false },
 ] as const;
+
+/** Administration is only advertised to administrators. */
+const ADMIN_NAV_ITEM = { to: '/admin/members', label: '管理', end: false } as const;
 
 export function AppLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [loggingOut, setLoggingOut] = useState(false);
+  const navItems = user?.role === 'admin' ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS;
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -32,7 +35,7 @@ export function AppLayout() {
             纸墨书房
           </NavLink>
           <nav aria-label="主导航" className="flex items-center gap-1 text-sm">
-            {NAV_ITEMS.map((item) => (
+            {navItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

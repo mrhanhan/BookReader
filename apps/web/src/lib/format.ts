@@ -38,6 +38,19 @@ export function formatDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? '' : dateFormatter.format(date);
 }
 
+const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+/** Formats an ISO timestamp with its time of day, for expiry moments. */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? '' : dateTimeFormatter.format(date);
+}
+
 /** Whole days left before a trashed book is purged; 0 means cleanup is due. */
 export function retentionDaysLeft(deletedAtIso: string, now: Date = new Date()): number {
   const deletedAt = new Date(deletedAtIso).getTime();

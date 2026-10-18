@@ -9,6 +9,7 @@ import { setupServer } from 'msw/node';
 import { createElement } from 'react';
 import type { ReactElement } from 'react';
 import { afterAll, afterEach, beforeAll } from 'vitest';
+import type { AdminInvite, AdminMember, StorageOverview } from '../src/api/admin';
 import { AuthProvider } from '../src/app/auth';
 
 const tokens: AuthTokens = {
@@ -113,7 +114,76 @@ function createFixtureState() {
     deletedAt: new Date(now - 10 * DAY_MS).toISOString(),
   });
 
-  return { categories: [computer, literature], shelf, trash: [trashed] as BookDto[] };
+  // The administration fixtures mirror the signed-in member (`reader`) plus an
+  // administrator and a second member. Usage tracks the shelf fixtures above.
+  const members: AdminMember[] = [
+    {
+      id: 'user-admin',
+      username: 'keeper',
+      displayName: '掌灯人',
+      role: 'admin',
+      isActive: true,
+      uploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
+      usedBytes: 0,
+      createdAt: new Date(now - 90 * DAY_MS).toISOString(),
+    },
+    {
+      id: reader.id,
+      username: reader.username,
+      displayName: reader.displayName,
+      role: 'member',
+      isActive: true,
+      uploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
+      usedBytes: 28 * 1024 * 1024,
+      createdAt: new Date(now - 60 * DAY_MS).toISOString(),
+    },
+    {
+      id: 'user-other',
+      username: 'linzhou',
+      displayName: '林舟',
+      role: 'member',
+      isActive: true,
+      uploadQuotaBytes: 10 * 1024 * 1024 * 1024,
+      usedBytes: 3 * 1024 * 1024,
+      createdAt: new Date(now - 30 * DAY_MS).toISOString(),
+    },
+  ];
+
+  // One invite per lifecycle state keeps the admin list honest in tests.
+  const invites: AdminInvite[] = [
+    {
+      code: 'E7K2M9Q4XT',
+      expiresAt: new Date(now + 2 * DAY_MS).toISOString(),
+      usedBy: null,
+      revokedAt: null,
+    },
+    {
+      code: 'H3N8P5R2WY',
+      expiresAt: new Date(now + 1 * DAY_MS).toISOString(),
+      usedBy: 'user-other',
+      revokedAt: null,
+    },
+    {
+      code: 'S6T4V7Z9BD',
+      expiresAt: new Date(now + 3 * DAY_MS).toISOString(),
+      usedBy: null,
+      revokedAt: new Date(now - DAY_MS).toISOString(),
+    },
+    {
+      code: 'C2F5J8K3MQ',
+      expiresAt: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
+      usedBy: null,
+      revokedAt: null,
+    },
+  ];
+
+  return {
+    categories: [computer, literature],
+    shelf,
+    trash: [trashed] as BookDto[],
+    members,
+    invites,
+  };
 }
 
 let fixtures = createFixtureState();
@@ -162,6 +232,20 @@ function listBooksFromUrl(url: string): {
   const pageSize = Number(params.get('pageSize') ?? 24);
   const start = (page - 1) * pageSize;
   return { items: items.slice(start, start + pageSize), total: items.length, page, pageSize };
+}
+
+/** Mirrors the server's storage overview, recomputed from the live fixtures. */
+function storageFromMembers(members: AdminMember[]): StorageOverview {
+  const perMember = members.map((member) => ({
+    userId: member.id,
+    displayName: member.displayName,
+    usedBytes: member.usedBytes,
+  }));
+  return {
+    totalBytes: LIBRARY_QUOTA_BYTES,
+    usedBytes: perMember.reduce((sum, member) => sum + member.usedBytes, 0),
+    perMember,
+  };
 }
 
 export const handlers = [
@@ -251,6 +335,48 @@ export const handlers = [
     fixtures.categories.push(created);
     return HttpResponse.json(created, { status: 201 });
   }),
+
+  http.get('/api/admin/members', () => HttpResponse.json({ items: fixtures.members })),
+  http.patch('/api/admin/members/:id', async ({ params, request }) => {
+    const patch = (await request.json()) as {
+      isActive?: boolean;
+      uploadQuotaBytes?: number;
+      password?: string;
+    };
+    const member = fixtures.members.find((item) => item.id === params.id);
+    if (!member) return error(404, 'NOT_FOUND', 'Member not found');
+
+    if (patch.isActive !== undefined) member.isActive = patch.isActive;
+    if (patch.uploadQuotaBytes !== undefined) member.uploadQuotaBytes = patch.uploadQuotaBytes;
+    // Passwords are hashed server-side; the summary never carries them.
+    return HttpResponse.json({ ...member });
+  }),
+  http.get('/api/admin/invites', () => HttpResponse.json({ items: fixtures.invites })),
+  http.post('/api/admin/invites', async ({ request }) => {
+    const input = (await request.json().catch(() => ({}))) as { expiresInHours?: number };
+    const expiresInHours = input.expiresInHours ?? 72;
+    const code = `INV${String(fixtures.invites.length + 1).padStart(4, '0')}`;
+    const created: AdminInvite = {
+      code,
+      expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString(),
+      usedBy: null,
+      revokedAt: null,
+    };
+    fixtures.invites.unshift(created);
+    return HttpResponse.json(
+      { code: created.code, expiresAt: created.expiresAt },
+      { status: 201 },
+    );
+  }),
+  http.delete('/api/admin/invites/:code', ({ params }) => {
+    const invite = fixtures.invites.find((item) => item.code === params.code);
+    if (!invite) return error(404, 'NOT_FOUND', 'Invite not found');
+    invite.revokedAt = new Date().toISOString();
+    return new HttpResponse(null, { status: 204 });
+  }),
+  http.get('/api/admin/storage', () =>
+    HttpResponse.json(storageFromMembers(fixtures.members)),
+  ),
 ];
 
 export const server = setupServer(...handlers);
