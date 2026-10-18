@@ -11,4 +11,5 @@ export * from './reflow/render';
 export * from './reflow/selection';
 export * from './reflow/source-painter';
 export * from './settings';
+export * from './text-context';
 export * from './types';

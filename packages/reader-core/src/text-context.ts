@@ -174,10 +174,12 @@ export function reflowChapterText(
   const headingText = heading?.type === 'heading' ? heading.text?.trim() ?? '' : '';
   const label = headingText.length > 0 ? normalizeContextText(headingText) : fallbackLabel;
 
-  const text = blocks
-    .slice(start, end)
-    .map((entry) => entry.block.text ?? '')
-    .join(PAGE_SEPARATOR);
+  const text = normalizeContextText(
+    blocks
+      .slice(start, end)
+      .map((entry) => entry.block.text ?? '')
+      .join(PAGE_SEPARATOR),
+  );
   const capped = capContextText(text, maxChars);
   return { text: capped.text, label, truncated: capped.truncated };
 }

@@ -187,6 +187,8 @@ export class PdfReaderEngine implements ReaderEngine {
   private scale = 1;
   private currentPage = 1;
   private toc: TocItem[] = [];
+  /** `buildPdfToc` fell back to one entry per page; those cannot delimit chapters. */
+  private outlineFallback = false;
   private highlights: ReaderHighlight[] = [];
   private observer: IntersectionObserver | null = null;
   private scrollFrame: number | null = null;
@@ -448,14 +450,12 @@ export class PdfReaderEngine implements ReaderEngine {
     const range = pdfChapterRange(page, entries.map((entry) => entry.page), this.pageCount);
     const parts: string[] = [];
     let length = 0;
-    let stoppedEarly = false;
-    for (let current = range.start; current <= range.end; current += 1) {
-      // More pages remain but the cap is already reached: the context is cut.
+    let nextPage = range.start;
+    for (; nextPage <= range.end; nextPage += 1) {
       if (length >= limit) {
-        stoppedEarly = true;
         break;
       }
-      const text = await this.readPageText(current);
+      const text = await this.readPageText(nextPage);
       if (text.length === 0) {
         continue;
       }
@@ -467,14 +467,28 @@ export class PdfReaderEngine implements ReaderEngine {
     }
 
     const capped = capContextText(parts.join('\n\n'), limit);
+    // Stopping at exactly the cap is only a truncation when content remains.
+    const truncated = capped.truncated
+      || (nextPage <= range.end && await this.hasTextAfter(nextPage, range.end));
     const label = entries.find((entry) => entry.page === range.start)?.label
       ?? `第 ${range.start} 页`;
     return {
       scope,
       text: capped.text,
       label,
-      truncated: capped.truncated || stoppedEarly,
+      truncated,
     };
+  }
+
+  /** Whether any page in the inclusive range carries text. */
+  private async hasTextAfter(start: number, end: number): Promise<boolean> {
+    for (let page = start; page <= end; page += 1) {
+      const text = await this.readPageText(page);
+      if (text.length > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Current 1-based page, clamped to the document. */
@@ -502,6 +516,10 @@ export class PdfReaderEngine implements ReaderEngine {
 
   /** Flattened outline entries whose locator points at a PDF page. */
   private tocEntries(): Array<{ label: string; page: number }> {
+    if (this.outlineFallback) {
+      // One fallback entry per page would collapse chapters to a single page.
+      return [];
+    }
     const entries: Array<{ label: string; page: number }> = [];
     const walk = (items: TocItem[]): void => {
       for (const item of items) {
@@ -668,6 +686,7 @@ export class PdfReaderEngine implements ReaderEngine {
     this.pageCount = 0;
     this.currentPage = 1;
     this.toc = [];
+    this.outlineFallback = false;
     this.scale = 1;
     this.baseSize = { width: 0, height: 0 };
     this.detectedCrop = zeroCrop();
@@ -1548,7 +1567,12 @@ export class PdfReaderEngine implements ReaderEngine {
     } catch {
       outline = [];
     }
-    return buildPdfToc(outline, this.pageCount, (dest) => this.resolveDestination(dest));
+    const items = await buildPdfToc(outline, this.pageCount, (dest) => this.resolveDestination(dest));
+    // Fallback entries share the `toc-page-<n>` id and span every page, so they
+    // must not be mistaken for real chapter boundaries.
+    this.outlineFallback = items.length > 0
+      && items.every((item) => item.id.startsWith('toc-page-'));
+    return items;
   }
 
   private async resolveDestination(dest: unknown): Promise<number | null> {

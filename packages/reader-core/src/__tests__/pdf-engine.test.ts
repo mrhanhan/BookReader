@@ -122,6 +122,7 @@ async function openReader(
 beforeEach(() => {
   mock.renderCalls.length = 0;
   mock.failedPages.clear();
+  mock.pageCount = 10;
   mock.textByPage = {};
   mock.outline = [];
   HTMLCanvasElement.prototype.getContext = (() =>
@@ -240,6 +241,25 @@ it('returns page and outline chapter text for the AI companion', async () => {
     const chapter = await engine.getTextContext('chapter');
     expect(chapter.text).toContain('本页第一句');
     expect(chapter.text).not.toContain('第二章开头');
+  } finally {
+    await engine.destroy();
+  }
+});
+
+it('falls back to a 20-page chapter window when the PDF has no outline', async () => {
+  mock.pageCount = 25;
+  mock.outline = [];
+  mock.textByPage = {};
+  for (let page = 1; page <= 25; page += 1) {
+    mock.textByPage[page] = [{ str: `第 ${page} 页正文` }];
+  }
+  const { engine } = await openReader('single', 5);
+  try {
+    const chapter = await engine.getTextContext('chapter');
+    // The per-page fallback TOC must not collapse the chapter to one page.
+    expect(chapter.text).toContain('第 5 页正文');
+    expect(chapter.text).toContain('第 24 页正文');
+    expect(chapter.text).not.toContain('第 25 页正文');
   } finally {
     await engine.destroy();
   }
