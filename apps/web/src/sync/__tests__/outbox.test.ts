@@ -85,6 +85,22 @@ describe('outbox', () => {
     });
   });
 
+  it('resets the retry backoff when a progress upsert is merged', async () => {
+    const first = change();
+    await enqueue(db, first);
+    await db.outbox.update(first.id, { attempts: 3, nextAttemptAt: 500_000 });
+
+    const newer: Locator = { kind: 'pdf', page: 8, percent: 0.8 };
+    await enqueue(db, {
+      ...change({ clientUpdatedAt: '2026-01-02T00:00:00.000Z' }),
+      payload: { bookId: BOOK, locator: newer },
+    });
+
+    const row = await db.outbox.get(first.id);
+    expect(row).toMatchObject({ attempts: 0, nextAttemptAt: 0 });
+    expect(row?.payload).toEqual({ bookId: BOOK, locator: newer });
+  });
+
   it('does not merge progress deletes or other entity types', async () => {
     await enqueue(db, change());
     await enqueue(db, change({ op: 'delete', clientUpdatedAt: '2026-01-01T00:00:05.000Z' }));

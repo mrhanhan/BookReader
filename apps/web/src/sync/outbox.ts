@@ -29,6 +29,10 @@ export async function enqueue(
       await db.outbox.update(existing.id, {
         payload: change.payload,
         clientUpdatedAt: change.clientUpdatedAt,
+        // The row now carries a fresh mutation, so a previous failure must not
+        // keep it waiting behind the old backoff.
+        attempts: 0,
+        nextAttemptAt: 0,
       });
       return;
     }

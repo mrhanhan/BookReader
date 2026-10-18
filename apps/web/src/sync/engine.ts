@@ -417,8 +417,18 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     }
 
     for (const envelope of result.applied) {
-      const outcome = await repo.applyServerChange(userId, envelope);
-      if (outcome === 'applied') {
+      // Echoes share the serial queue with pull and stream application, so a
+      // response cannot interleave with a newer frame. A frame may already
+      // have moved past this echo while the push was in flight; replaying the
+      // older payload would undo it, so only clear the local dirty flag.
+      const applied = await enqueueSerial(async () => {
+        if (envelope.revision <= (await repo.getCursor(userId))) {
+          await markLocalClean(envelope.entityType, envelope.entityId);
+          return false;
+        }
+        return (await repo.applyServerChange(userId, envelope)) === 'applied';
+      });
+      if (applied) {
         publish({
           type: 'applied',
           entityType: envelope.entityType,
@@ -448,6 +458,12 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       const page = await api.pull(since);
 
       if (page.reset) {
+        // A snapshot replaces every local row. While queued writes remain
+        // (possibly backing off) it would hide them from the UI, so postpone
+        // it: the next sync pushes first and retries the snapshot.
+        if ((await repo.pendingCount(userId)) > 0) {
+          return;
+        }
         const snapshot = await api.snapshot();
         await repo.applySnapshot(userId, snapshot);
         await repo.setCursor(userId, snapshot.cursor);
@@ -662,6 +678,11 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       return;
     }
     try {
+      if ((await repo.pendingCount(userId)) > 0) {
+        // Keep queued local rows visible; the next sync pushes them before it
+        // retries the rebuild.
+        return;
+      }
       const snapshot = await api.snapshot();
       if (stopped) {
         return;

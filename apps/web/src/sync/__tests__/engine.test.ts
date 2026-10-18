@@ -300,7 +300,11 @@ describe('SyncEngine', () => {
       bookmarks: [],
       settings: { settings: { theme: 'dark' }, clientUpdatedAt: T1 },
     }));
-    await repo.saveProgress(USER, OTHER_BOOK, laterLocator);
+    // A local row that is not on the server must disappear with the snapshot;
+    // it is imported directly so no pending outbox row postpones it. An
+    // existing cursor keeps the bootstrap snapshot out of the way.
+    await repo.importProgress(USER, OTHER_BOOK, laterLocator, NOW);
+    await repo.setCursor(USER, 1);
     engine = testEngine(api);
 
     await engine.syncNow();
@@ -803,5 +807,137 @@ describe('SyncEngine', () => {
     window.dispatchEvent(new Event('online'));
 
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+  });
+
+  it('does not let a stale push echo overwrite a newer stream frame', async () => {
+    const api = createFakeApi();
+    const echoTime = '2030-01-01T00:00:00.000Z';
+    const frameTime = '2031-01-01T00:00:00.000Z';
+
+    engine = testEngine(api, {
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+    engine.start();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await vi.waitFor(() => expect(api.pull).toHaveBeenCalled());
+
+    const created = await repo.createBookmark(USER, {
+      bookId: BOOK,
+      locator,
+      label: '本地',
+    });
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Revision 8 is stale by the time the response lands; the stream moved
+    // the entity to revision 10 while the push was in flight.
+    api.push = vi.fn(async () => {
+      await gate;
+      return {
+        applied: [
+          {
+            revision: 8,
+            entityType: 'bookmark' as const,
+            entityId: created.id,
+            op: 'upsert' as const,
+            payload: {
+              id: created.id,
+              bookId: BOOK,
+              locator,
+              label: '旧',
+              createdAt: T1,
+              updatedAt: echoTime,
+              clientUpdatedAt: echoTime,
+            },
+            clientUpdatedAt: echoTime,
+            serverUpdatedAt: echoTime,
+          },
+        ],
+        skipped: [],
+        rejected: [],
+        cursor: 8,
+      };
+    });
+
+    const syncing = engine.syncNow();
+    await vi.waitFor(() => expect(api.push).toHaveBeenCalled());
+
+    FakeEventSource.instances[0]?.emit('change', {
+      revision: 10,
+      entityType: 'bookmark',
+      entityId: created.id,
+      op: 'upsert',
+      payload: {
+        id: created.id,
+        bookId: BOOK,
+        locator,
+        label: '新',
+        createdAt: T1,
+        updatedAt: frameTime,
+        clientUpdatedAt: frameTime,
+      },
+      clientUpdatedAt: frameTime,
+      serverUpdatedAt: frameTime,
+    });
+    await vi.waitFor(async () => expect(await repo.getCursor(USER)).toBe(10));
+    await vi.waitFor(async () => {
+      expect((await repo.listBookmarks(USER, BOOK))[0]?.label).toBe('新');
+    });
+
+    release?.();
+    await syncing;
+
+    const rows = await repo.listBookmarks(USER, BOOK);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe('新');
+    expect(await repo.pendingCount(USER)).toBe(0);
+  });
+
+  it('postpones a reset snapshot while the outbox still has pending writes', async () => {
+    const api = createFakeApi();
+    // Nothing is acknowledged, so the local write stays queued.
+    api.push = vi.fn(async () => emptyPush);
+    let pulls = 0;
+    api.pull = vi.fn(async (since: number) => {
+      pulls += 1;
+      return pulls === 1
+        ? { changes: [], cursor: 6, hasMore: false, reset: true }
+        : emptyPull(since);
+    });
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(api.snapshot).not.toHaveBeenCalled();
+    expect(await repo.pendingCount(USER)).toBe(1);
+    expect((await repo.progressFor(USER, BOOK))?.locator).toEqual(locator);
+
+    await db.outbox.clear();
+    await engine.syncNow();
+
+    expect(api.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('postpones a stream rebuild while the outbox still has pending writes', async () => {
+    const api = createFakeApi();
+    api.push = vi.fn(async () => emptyPush);
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api, {
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await vi.waitFor(() => expect(api.pull).toHaveBeenCalled());
+
+    FakeEventSource.instances[0]?.emit('reset');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(api.snapshot).not.toHaveBeenCalled();
+
+    await db.outbox.clear();
+    FakeEventSource.instances[0]?.emit('reset');
+    await vi.waitFor(() => expect(api.snapshot).toHaveBeenCalledTimes(1));
   });
 });
