@@ -544,7 +544,7 @@ export interface RenderedReflowDocument {
 - Produces: `applyReflowStyles(article: HTMLElement, settings: ReaderSettings): void` (sets CSS custom properties `--reflow-font-size`, `--reflow-line-height`, `--reflow-margin`, `--reflow-font-family`).
 - Produces: `class ReflowReaderEngine implements ReaderEngine` with `constructor(deps?: { fetchPack?: (url: string) => Promise<unknown> })`.
 - Produces: `createReaderEngine('reflow')` returns a `ReflowReaderEngine`.
-- `open` resolves `{ kind: 'reflow', title: pack.source.title ?? null, pageCount: pack.source.pageCount, toc }`; `toc` maps pack TOC entries to `{ id: 'reflow-toc-<index>', label, depth: level - 1, locator: { kind:'reflow', sourcePage: page, percent: percentForPage(page, pageCount) }, children: [] }` (import `percentForPage` from `../locator`).
+- `open` resolves `{ kind: 'reflow', title: null, pageCount: pack.source.pageCount, toc }` (the Task 1 pack schema has no title field); `toc` maps pack TOC entries to `{ id: 'reflow-toc-<index>', label, depth: level - 1, locator: { kind:'reflow', sourcePage: page, percent: percentForPage(page, pageCount) }, children: [] }` (import `percentForPage` from `../locator`).
 
 - [ ] **Step 1: Write the failing engine tests**
 
