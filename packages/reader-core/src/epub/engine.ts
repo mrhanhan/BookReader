@@ -19,12 +19,12 @@ import {
   epubOverrides,
   epubThemeCss,
 } from './theme';
-import { epubLocator, flattenNavigation } from './navigation';
+import { bookHrefResolver, epubLocator, flattenNavigation } from './navigation';
+import {
+  EPUB_HIGHLIGHT_CLASS,
+  decorateNoteMarksInViews,
+} from './highlights';
 
-/** CSS class epub.js attaches to every highlight rectangle. */
-const HIGHLIGHT_CLASS = 'bookr-epub-hl';
-/** Extra class so the UI can style highlights that carry a note. */
-const NOTE_CLASS = 'bookr-epub-hl-note';
 /** epub.js splits generated locations into chunks of this many characters. */
 const LOCATION_CHUNK = 1600;
 
@@ -67,7 +67,11 @@ function finite(value: number): number {
 
 function readTitle(metadata: unknown): string | null {
   const title = (metadata as { title?: unknown } | null)?.title;
-  return typeof title === 'string' && title.trim().length > 0 ? title : null;
+  if (typeof title !== 'string') {
+    return null;
+  }
+  const trimmed = title.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -264,20 +268,48 @@ export class EpubReaderEngine implements ReaderEngine {
       return;
     }
 
+    this.applyThemes(rendition, settings);
+
     const layoutChanged = previous.epub.flow !== settings.epub.flow
       || previous.epub.spread !== settings.epub.spread;
-    if (layoutChanged) {
-      // Flow/spread are rendition construction options, so the view manager has
-      // to be rebuilt around the current CFI.
-      this.rebuildRendition(this.lastLocator ? { ...this.lastLocator } : null);
+    if (!layoutChanged) {
       return;
     }
 
-    this.applyThemes(rendition, settings);
+    // An open selection menu must not outlive the views the layout change
+    // clears and re-renders.
+    this.emitSelectionCleared();
+
+    try {
+      // Flow/spread changes are supported in place; rebuilding the rendition
+      // would re-register epub.js' internal spine hooks and leak listeners.
+      rendition.flow(settings.epub.flow);
+      rendition.spread(settings.epub.spread);
+      const width = this.container?.clientWidth ?? 0;
+      const height = this.container?.clientHeight ?? 0;
+      if (width > 0 && height > 0) {
+        rendition.resize(width, height);
+      }
+    } catch (error) {
+      this.reportRenderFailure(error);
+    }
   }
 
   setHighlights(highlights: ReaderHighlight[]): void {
-    this.highlights = Array.isArray(highlights) ? highlights.slice() : [];
+    // Duplicate CFIs would paint duplicate marks after every re-injection.
+    const seen = new Set<string>();
+    const next: ReaderHighlight[] = [];
+    for (const highlight of Array.isArray(highlights) ? highlights : []) {
+      const locator = highlight?.locator;
+      if (locator && locator.kind === 'epub') {
+        if (seen.has(locator.cfi)) {
+          continue;
+        }
+        seen.add(locator.cfi);
+      }
+      next.push(highlight);
+    }
+    this.highlights = next;
     this.applyHighlights();
   }
 
@@ -339,7 +371,11 @@ export class EpubReaderEngine implements ReaderEngine {
     // note markers can be decorated. (`classList.add` rejects space-separated
     // class strings, so the note class cannot ride on the annotation call.)
     const renderHook = (view: unknown): void => {
-      this.decorateNoteHighlights(view);
+      try {
+        decorateNoteMarksInViews([view], this.highlights);
+      } catch {
+        // Decoration is cosmetic.
+      }
     };
     rendition.hooks.render.register(renderHook);
     this.renderHook = renderHook;
@@ -424,9 +460,23 @@ export class EpubReaderEngine implements ReaderEngine {
       return;
     }
 
+    const hasLocations = book.locations.length() > 0;
+
     // Percentages derived from the location map are exact; re-announce the
-    // current position so the footer can drop its approximate value.
-    this.emitCurrentLocation(true);
+    // current position so the footer can drop its approximate value. A
+    // throwing consumer must not turn this background task into an unhandled
+    // rejection.
+    try {
+      this.emitCurrentLocation(true);
+    } catch {
+      // Listener failures are the caller's concern.
+    }
+
+    if (!hasLocations) {
+      // Nothing can resolve the deferred jump, so do not keep it forever.
+      this.pendingPercent = null;
+      return;
+    }
 
     if (this.pendingPercent !== null) {
       const percent = this.pendingPercent;
@@ -572,13 +622,16 @@ export class EpubReaderEngine implements ReaderEngine {
         continue;
       }
       const cfi = locator.cfi;
+      if (this.appliedCfi.has(cfi)) {
+        continue;
+      }
       const id = highlight.id;
       try {
         rendition.annotations.highlight(
           cfi,
           { id },
           () => this.emitter.emit('highlightClick', { id }),
-          HIGHLIGHT_CLASS,
+          EPUB_HIGHLIGHT_CLASS,
           { fill: HIGHLIGHT_HEX[highlight.color], 'fill-opacity': '0.35' },
         );
         this.appliedCfi.add(cfi);
@@ -587,40 +640,23 @@ export class EpubReaderEngine implements ReaderEngine {
       }
     }
 
-    // Marks added to views that are already rendered need the note class now;
-    // later renders are handled by the decoration hook.
-    for (const contents of this.renditionContents(rendition)) {
-      this.decorateDocument(contents.document);
-    }
+    this.decorateViews();
   }
 
-  private decorateNoteHighlights(view: unknown): void {
-    const doc = (view as { contents?: { document?: Document } } | null)?.contents?.document;
-    if (doc) {
-      this.decorateDocument(doc);
-    }
-  }
-
-  /** Adds/removes the note class on every highlight mark in one document. */
-  private decorateDocument(doc: Document | null | undefined): void {
-    if (!doc) {
+  /**
+   * epub.js appends highlight marks to the parent document's view container
+   * (`view.element`), not to the iframe document, so decoration has to walk the
+   * rendition's views.
+   */
+  private decorateViews(): void {
+    const rendition = this.rendition;
+    if (!rendition) {
       return;
     }
     try {
-      const marks = doc.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
-      marks.forEach((mark) => {
-        const id = mark.getAttribute('data-id') ?? '';
-        const hasNote = this.highlights.some(
-          (highlight) => highlight.id === id && highlight.hasNote,
-        );
-        if (hasNote) {
-          mark.classList.add(NOTE_CLASS);
-        } else {
-          mark.classList.remove(NOTE_CLASS);
-        }
-      });
+      decorateNoteMarksInViews(rendition.views() as unknown[], this.highlights);
     } catch {
-      // A detached iframe or an exotic mark implementation is harmless.
+      // A view manager mid-teardown has no views to decorate.
     }
   }
 
@@ -694,6 +730,7 @@ export class EpubReaderEngine implements ReaderEngine {
       if (!doc || !win) {
         return;
       }
+      this.pruneContentListeners(doc);
       if (this.contentListeners.has(doc)) {
         return;
       }
@@ -727,29 +764,33 @@ export class EpubReaderEngine implements ReaderEngine {
     this.contentListeners.clear();
   }
 
-  private rebuildRendition(saved: EpubLocator | null): void {
-    const book = this.book;
-    const container = this.container;
-    const settings = this.settings;
-    if (!book || !container || !settings) {
-      return;
+  /**
+   * Drops listeners for documents that no longer belong to the rendition. Flow
+   * changes re-render views in place, so old iframe documents would otherwise
+   * accumulate for the lifetime of the engine.
+   */
+  private pruneContentListeners(keep: Document): void {
+    const live = new Set<Document>([keep]);
+    const rendition = this.rendition;
+    if (rendition) {
+      for (const contents of this.renditionContents(rendition)) {
+        if (contents.document) {
+          live.add(contents.document);
+        }
+      }
     }
 
-    this.detachRendition();
-    const rendition = this.createRendition(book, container, settings);
-    this.rendition = rendition;
-    this.attachRendition(rendition);
-    this.applyThemes(rendition, settings);
-
-    this.appliedCfi.clear();
-    this.applyHighlights();
-    this.selectionActive = false;
-
-    if (saved) {
-      void this.goTo(saved);
-      return;
+    for (const [doc, listener] of this.contentListeners) {
+      if (live.has(doc)) {
+        continue;
+      }
+      try {
+        doc.removeEventListener('selectionchange', listener.handler, listener.options);
+      } catch {
+        // The iframe document may already be detached.
+      }
+      this.contentListeners.delete(doc);
     }
-    void rendition.display().catch((error: unknown) => this.reportRenderFailure(error));
   }
 
   private reportRenderFailure(error?: unknown): void {
@@ -771,7 +812,8 @@ export class EpubReaderEngine implements ReaderEngine {
     try {
       const navigation = await book.loaded.navigation;
       const items = Array.isArray(navigation?.toc) ? navigation.toc : [];
-      return flattenNavigation(items, (href) => book.canonical(href));
+      // `book.canonical()` yields a URL; TOC locators need the spine CFI.
+      return flattenNavigation(items, bookHrefResolver(book));
     } catch {
       return [];
     }
