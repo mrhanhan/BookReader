@@ -25,6 +25,7 @@ export interface UpsertProgressInput {
   percent: number;
   deviceId: string | null;
   updatedAt: Date;
+  clientUpdatedAt: Date;
 }
 
 /** Loads one user's progress for a book, or undefined when unread. */
@@ -67,10 +68,10 @@ export async function findProgressForBooks(
  * makes this an upsert, so re-reading a book replaces its single row.
  */
 export async function upsertProgress(
-  db: Database,
+  tx: ReadingTransaction,
   input: UpsertProgressInput,
 ): Promise<ReadingProgressRow> {
-  const [row] = await db
+  const [row] = await tx
     .insert(readingProgress)
     .values(input)
     .onConflictDoUpdate({
@@ -80,6 +81,7 @@ export async function upsertProgress(
         percent: input.percent,
         deviceId: input.deviceId,
         updatedAt: input.updatedAt,
+        clientUpdatedAt: input.clientUpdatedAt,
       },
     })
     .returning();
@@ -120,14 +122,15 @@ export interface InsertAnnotationInput {
   noteText: string | null;
   tags: string[];
   now: Date;
+  clientUpdatedAt: Date;
 }
 
 /** Inserts a fresh annotation at revision 1 and returns the stored row. */
 export async function insertAnnotation(
-  db: Database,
+  tx: ReadingTransaction,
   input: InsertAnnotationInput,
 ): Promise<AnnotationRow> {
-  const [row] = await db
+  const [row] = await tx
     .insert(annotations)
     .values({
       userId: input.userId,
@@ -140,6 +143,7 @@ export async function insertAnnotation(
       tags: input.tags,
       revision: 1,
       updatedAt: input.now,
+      clientUpdatedAt: input.clientUpdatedAt,
     })
     .returning();
 
@@ -183,6 +187,7 @@ export interface UpdateAnnotationRowInput {
   tags: string[];
   revision: number;
   now: Date;
+  clientUpdatedAt: Date;
 }
 
 /** Applies an edit to an already-locked annotation and returns the updated row. */
@@ -199,6 +204,7 @@ export async function updateAnnotationRow(
       tags: input.tags,
       revision: input.revision,
       updatedAt: input.now,
+      clientUpdatedAt: input.clientUpdatedAt,
     })
     .where(eq(annotations.id, annotationId))
     .returning();
@@ -226,19 +232,20 @@ export async function insertAnnotationHistory(
 }
 
 /**
- * Soft-deletes one user's live annotation. Returns false when nothing matched,
+ * Soft-deletes one user's live annotation and returns the stored row so the
+ * caller can log its last state. An undefined result means nothing matched,
  * which the service turns into a 404 for missing, deleted and other-user rows.
  */
 export async function softDeleteAnnotation(
-  db: Database,
+  tx: ReadingTransaction,
   annotationId: string,
   bookId: string,
   userId: string,
   deletedAt: Date,
-): Promise<boolean> {
-  const rows = await db
+): Promise<AnnotationRow | undefined> {
+  const [row] = await tx
     .update(annotations)
-    .set({ deletedAt })
+    .set({ deletedAt, clientUpdatedAt: deletedAt })
     .where(
       and(
         eq(annotations.id, annotationId),
@@ -247,8 +254,8 @@ export async function softDeleteAnnotation(
         isNull(annotations.deletedAt),
       ),
     )
-    .returning({ id: annotations.id });
-  return rows.length > 0;
+    .returning();
+  return row;
 }
 
 /** Lists one user's live bookmarks for a book, newest first. */
@@ -277,14 +284,15 @@ export interface InsertBookmarkInput {
   locator: Locator;
   label: string | null;
   now: Date;
+  clientUpdatedAt: Date;
 }
 
 /** Inserts a fresh bookmark and returns the stored row. */
 export async function insertBookmark(
-  db: Database,
+  tx: ReadingTransaction,
   input: InsertBookmarkInput,
 ): Promise<BookmarkRow> {
-  const [row] = await db
+  const [row] = await tx
     .insert(bookmarks)
     .values({
       userId: input.userId,
@@ -292,6 +300,7 @@ export async function insertBookmark(
       locator: input.locator,
       label: input.label,
       updatedAt: input.now,
+      clientUpdatedAt: input.clientUpdatedAt,
     })
     .returning();
 
@@ -306,16 +315,17 @@ export async function insertBookmark(
  * which the service turns into a 404 for missing, deleted and other-user rows.
  */
 export async function updateBookmarkRow(
-  db: Database,
+  tx: ReadingTransaction,
   bookmarkId: string,
   bookId: string,
   userId: string,
   label: string | null,
   updatedAt: Date,
+  clientUpdatedAt: Date,
 ): Promise<BookmarkRow | undefined> {
-  const [row] = await db
+  const [row] = await tx
     .update(bookmarks)
-    .set({ label, updatedAt })
+    .set({ label, updatedAt, clientUpdatedAt })
     .where(
       and(
         eq(bookmarks.id, bookmarkId),
@@ -329,19 +339,20 @@ export async function updateBookmarkRow(
 }
 
 /**
- * Soft-deletes one user's live bookmark. Returns false when nothing matched,
+ * Soft-deletes one user's live bookmark and returns the stored row so the
+ * caller can log its last state. An undefined result means nothing matched,
  * which the service turns into a 404 for missing, deleted and other-user rows.
  */
 export async function softDeleteBookmark(
-  db: Database,
+  tx: ReadingTransaction,
   bookmarkId: string,
   bookId: string,
   userId: string,
   deletedAt: Date,
-): Promise<boolean> {
-  const rows = await db
+): Promise<BookmarkRow | undefined> {
+  const [row] = await tx
     .update(bookmarks)
-    .set({ deletedAt })
+    .set({ deletedAt, clientUpdatedAt: deletedAt })
     .where(
       and(
         eq(bookmarks.id, bookmarkId),
@@ -350,6 +361,6 @@ export async function softDeleteBookmark(
         isNull(bookmarks.deletedAt),
       ),
     )
-    .returning({ id: bookmarks.id });
-  return rows.length > 0;
+    .returning();
+  return row;
 }

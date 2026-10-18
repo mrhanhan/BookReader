@@ -7,6 +7,7 @@ import {
 import type { z } from 'zod';
 import type { AppDeps } from '../app';
 import { AppError } from '../errors';
+import { bookmarkChangePayload, recordChange } from '../sync/service';
 import { toBookmarkDto } from './dto';
 import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
 import {
@@ -39,13 +40,29 @@ export async function createBookmark(
 ): Promise<BookmarkDto> {
   const book = await requireLiveBook(deps, bookId);
   assertLocatorKind(book, input.locator);
+  const now = deps.clock.now();
 
-  const row = await insertBookmark(deps.db, {
-    userId: actor.id,
-    bookId,
-    locator: input.locator,
-    label: input.label,
-    now: deps.clock.now(),
+  const row = await deps.db.transaction(async (tx) => {
+    const inserted = await insertBookmark(tx, {
+      userId: actor.id,
+      bookId,
+      locator: input.locator,
+      label: input.label,
+      now,
+      clientUpdatedAt: now,
+    });
+    const dto = toBookmarkDto(inserted);
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'bookmark',
+      entityId: inserted.id,
+      op: 'upsert',
+      payload: bookmarkChangePayload(dto, now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return inserted;
   });
   return toBookmarkDto(row);
 }
@@ -59,18 +76,26 @@ export async function updateBookmark(
   input: UpdateBookmarkInput,
 ): Promise<BookmarkDto> {
   await requireLiveBook(deps, bookId);
-  const row = await updateBookmarkRow(
-    deps.db,
-    bookmarkId,
-    bookId,
-    actor.id,
-    input.label,
-    deps.clock.now(),
-  );
-  if (!row) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
-  return toBookmarkDto(row);
+  const now = deps.clock.now();
+
+  return deps.db.transaction(async (tx) => {
+    const row = await updateBookmarkRow(tx, bookmarkId, bookId, actor.id, input.label, now, now);
+    if (!row) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
+    const dto = toBookmarkDto(row);
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'bookmark',
+      entityId: bookmarkId,
+      op: 'upsert',
+      payload: bookmarkChangePayload(dto, now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return dto;
+  });
 }
 
 /** Soft-deletes the caller's bookmark; any other target is a 404. */
@@ -81,14 +106,22 @@ export async function deleteBookmark(
   bookmarkId: string,
 ): Promise<void> {
   await requireLiveBook(deps, bookId);
-  const deleted = await softDeleteBookmark(
-    deps.db,
-    bookmarkId,
-    bookId,
-    actor.id,
-    deps.clock.now(),
-  );
-  if (!deleted) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
+  const now = deps.clock.now();
+
+  await deps.db.transaction(async (tx) => {
+    const deleted = await softDeleteBookmark(tx, bookmarkId, bookId, actor.id, now);
+    if (!deleted) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'bookmark',
+      entityId: bookmarkId,
+      op: 'delete',
+      payload: bookmarkChangePayload(toBookmarkDto(deleted), now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+  });
 }

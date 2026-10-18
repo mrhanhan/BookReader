@@ -1,5 +1,6 @@
 import type { Locator, ReadingProgressDto } from '@bookr/shared';
 import type { AppDeps } from '../app';
+import { progressChangePayload, recordChange } from '../sync/service';
 import { toProgressDto } from './dto';
 import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
 import { findProgressRow, upsertProgress } from './repo';
@@ -17,8 +18,8 @@ export async function getProgress(
 
 /**
  * Stores the caller's latest position. Percent is derived from the locator so
- * the two can never disagree, and the issuing device is recorded for later
- * sync diagnostics.
+ * the two can never disagree, the issuing device is recorded for later sync
+ * diagnostics, and the write is appended to the user's change log.
  */
 export async function saveProgress(
   deps: AppDeps,
@@ -28,14 +29,30 @@ export async function saveProgress(
 ): Promise<ReadingProgressDto> {
   const book = await requireLiveBook(deps, bookId);
   assertLocatorKind(book, locator);
+  const now = deps.clock.now();
 
-  const row = await upsertProgress(deps.db, {
-    userId: actor.id,
-    bookId,
-    locator,
-    percent: locator.percent,
-    deviceId: actor.deviceId ?? null,
-    updatedAt: deps.clock.now(),
+  const row = await deps.db.transaction(async (tx) => {
+    const stored = await upsertProgress(tx, {
+      userId: actor.id,
+      bookId,
+      locator,
+      percent: locator.percent,
+      deviceId: actor.deviceId ?? null,
+      updatedAt: now,
+      clientUpdatedAt: now,
+    });
+    const dto = toProgressDto(stored);
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'reading_progress',
+      entityId: bookId,
+      op: 'upsert',
+      payload: progressChangePayload(dto, now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return stored;
   });
   return toProgressDto(row);
 }

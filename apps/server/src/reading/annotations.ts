@@ -8,6 +8,7 @@ import {
 import type { z } from 'zod';
 import type { AppDeps } from '../app';
 import { AppError } from '../errors';
+import { annotationChangePayload, recordChange } from '../sync/service';
 import { toAnnotationDto } from './dto';
 import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
 import {
@@ -42,17 +43,33 @@ export async function createAnnotation(
 ): Promise<AnnotationDto> {
   const book = await requireLiveBook(deps, bookId);
   assertLocatorKind(book, input.locator);
+  const now = deps.clock.now();
 
-  const row = await insertAnnotation(deps.db, {
-    userId: actor.id,
-    bookId,
-    type: input.type,
-    color: input.color,
-    locator: input.locator,
-    selectedText: input.selectedText,
-    noteText: input.noteText ?? null,
-    tags: input.tags,
-    now: deps.clock.now(),
+  const row = await deps.db.transaction(async (tx) => {
+    const inserted = await insertAnnotation(tx, {
+      userId: actor.id,
+      bookId,
+      type: input.type,
+      color: input.color,
+      locator: input.locator,
+      selectedText: input.selectedText,
+      noteText: input.noteText ?? null,
+      tags: input.tags,
+      now,
+      clientUpdatedAt: now,
+    });
+    const dto = toAnnotationDto(inserted);
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'annotation',
+      entityId: inserted.id,
+      op: 'upsert',
+      payload: annotationChangePayload(dto, now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return inserted;
   });
   return toAnnotationDto(row);
 }
@@ -104,8 +121,20 @@ export async function updateAnnotation(
       tags: input.tags ?? row.tags,
       revision: row.revision + 1,
       now,
+      clientUpdatedAt: now,
     });
-    return { annotation: toAnnotationDto(updated), conflict };
+    const dto = toAnnotationDto(updated);
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'annotation',
+      entityId: annotationId,
+      op: 'upsert',
+      payload: annotationChangePayload(dto, now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return { annotation: dto, conflict };
   });
 }
 
@@ -117,14 +146,22 @@ export async function deleteAnnotation(
   annotationId: string,
 ): Promise<void> {
   await requireLiveBook(deps, bookId);
-  const deleted = await softDeleteAnnotation(
-    deps.db,
-    annotationId,
-    bookId,
-    actor.id,
-    deps.clock.now(),
-  );
-  if (!deleted) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
+  const now = deps.clock.now();
+
+  await deps.db.transaction(async (tx) => {
+    const deleted = await softDeleteAnnotation(tx, annotationId, bookId, actor.id, now);
+    if (!deleted) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
+    await recordChange(tx, {
+      userId: actor.id,
+      entityType: 'annotation',
+      entityId: annotationId,
+      op: 'delete',
+      payload: annotationChangePayload(toAnnotationDto(deleted), now),
+      clientUpdatedAt: now,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+  });
 }
