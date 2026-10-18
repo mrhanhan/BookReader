@@ -3,9 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
+import type { ReaderEngine, ReaderEngineKind } from '@bookr/reader-core';
 import { ReaderPage } from '../ReaderPage';
 import { setTokens } from '../../../api/client';
-import { renderWithProviders, server } from '../../../../test/setup';
+import { book, renderWithProviders, server } from '../../../../test/setup';
 import { createFakeEngine } from './fake-engine';
 
 async function renderReader() {
@@ -123,6 +124,64 @@ it('navigates with keyboard and jumps with the progress slider', async () => {
   expect(engine.goTo).toHaveBeenLastCalledWith(
     expect.objectContaining({ kind: 'pdf', page: 10, percent: 0.9 }),
   );
+});
+
+it('toggles the mode button label between 重排 and 原版', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  server.use(
+    http.get('/api/books/:id', () =>
+      HttpResponse.json({
+        book: book({
+          id: 'book-csapp',
+          title: '深入理解计算机系统',
+          author: 'Randal E. Bryant',
+          format: 'pdf',
+          reflowAvailable: true,
+          reflowSchemaVersion: 1,
+          reflowPageCount: 300,
+          uploadedBy: { id: 'user-reader', displayName: '读者' },
+        }),
+      }),
+    ),
+    http.get('/api/books/:id/file', () =>
+      HttpResponse.json({
+        url: 'https://files.test/book.pdf',
+        format: 'pdf',
+        expiresIn: 3600,
+      }),
+    ),
+    http.get('/api/books/:id/reflow', () =>
+      HttpResponse.json({
+        url: 'https://files.test/book.bookr.json',
+        schemaVersion: 1,
+        pageCount: 300,
+        expiresIn: 3600,
+      }),
+    ),
+  );
+
+  const engines = new Map<ReaderEngineKind, ReturnType<typeof createFakeEngine>>();
+  const factory = vi.fn((kind: ReaderEngineKind) => {
+    let engine = engines.get(kind);
+    if (!engine) {
+      engine = createFakeEngine(kind);
+      engines.set(kind, engine);
+    }
+    return engine as unknown as ReaderEngine;
+  });
+  const router = createMemoryRouter(
+    [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
+    { initialEntries: ['/books/book-csapp/read'] },
+  );
+  renderWithProviders(<RouterProvider router={router} />);
+
+  await waitFor(() => expect(engines.get('pdf')?.open).toHaveBeenCalled());
+  const toggle = await screen.findByRole('button', { name: '重排' });
+  expect(toggle).not.toBeDisabled();
+
+  await userEvent.click(toggle);
+  expect(await screen.findByRole('button', { name: '原版' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '重排' })).toBeNull();
 });
 
 it('hides the chrome after inactivity and reveals it on a center tap', async () => {

@@ -9,12 +9,20 @@ import type {
   BookmarkDto,
   Locator,
   ReaderKind,
+  ReflowFileInfo,
 } from '@bookr/shared';
-import { createReaderEngine, mergeReaderSettings, percentForPage } from '@bookr/reader-core';
+import {
+  createReaderEngine,
+  locatorForMode,
+  mergeReaderSettings,
+  percentForPage,
+} from '@bookr/reader-core';
 import type {
   OpenReaderOptions,
+  PdfReadingMode,
   ReaderDocumentInfo,
   ReaderEngine,
+  ReaderEngineKind,
   ReaderHighlight,
   ReaderSelection,
   ReaderSettings,
@@ -36,12 +44,14 @@ import {
   fetchReaderFile,
 } from '../../api/reading';
 import type { ReaderFileInfo } from '../../api/reading';
+import { fetchReflowFile } from '../../api/reflow';
 import { messageForApiError } from '../../lib/errorMessages';
 import { Toast } from '../bookshelf/Toast';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
 import { readLocalProgress, resolveInitialLocator } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
+import { useReadingMode } from './useReadingMode';
 import { ReaderContent } from './ReaderContent';
 import { ReaderChrome } from './ReaderChrome';
 import type { ReaderPanelName } from './ReaderChrome';
@@ -60,16 +70,20 @@ const BOOK_TRASHED_MESSAGE = '这本书已不在书架上';
 const FILE_MISSING_MESSAGE = '找不到这本书的文件';
 const BOOK_NOT_READY_MESSAGE = '这本书正在转换，完成后即可阅读';
 const OPEN_FAILED_MESSAGE = '无法打开这本书，请确认文件完整';
+const REFLOW_MISSING_MESSAGE = '无法加载重排包，请切回原版';
+const REFLOW_UNAVAILABLE_MESSAGE = '无法加载重排包';
 /** Chrome hides after this much inactivity while no panel is open. */
 const CHROME_HIDE_DELAY_MS = 2_500;
 
 export interface ReaderPageProps {
   /** Tests inject a recording fake; the route uses the real factory. */
-  engineFactory?: (kind: ReaderKind) => ReaderEngine;
+  engineFactory?: (kind: ReaderEngineKind) => ReaderEngine;
 }
 
 interface ReaderSource {
   file: ReaderFileInfo;
+  /** Signed pack URL; null when the book has no pack or the fetch failed. */
+  reflow: ReflowFileInfo | null;
   initialLocator?: Locator;
 }
 
@@ -215,19 +229,6 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   }, [engineFactory]);
 
   const [engine, setEngine] = useState<ReaderEngine | null>(null);
-  useEffect(() => {
-    if (!bookId || !kind) return;
-    const created = engineFactoryRef.current(kind);
-    setEngine(created);
-    return () => {
-      setEngine(null);
-      try {
-        void Promise.resolve(created.destroy()).catch(() => {});
-      } catch {
-        // Tearing down an unopened engine must not throw.
-      }
-    };
-  }, [bookId, kind]);
 
   const [source, setSource] = useState<ReaderSource | null>(null);
   const [loadFailure, setLoadFailure] = useState<string | null>(null);
@@ -265,6 +266,71 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const showToast = useCallback((message: string) => setToast(message), []);
   const dismissToast = useCallback(() => setToast(null), []);
 
+  // Set immediately before a mode switch; the next open consumes it exactly
+  // once, so a later reopen (account switch, remount) uses the stored position.
+  const pendingLocatorRef = useRef<Locator | null>(null);
+
+  const changeSettings = useCallback(
+    (next: ReaderSettings) => {
+      const merged = mergeReaderSettings(next);
+      setSettings(merged);
+      saveReaderSettings(merged);
+      engine?.setSettings(merged);
+    },
+    [engine],
+  );
+
+  /**
+   * Switches between the original PDF and its reflow view at the same source
+   * position. The settings write changes `mode`, which recreates the engine and
+   * reopens it; nothing is opened here directly.
+   */
+  const switchReadingMode = useCallback(
+    (next: PdfReadingMode) => {
+      if (next === 'reflow' && !source?.reflow) {
+        showToast(REFLOW_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      let current = currentLocatorRef.current;
+      if (!current && engine) {
+        try {
+          current = engine.currentLocator();
+        } catch {
+          // The engine is not open yet; the source position is still usable.
+        }
+      }
+      pendingLocatorRef.current = current ? locatorForMode(current, next) : null;
+      changeSettings({ ...settings, pdf: { ...settings.pdf, readingMode: next } });
+    },
+    [changeSettings, engine, settings, showToast, source],
+  );
+
+  const reflowReady = source?.reflow != null;
+  const { mode, reflowAvailable, toggleReflow } = useReadingMode({
+    book: book ?? null,
+    bookKind: kind,
+    reflowReady,
+    settings,
+    onSwitch: switchReadingMode,
+  });
+
+  // The engine kind follows `mode`; the source must be resolved first so a
+  // reflow switch always has its signed URL.
+  useEffect(() => {
+    if (!bookId || !source || !mode) return;
+    const created = engineFactoryRef.current(mode);
+    setEngine(created);
+    return () => {
+      setEngine(null);
+      try {
+        void Promise.resolve(created.destroy()).catch(() => {});
+      } catch {
+        // Tearing down an unopened engine must not throw.
+      }
+    };
+  }, [bookId, source, mode]);
+
   // Closing a dialog also drops any selection so a stale menu cannot reappear.
   const closeAnnotationDialog = useCallback(() => {
     setAnnotationDialog(null);
@@ -297,21 +363,25 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Fetch the signed URL and the saved progress in parallel, then compute the
   // one position the reader should open at. Only the file request is fatal: a
   // progress failure must fall back to this device's cache instead of blocking
-  // the book. Progress belongs to the signed-in account, so nothing is queried
-  // until that account is known.
+  // the book. The reflow pack URL is best-effort too: a failure leaves original
+  // mode readable and keeps the switch disabled. Progress belongs to the
+  // signed-in account, so nothing is queried until that account is known.
+  const wantsReflow = book?.reflowAvailable === true;
   useEffect(() => {
     if (!bookId || !userId) return;
     let cancelled = false;
 
     void (async () => {
       try {
-        const [file, progress] = await Promise.all([
+        const [file, progress, reflow] = await Promise.all([
           fetchReaderFile(bookId),
           fetchProgress(bookId).catch(() => null),
+          wantsReflow ? fetchReflowFile(bookId).catch(() => null) : Promise.resolve(null),
         ]);
         if (cancelled) return;
         setSource({
           file,
+          reflow,
           initialLocator: resolveInitialLocator(progress, readLocalProgress(userId, bookId)),
         });
       } catch (error) {
@@ -323,7 +393,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId, userId]);
+  }, [bookId, userId, wantsReflow]);
 
   const initialLocator = source?.initialLocator;
 
@@ -348,12 +418,24 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   useEffect(() => {
     const container = contentRef.current;
-    if (!engine || !source || !container) return;
+    if (!engine || !source || !mode || !container) return;
+
+    if (mode === 'reflow' && !source.reflow) {
+      setStatus('error');
+      setEngineFailure(REFLOW_MISSING_MESSAGE);
+      return;
+    }
+    // `mode` changed on this render but the replacement engine has not been
+    // installed yet; the next render opens the right URL on the right engine.
+    if (engine.kind !== mode) return;
 
     let cancelled = false;
     readyRef.current = false;
     setStatus('loading');
     setEngineFailure(null);
+
+    const useReflow = mode === 'reflow';
+    const failureMessage = useReflow ? REFLOW_MISSING_MESSAGE : OPEN_FAILED_MESSAGE;
 
     // Subscribe before opening. Only a load failure is fatal here; a render
     // failure while the book is open must not blank a readable document.
@@ -361,11 +443,19 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       if (cancelled || readyRef.current) return;
       if (payload.code !== 'load-failed') return;
       setStatus('error');
-      setEngineFailure(OPEN_FAILED_MESSAGE);
+      setEngineFailure(failureMessage);
     });
 
+    // A mode switch supplies the position mapped for the target view; a plain
+    // open uses the stored position. Both are normalized for the mode: a PDF
+    // locator passes through to the reflow engine, which maps it with its pack.
+    const requested = pendingLocatorRef.current ?? source.initialLocator;
+    const initialLocator = requested
+      ? locatorForMode(requested, useReflow ? 'reflow' : 'original') ?? requested
+      : undefined;
     const options: OpenReaderOptions = {
-      initialLocator: source.initialLocator,
+      initialLocator,
+      ...(useReflow ? { sourcePdfUrl: source.file.url } : {}),
       ...(source.file.format === 'pdf'
         ? {
             workerSrc: pdfWorkerUrl,
@@ -378,12 +468,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     void (async () => {
       try {
         const info = await engine.open(
-          source.file.url,
+          useReflow ? source.reflow!.url : source.file.url,
           container,
           settingsRef.current,
           options,
         );
         if (cancelled) return;
+        pendingLocatorRef.current = null;
         readyRef.current = true;
         setEngineFailure(null);
         setDocumentInfo(info);
@@ -391,7 +482,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       } catch {
         if (cancelled) return;
         setStatus('error');
-        setEngineFailure(OPEN_FAILED_MESSAGE);
+        setEngineFailure(failureMessage);
       }
     })();
 
@@ -399,7 +490,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       cancelled = true;
       unsubscribe();
     };
-  }, [engine, source]);
+  }, [engine, mode, source]);
 
   const [chromeVisible, setChromeVisible] = useState(true);
   const chromeVisibleRef = useRef(chromeVisible);
@@ -481,13 +572,18 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   const jumpToPage = useCallback(
     (page: number) => {
-      if (!engine || kind !== 'pdf') return;
+      if (!engine || (mode !== 'pdf' && mode !== 'reflow')) return;
       const count = Math.max(1, documentInfo?.pageCount ?? 1);
+      const percent = percentForPage(page, count);
       ignoreRejection(() =>
-        engine.goTo({ kind: 'pdf', page, percent: percentForPage(page, count) }),
+        engine.goTo(
+          mode === 'reflow'
+            ? { kind: 'reflow', sourcePage: page, percent }
+            : { kind: 'pdf', page, percent },
+        ),
       );
     },
-    [engine, kind, documentInfo],
+    [engine, mode, documentInfo],
   );
 
   const togglePanel = useCallback((name: ReaderPanelName) => {
@@ -721,13 +817,6 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     };
   }, [selection, dialogOpen]);
 
-  const changeSettings = useCallback((next: ReaderSettings) => {
-    const merged = mergeReaderSettings(next);
-    setSettings(merged);
-    saveReaderSettings(merged);
-    engine?.setSettings(merged);
-  }, [engine]);
-
   // Both the parent document and the EPUB iframe call this one implementation.
   const handleTapAt = useCallback(
     (ratio: number): void => {
@@ -933,7 +1022,11 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   }
 
   const page =
-    currentLocator?.kind === 'pdf' ? currentLocator.page : 1;
+    currentLocator?.kind === 'pdf'
+      ? currentLocator.page
+      : currentLocator?.kind === 'reflow'
+        ? currentLocator.sourcePage
+        : 1;
   const fatalMessage = loadFailure ?? engineFailure;
 
   if (!id || bookQuery.isPending) {
@@ -952,7 +1045,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     <div
       className="reader-root"
       data-reader-theme={settings.theme}
-      data-reader-kind={kind ?? undefined}
+      data-reader-kind={mode ?? undefined}
     >
       {fatalMessage ? (
         <div className="reader-status" role="alert">
@@ -990,7 +1083,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           {status === 'ready' && chromeVisible ? (
             <ReaderChrome
               book={book}
-              kind={kind ?? 'pdf'}
+              kind={mode ?? 'pdf'}
+              reflowAvailable={reflowAvailable && reflowReady}
+              onToggleReflow={toggleReflow}
               documentInfo={documentInfo}
               page={page}
               percent={percent}
@@ -1018,7 +1113,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
           {status === 'ready' && panel === 'settings' ? (
             <SettingsPanel
-              kind={kind ?? 'pdf'}
+              kind={mode ?? 'pdf'}
               settings={settings}
               onChange={changeSettings}
               onClose={() => setPanel(null)}

@@ -614,6 +614,45 @@
   height: auto;
 }
 
+.bookr-reflow-visual-note {
+  margin: 0.6em 0 0;
+  color: var(--reader-muted);
+  font-size: 0.85em;
+  text-align: center;
+}
+
+figure[data-state='failed'] canvas {
+  display: none;
+}
+
+/* Highlights are painted inline by the engine; the stylesheet only shapes them. */
+.bookr-reflow-mark {
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  mix-blend-mode: multiply;
+}
+
+.bookr-reflow-mark.has-note {
+  position: relative;
+}
+
+.bookr-reflow-mark.has-note::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background-color: var(--reader-accent);
+}
+
+.reader-root[data-reader-theme='dark'] .bookr-reflow-mark {
+  mix-blend-mode: normal;
+  color: inherit;
+}
+
 .bookr-reflow-flash {
   animation: reflow-flash 1.2s ease;
 }

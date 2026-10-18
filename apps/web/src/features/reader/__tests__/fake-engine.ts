@@ -1,12 +1,11 @@
 import { vi } from 'vitest';
-import type { ReaderEngine, ReaderEventMap } from '@bookr/reader-core';
-import type { ReaderKind } from '@bookr/shared';
+import type { ReaderEngine, ReaderEngineKind, ReaderEventMap } from '@bookr/reader-core';
 
 /**
  * Recording reader engine shared by the reader UI suites. Every engine method
  * is a spy, and `emit` drives the event listeners the page subscribed to.
  */
-export function createFakeEngine(kind: ReaderKind = 'pdf') {
+export function createFakeEngine(kind: ReaderEngineKind = 'pdf') {
   const listeners = new Map<string, Set<(payload: unknown) => void>>();
 
   const engine = {
@@ -14,7 +13,7 @@ export function createFakeEngine(kind: ReaderKind = 'pdf') {
     open: vi.fn(async (..._args: Parameters<ReaderEngine['open']>) => ({
       kind,
       title: '测试书',
-      pageCount: kind === 'pdf' ? 10 : null,
+      pageCount: kind === 'epub' ? null : kind === 'reflow' ? 300 : 10,
       toc: [],
     })),
     goTo: vi.fn(async (..._args: Parameters<ReaderEngine['goTo']>) => {}),

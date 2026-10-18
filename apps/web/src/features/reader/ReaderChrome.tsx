@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { BookDto, ReaderKind } from '@bookr/shared';
-import type { ReaderDocumentInfo } from '@bookr/reader-core';
+import type { BookDto } from '@bookr/shared';
+import type { ReaderDocumentInfo, ReaderEngineKind } from '@bookr/reader-core';
 import { Link } from 'react-router';
 import { SAVE_STATE_LABELS } from './useReaderProgress';
 import type { ReaderSaveState } from './useReaderProgress';
@@ -9,9 +9,12 @@ export type ReaderPanelName = 'toc' | 'settings' | 'annotations' | 'bookmarks';
 
 export interface ReaderChromeProps {
   book: BookDto;
-  kind: ReaderKind;
+  kind: ReaderEngineKind;
+  /** The book has a stored pack and its signed URL has been resolved. */
+  reflowAvailable: boolean;
+  onToggleReflow: () => void;
   documentInfo: ReaderDocumentInfo | null;
-  /** Current 1-based PDF page; ignored for EPUB. */
+  /** Current 1-based source page; ignored for EPUB. */
   page: number;
   /** 0–1 book position. */
   percent: number;
@@ -37,6 +40,8 @@ export interface ReaderChromeProps {
 export function ReaderChrome({
   book,
   kind,
+  reflowAvailable,
+  onToggleReflow,
   documentInfo,
   page,
   percent,
@@ -89,6 +94,17 @@ export function ReaderChrome({
         </div>
 
         <nav className="reader-actions" aria-label="阅读工具">
+          {kind === 'pdf' || kind === 'reflow' ? (
+            <button
+              type="button"
+              aria-pressed={kind === 'reflow'}
+              disabled={!reflowAvailable}
+              title={reflowAvailable ? undefined : '尚未上传重排包'}
+              onClick={onToggleReflow}
+            >
+              {kind === 'reflow' ? '原版' : '重排'}
+            </button>
+          ) : null}
           <button
             type="button"
             aria-pressed={activePanel === 'toc'}
@@ -133,7 +149,9 @@ export function ReaderChrome({
         </button>
 
         <span className="reader-page-label">
-          {kind === 'pdf' ? `第 ${safePage} / ${pageCount} 页` : `${percentValue}%`}
+          {kind === 'pdf' || kind === 'reflow'
+            ? `第 ${safePage} / ${pageCount} 页`
+            : `${percentValue}%`}
         </span>
 
         <input
@@ -147,7 +165,7 @@ export function ReaderChrome({
           onChange={(event) => onSeekPercent(Number(event.target.value) / 100)}
         />
 
-        {kind === 'pdf' ? (
+        {kind === 'pdf' || kind === 'reflow' ? (
           <span className="reader-page-jump">
             <input
               type="number"

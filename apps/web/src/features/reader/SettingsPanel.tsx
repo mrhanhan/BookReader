@@ -1,15 +1,16 @@
 import { useId } from 'react';
-import type { ReaderKind } from '@bookr/shared';
 import type {
   EpubFlow,
   EpubFontFamily,
   PdfLayoutMode,
+  ReaderEngineKind,
   ReaderSettings,
+  ReflowFontFamily,
 } from '@bookr/reader-core';
 import { READER_THEME_OPTIONS } from './colors';
 
 export interface SettingsPanelProps {
-  kind: ReaderKind;
+  kind: ReaderEngineKind;
   settings: ReaderSettings;
   onChange: (next: ReaderSettings) => void;
   onClose: () => void;
@@ -38,6 +39,11 @@ const EPUB_FLOWS: Array<{ value: EpubFlow; label: string }> = [
 const EPUB_FONTS: Array<{ value: EpubFontFamily; label: string }> = [
   { value: 'serif', label: '衬线' },
   { value: 'sans', label: '无衬线' },
+];
+
+const REFLOW_FONTS: Array<{ value: ReflowFontFamily; label: string }> = [
+  { value: 'serif', label: '衬线' },
+  { value: 'sans', label: '黑体' },
 ];
 
 const CROP_SIDES = [
@@ -71,6 +77,10 @@ export function SettingsPanel({ kind, settings, onChange, onClose }: SettingsPan
 
   function updateEpub(patch: Partial<ReaderSettings['epub']>): void {
     update({ epub: { ...settings.epub, ...patch } });
+  }
+
+  function updateReflow(patch: Partial<ReaderSettings['reflow']>): void {
+    update({ reflow: { ...settings.reflow, ...patch } });
   }
 
   return (
@@ -199,7 +209,7 @@ export function SettingsPanel({ kind, settings, onChange, onClose }: SettingsPan
               ))}
             </section>
           </>
-        ) : (
+        ) : kind === 'epub' ? (
           <>
             <section className="reader-setting-group">
               <label className="reader-setting-label" htmlFor={fieldId('epub-flow')}>
@@ -298,6 +308,72 @@ export function SettingsPanel({ kind, settings, onChange, onClose }: SettingsPan
                 <option value="none">单栏</option>
                 <option value="auto">双栏</option>
               </select>
+            </section>
+          </>
+        ) : (
+          <>
+            <section className="reader-setting-group">
+              <label className="reader-setting-label" htmlFor={fieldId('reflow-font')}>
+                字体
+              </label>
+              <select
+                id={fieldId('reflow-font')}
+                value={settings.reflow.fontFamily}
+                onChange={(event) =>
+                  updateReflow({ fontFamily: event.target.value as ReflowFontFamily })
+                }
+              >
+                {REFLOW_FONTS.map((font) => (
+                  <option key={font.value} value={font.value}>
+                    {font.label}
+                  </option>
+                ))}
+              </select>
+            </section>
+
+            <section className="reader-setting-group">
+              <label className="reader-setting-label" htmlFor={fieldId('reflow-size')}>
+                字号
+              </label>
+              <input
+                id={fieldId('reflow-size')}
+                type="range"
+                min={16}
+                max={28}
+                step={1}
+                value={settings.reflow.fontSize}
+                onChange={(event) => updateReflow({ fontSize: Number(event.target.value) })}
+              />
+            </section>
+
+            <section className="reader-setting-group">
+              <label className="reader-setting-label" htmlFor={fieldId('reflow-line-height')}>
+                行距
+              </label>
+              <input
+                id={fieldId('reflow-line-height')}
+                type="range"
+                min={1.5}
+                max={2.4}
+                step={0.1}
+                value={settings.reflow.lineHeight}
+                onChange={(event) => updateReflow({ lineHeight: Number(event.target.value) })}
+              />
+            </section>
+
+            <section className="reader-setting-group">
+              <label className="reader-setting-label" htmlFor={fieldId('reflow-margin')}>
+                页边距
+              </label>
+              <input
+                id={fieldId('reflow-margin')}
+                type="range"
+                min={2}
+                max={16}
+                step={1}
+                value={settings.reflow.margin}
+                onChange={(event) => updateReflow({ margin: Number(event.target.value) })}
+              />
             </section>
           </>
         )}
