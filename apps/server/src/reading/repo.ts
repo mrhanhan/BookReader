@@ -113,6 +113,8 @@ export async function listAnnotationRows(
 
 /** Fields written when a reader creates an annotation. */
 export interface InsertAnnotationInput {
+  /** Client-chosen id, used when a pushed change creates the row. */
+  id?: string;
   userId: string;
   bookId: string;
   type: AnnotationRow['type'];
@@ -133,6 +135,7 @@ export async function insertAnnotation(
   const [row] = await tx
     .insert(annotations)
     .values({
+      ...(input.id !== undefined ? { id: input.id } : {}),
       userId: input.userId,
       bookId: input.bookId,
       type: input.type,
@@ -180,6 +183,24 @@ export async function findOwnedAnnotationForUpdate(
   return row;
 }
 
+/**
+ * Locks one annotation by id regardless of owner or tombstone. Sync needs the
+ * raw row to decide ownership, ordering and resurrection; callers must run
+ * this inside a transaction.
+ */
+export async function findAnnotationRowById(
+  tx: ReadingTransaction,
+  annotationId: string,
+): Promise<AnnotationRow | undefined> {
+  const [row] = await tx
+    .select()
+    .from(annotations)
+    .where(eq(annotations.id, annotationId))
+    .limit(1)
+    .for('update');
+  return row;
+}
+
 /** Fields written when an annotation edit is applied. */
 export interface UpdateAnnotationRowInput {
   color: AnnotationColor;
@@ -188,6 +209,8 @@ export interface UpdateAnnotationRowInput {
   revision: number;
   now: Date;
   clientUpdatedAt: Date;
+  /** Sync upserts clear the tombstone; REST edits leave it untouched. */
+  deletedAt?: Date | null;
 }
 
 /** Applies an edit to an already-locked annotation and returns the updated row. */
@@ -205,6 +228,7 @@ export async function updateAnnotationRow(
       revision: input.revision,
       updatedAt: input.now,
       clientUpdatedAt: input.clientUpdatedAt,
+      ...(input.deletedAt !== undefined ? { deletedAt: input.deletedAt } : {}),
     })
     .where(eq(annotations.id, annotationId))
     .returning();
@@ -242,10 +266,11 @@ export async function softDeleteAnnotation(
   bookId: string,
   userId: string,
   deletedAt: Date,
+  clientUpdatedAt: Date = deletedAt,
 ): Promise<AnnotationRow | undefined> {
   const [row] = await tx
     .update(annotations)
-    .set({ deletedAt, clientUpdatedAt: deletedAt })
+    .set({ deletedAt, clientUpdatedAt })
     .where(
       and(
         eq(annotations.id, annotationId),
@@ -279,6 +304,8 @@ export async function listBookmarkRows(
 
 /** Fields written when a reader creates a bookmark. */
 export interface InsertBookmarkInput {
+  /** Client-chosen id, used when a pushed change creates the row. */
+  id?: string;
   userId: string;
   bookId: string;
   locator: Locator;
@@ -295,6 +322,7 @@ export async function insertBookmark(
   const [row] = await tx
     .insert(bookmarks)
     .values({
+      ...(input.id !== undefined ? { id: input.id } : {}),
       userId: input.userId,
       bookId: input.bookId,
       locator: input.locator,
@@ -307,6 +335,24 @@ export async function insertBookmark(
   if (!row) {
     throw new Error('Bookmark insert returned no row');
   }
+  return row;
+}
+
+/**
+ * Locks one bookmark by id regardless of owner or tombstone. Sync needs the
+ * raw row to decide ownership, ordering and resurrection; callers must run
+ * this inside a transaction.
+ */
+export async function findBookmarkRowById(
+  tx: ReadingTransaction,
+  bookmarkId: string,
+): Promise<BookmarkRow | undefined> {
+  const [row] = await tx
+    .select()
+    .from(bookmarks)
+    .where(eq(bookmarks.id, bookmarkId))
+    .limit(1)
+    .for('update');
   return row;
 }
 
@@ -338,6 +384,42 @@ export async function updateBookmarkRow(
   return row;
 }
 
+/** Fields written when a pushed bookmark change updates the stored row. */
+export interface UpdateBookmarkByIdInput {
+  label: string | null;
+  updatedAt: Date;
+  clientUpdatedAt: Date;
+  /** Sync upserts clear the tombstone so a deleted bookmark can come back. */
+  deletedAt: Date | null;
+}
+
+/**
+ * Updates a bookmark by id after the caller has locked and checked its owner.
+ * Unlike `updateBookmarkRow` it also sees tombstoned rows, which is what lets
+ * a newer pushed upsert resurrect them.
+ */
+export async function updateBookmarkRowById(
+  tx: ReadingTransaction,
+  bookmarkId: string,
+  input: UpdateBookmarkByIdInput,
+): Promise<BookmarkRow> {
+  const [row] = await tx
+    .update(bookmarks)
+    .set({
+      label: input.label,
+      updatedAt: input.updatedAt,
+      clientUpdatedAt: input.clientUpdatedAt,
+      deletedAt: input.deletedAt,
+    })
+    .where(eq(bookmarks.id, bookmarkId))
+    .returning();
+
+  if (!row) {
+    throw new Error('Bookmark update returned no row');
+  }
+  return row;
+}
+
 /**
  * Soft-deletes one user's live bookmark and returns the stored row so the
  * caller can log its last state. An undefined result means nothing matched,
@@ -349,10 +431,11 @@ export async function softDeleteBookmark(
   bookId: string,
   userId: string,
   deletedAt: Date,
+  clientUpdatedAt: Date = deletedAt,
 ): Promise<BookmarkRow | undefined> {
   const [row] = await tx
     .update(bookmarks)
-    .set({ deletedAt, clientUpdatedAt: deletedAt })
+    .set({ deletedAt, clientUpdatedAt })
     .where(
       and(
         eq(bookmarks.id, bookmarkId),

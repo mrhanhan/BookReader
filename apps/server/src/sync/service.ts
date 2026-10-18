@@ -1,18 +1,24 @@
-import type {
-  AnnotationDto,
-  BookmarkDto,
-  ReadingProgressDto,
-  SyncChangeEnvelope,
-  SyncEntityType,
-  SyncOp,
-  SyncPullResult,
-  SyncSnapshot,
+import {
+  syncKey,
+  type AnnotationDto,
+  type BookmarkDto,
+  type ReadingProgressDto,
+  type SyncChangeEnvelope,
+  type SyncEntityType,
+  type SyncOp,
+  type SyncPullResult,
+  type SyncPushChange,
+  type SyncPushResult,
+  type SyncRejectReason,
+  type SyncSnapshot,
 } from '@bookr/shared';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { AppDeps } from '../app';
 import type { Transaction } from '../db/client';
 import { annotations, bookmarks, readingProgress } from '../db/schema';
 import { toAnnotationDto, toBookmarkDto, toProgressDto } from '../reading/dto';
+import type { ReadingActor } from '../reading/guards';
+import { applyChange } from './apply';
 import {
   appendChange,
   listChanges,
@@ -181,4 +187,34 @@ export async function buildSnapshot(deps: AppDeps, userId: string): Promise<Sync
         )
       : null,
   };
+}
+
+/**
+ * Applies a pushed batch in order and reports the caller's new cursor. A
+ * rejected change is reported instead of thrown so the rest of the batch still
+ * lands; replayed batches produce only skips and no new log rows.
+ */
+export async function applyPush(
+  deps: AppDeps,
+  actor: ReadingActor,
+  changes: SyncPushChange[],
+): Promise<SyncPushResult> {
+  const appliedChanges: SyncChangeEnvelope[] = [];
+  const skipped: string[] = [];
+  const rejected: Array<{ key: string; reason: SyncRejectReason }> = [];
+
+  for (const change of changes) {
+    const result = await applyChange(deps, actor, change);
+    const key = syncKey(change.entityType, change.entityId);
+    if (result.status === 'applied' && result.change) {
+      appliedChanges.push(result.change);
+    } else if (result.status === 'skipped') {
+      skipped.push(key);
+    } else {
+      rejected.push({ key, reason: result.reason ?? 'invalid_payload' });
+    }
+  }
+
+  const cursor = await maxRevision(deps.db, actor.id);
+  return { applied: appliedChanges, skipped, rejected, cursor };
 }

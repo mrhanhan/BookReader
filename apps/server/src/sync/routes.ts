@@ -1,8 +1,8 @@
-import { syncPullQuerySchema } from '@bookr/shared';
+import { syncPullQuerySchema, syncPushRequestSchema } from '@bookr/shared';
 import type { FastifyInstance } from 'fastify';
 import type { AppDeps } from '../app';
 import { makeRequireAuth } from '../auth/guards';
-import { buildSnapshot, pullChanges } from './service';
+import { applyPush, buildSnapshot, pullChanges } from './service';
 
 /** Registers the per-user sync endpoints. */
 export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -15,5 +15,10 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.get('/api/sync/snapshot', { preHandler: requireAuth }, async (request) => {
     return buildSnapshot(deps, request.user!.id);
+  });
+
+  app.post('/api/sync/push', { preHandler: requireAuth }, async (request) => {
+    const { changes } = syncPushRequestSchema.parse(request.body);
+    return applyPush(deps, request.user!, changes);
   });
 }
