@@ -51,7 +51,16 @@ const optionalTagsSchema = z
   .transform((tags) => normalizeTags(tags))
   .optional();
 
-const noteTextSchema = z.string().trim().max(MAX_NOTE_TEXT_LENGTH);
+/**
+ * Optional note text. Blank values are trimmed to an empty string and then collapsed
+ * to null so the stored payload never carries an empty note.
+ */
+const noteTextSchema = z
+  .union([
+    z.null(),
+    z.string().trim().max(MAX_NOTE_TEXT_LENGTH).transform((value) => (value === '' ? null : value)),
+  ])
+  .optional();
 
 /** Body of a progress save. */
 export const updateProgressSchema = z.object({
@@ -65,11 +74,11 @@ export const createAnnotationSchema = z
     color: annotationColorSchema,
     locator: locatorSchema,
     selectedText: z.string().trim().min(1).max(MAX_SELECTED_TEXT_LENGTH),
-    noteText: noteTextSchema.nullable().optional(),
+    noteText: noteTextSchema,
     tags: tagsSchema,
   })
   .superRefine((data, ctx) => {
-    if (data.type === 'note' && (data.noteText === undefined || data.noteText === null || data.noteText === '')) {
+    if (data.type === 'note' && (data.noteText === undefined || data.noteText === null)) {
       ctx.addIssue({ code: 'custom', path: ['noteText'], message: 'noteText is required for a note' });
     }
   });
@@ -82,7 +91,7 @@ export const updateAnnotationSchema = z
   .object({
     revision: z.number().int().min(1),
     color: annotationColorSchema.optional(),
-    noteText: noteTextSchema.nullable().optional(),
+    noteText: noteTextSchema,
     tags: optionalTagsSchema,
   })
   .superRefine((data, ctx) => {
@@ -94,8 +103,8 @@ export const updateAnnotationSchema = z
     }
   });
 
-function normalizeLabel(label: string | null | undefined): string | null {
-  return label === undefined || label === null || label === '' ? null : label;
+function normalizeLabel(label: string | null): string | null {
+  return label === null || label === '' ? null : label;
 }
 
 const bookmarkLabelSchema = z.string().trim().max(MAX_BOOKMARK_LABEL_LENGTH);
@@ -103,7 +112,7 @@ const bookmarkLabelSchema = z.string().trim().max(MAX_BOOKMARK_LABEL_LENGTH);
 /** Body of a bookmark creation request; a blank label becomes null. */
 export const createBookmarkSchema = z.object({
   locator: locatorSchema,
-  label: bookmarkLabelSchema.nullable().optional().default(null).transform(normalizeLabel),
+  label: bookmarkLabelSchema.nullable().default(null).transform(normalizeLabel),
 });
 
 /** Body of a bookmark rename request; an empty label clears it. */

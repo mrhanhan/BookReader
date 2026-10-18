@@ -1084,7 +1084,7 @@ Settings implementation:
 - `READER_THEME_COLORS` paper/sepia/green/dark with hex values: paper `#F6F1E7/#2B2620`, sepia `#F2E4C9/#3A2E20`, green `#E4EBDD/#2C3327`, dark `#1C1A17/#E6DECF`.
 - `HIGHLIGHT_HEX`: yellow `#E8C56B`, green `#9BBF8A`, blue `#8FB4C9`, pink `#D9A6A0`, purple `#B3A0C6`.
 
-`locator.ts`: `clamp`, `percentForPage`, `pageForPercent`, `normalizeRect` as pinned by the tests, plus `isPdfLocator`/`isEpubLocator` type guards. `normalizeRect` must return `x + w <= 1` and `y + h <= 1` even when the client rect overflows the page.
+`locator.ts`: `clamp`, `percentForPage`, `pageForPercent`, `normalizeRect` as pinned by the tests, plus `isPdfLocator`/`isEpubLocator` type guards. `normalizeRect` must return `x + w <= 1` and `y + h <= 1` even when the client rect overflows the page, and must round each value to 6 decimal places so float noise never produces server-side `1.0000000000000002` rects.
 
 `emitter.ts`: `TypedEmitter<Events extends Record<string, unknown>>` with `on(event, listener): unsubscribe` and `emit(event, payload)`.
 
@@ -1587,7 +1587,7 @@ Expected: FAIL — modules/components missing.
 
 `router.tsx`: add `books/:id/read` as a sibling of `AppLayout` under `RequireAuth`; replace the `books/:id` placeholder with a `BookRedirect` that reads `:id` and renders `<Navigate to={\`/books/${id}/read\`} replace />`; delete `BookPlaceholderPage.tsx`. `BookCard` gains a `阅读《title》` link to `/books/:id/read`; `UploadDialog`'s duplicate link can keep `/books/:id` (it now redirects).
 
-`errorMessages.ts`: `BOOK_NOT_READY: '这本书正在转换，请稍后再试'`, `FILE_MISSING: '这本书的文件不存在'`.
+`errorMessages.ts`: confirm the `BOOK_NOT_READY: '这本书正在转换，请稍后再试'` and `FILE_MISSING: '这本书的文件不存在'` entries added in Task 1 remain present (Task 1 fixed the exhaustive maps).
 
 `test/setup.ts`: add MSW handlers for `GET /api/books/:id/file` (pdf fixture URL), `GET /api/books/:id/progress` (null), `PUT .../progress` (echo). They must not interfere with existing shelf tests.
 

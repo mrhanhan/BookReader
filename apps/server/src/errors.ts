@@ -9,6 +9,8 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ERROR_CODES.DUPLICATE_BOOK]: 'This file already exists in the library',
   [ERROR_CODES.QUOTA_EXCEEDED]: 'Storage quota exceeded',
   [ERROR_CODES.INVALID_FILE]: 'The uploaded file is not valid',
+  [ERROR_CODES.BOOK_NOT_READY]: 'This book is not ready to read',
+  [ERROR_CODES.FILE_MISSING]: 'The book file is missing',
   [ERROR_CODES.VALIDATION_FAILED]: 'Request validation failed',
   [ERROR_CODES.INVITE_INVALID]: 'Invite code is invalid or expired',
   [ERROR_CODES.RATE_LIMITED]: 'Too many requests',

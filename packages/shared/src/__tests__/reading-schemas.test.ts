@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createAnnotationSchema, createBookmarkSchema, normalizeTags, updateAnnotationSchema,
-  updateProgressSchema,
+  updateBookmarkSchema, updateProgressSchema,
 } from '../schemas/reading';
 
 describe('reading input schemas', () => {
@@ -27,6 +27,30 @@ describe('reading input schemas', () => {
     expect(normalizeTags(['  历史 ', '历史', '', '军事'])).toEqual(['历史', '军事']);
   });
 
+  it('requires at least one editable field on an update', () => {
+    expect(updateAnnotationSchema.safeParse({ revision: 1 }).success).toBe(false);
+  });
+
+  it('normalizes a blank note on a highlight to null', () => {
+    expect(createAnnotationSchema.parse({
+      color: 'yellow', locator: { kind: 'pdf', page: 1, percent: 0 },
+      selectedText: '一段原文', type: 'highlight', noteText: '   ',
+    }).noteText).toBeNull();
+  });
+
+  it('caps tag count and tag length', () => {
+    const base = {
+      color: 'yellow', locator: { kind: 'pdf', page: 1, percent: 0 },
+      selectedText: '一段原文', type: 'highlight',
+    };
+    expect(createAnnotationSchema.safeParse({
+      ...base, tags: Array.from({ length: 21 }, (_, index) => `tag-${index}`),
+    }).success).toBe(false);
+    expect(createAnnotationSchema.safeParse({
+      ...base, tags: ['x'.repeat(31)],
+    }).success).toBe(false);
+  });
+
   it('accepts an empty bookmark label and rejects an over-long one', () => {
     expect(createBookmarkSchema.parse({
       locator: { kind: 'epub', cfi: 'epubcfi(/6/2!/4)', percent: 0.1 }, label: '',
@@ -35,5 +59,6 @@ describe('reading input schemas', () => {
       locator: { kind: 'epub', cfi: 'epubcfi(/6/2!/4)', percent: 0.1 },
       label: 'x'.repeat(201),
     }).success).toBe(false);
+    expect(updateBookmarkSchema.parse({ label: '' }).label).toBeNull();
   });
 });

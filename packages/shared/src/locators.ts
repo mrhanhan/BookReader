@@ -34,7 +34,7 @@ const pdfLocatorSchema = z.object({
   page: z.number().int().min(1),
   percent: z.number().min(0).max(1),
   rect: rectSchema.optional(),
-  rects: z.array(rectSchema).optional(),
+  rects: z.array(rectSchema).max(200).optional(),
   charOffset: z.number().int().min(0).optional(),
 });
 
@@ -42,7 +42,7 @@ const epubLocatorSchema = z.object({
   kind: z.literal('epub'),
   cfi: z.string().min(1).max(1024),
   percent: z.number().min(0).max(1),
-  href: z.string().min(1).optional(),
+  href: z.string().min(1).max(1024).optional(),
 });
 
 const charRangeSchema = z
@@ -57,7 +57,7 @@ const reflowLocatorSchema = z.object({
   kind: z.literal('reflow'),
   sourcePage: z.number().int().min(1),
   percent: z.number().min(0).max(1),
-  blockId: z.string().min(1).optional(),
+  blockId: z.string().min(1).max(200).optional(),
   charRange: charRangeSchema.optional(),
 });
 

@@ -36,4 +36,29 @@ describe('locator contract', () => {
       { x: 0.2, y: 0.4, w: 0.4, h: 0.1 },
     ])).toEqual({ x: 0.1, y: 0.2, w: 0.5, h: 0.3 });
   });
+
+  it('has no bounding rect for an empty rect list', () => {
+    expect(unionRects([])).toBeNull();
+  });
+
+  it('rejects rects that overflow the page on either axis', () => {
+    expect(locatorSchema.safeParse({
+      kind: 'pdf', page: 1, percent: 0,
+      rects: [{ x: 0.9, y: 0, w: 0.2, h: 0.1 }],
+    }).success).toBe(false);
+    expect(locatorSchema.safeParse({
+      kind: 'pdf', page: 1, percent: 0,
+      rects: [{ x: 0, y: 0.9, w: 0.1, h: 0.2 }],
+    }).success).toBe(false);
+  });
+
+  it('caps locator strings and rect arrays', () => {
+    expect(locatorSchema.safeParse({
+      kind: 'epub', cfi: 'c'.repeat(1025), percent: 0.1,
+    }).success).toBe(false);
+    expect(locatorSchema.safeParse({
+      kind: 'pdf', page: 1, percent: 0,
+      rects: Array.from({ length: 201 }, () => ({ x: 0, y: 0, w: 0.1, h: 0.1 })),
+    }).success).toBe(false);
+  });
 });

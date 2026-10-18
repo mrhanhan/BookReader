@@ -15,6 +15,8 @@ const MESSAGES: Record<ErrorCode, string> = {
   DUPLICATE_BOOK: '这本书已经在书架上了',
   QUOTA_EXCEEDED: '存储空间不足，请联系管理员',
   INVALID_FILE: '文件无效或格式不受支持',
+  BOOK_NOT_READY: '这本书正在转换，请稍后再试',
+  FILE_MISSING: '这本书的文件不存在',
   VALIDATION_FAILED: '提交的信息有误，请检查后重试',
   INVITE_INVALID: '邀请码无效或已过期',
   RATE_LIMITED: '尝试次数过多，请稍后再试',
