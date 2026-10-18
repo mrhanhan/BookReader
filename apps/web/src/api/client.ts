@@ -1,14 +1,14 @@
-import type { ApiErrorBody, AuthTokens } from '@bookr/shared';
+import type { ApiErrorBody, AuthTokens, ErrorCode } from '@bookr/shared';
 
 /** localStorage key holding the access and refresh tokens. */
 export const TOKEN_STORAGE_KEY = 'bookr.tokens';
 
 export class ApiError extends Error {
   readonly status: number;
-  readonly code: string;
+  readonly code: ErrorCode;
   readonly details?: Record<string, unknown>;
 
-  constructor(status: number, code: string, message: string, details?: Record<string, unknown>) {
+  constructor(status: number, code: ErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = 'ApiError';
     this.status = status;

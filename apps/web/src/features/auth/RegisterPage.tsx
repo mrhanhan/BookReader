@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Button, Input } from '@bookr/ui';
 import { useAuth } from '../../app/auth';
+import { messageForApiError } from '../../lib/errorMessages';
 import { AuthShell } from './AuthShell';
 
 interface FieldErrors {
@@ -55,7 +56,7 @@ export function RegisterPage() {
       });
       navigate('/', { replace: true });
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : '注册失败，请稍后重试');
+      setFormError(messageForApiError(error));
     } finally {
       setSubmitting(false);
     }

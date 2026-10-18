@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { Button, Input } from '@bookr/ui';
 import { useAuth } from '../../app/auth';
+import { messageForApiError } from '../../lib/errorMessages';
 import { AuthShell } from './AuthShell';
 
 interface FieldErrors {
@@ -37,7 +38,7 @@ export function LoginPage() {
       const from = (location.state as { from?: string } | null)?.from;
       navigate(from && from !== '/login' ? from : '/', { replace: true });
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : '登录失败，请稍后重试');
+      setFormError(messageForApiError(error, 'login'));
     } finally {
       setSubmitting(false);
     }
