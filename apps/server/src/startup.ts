@@ -83,16 +83,27 @@ export function startDailyCleanup(deps: AppDeps): () => void {
     }
     inFlight = true;
     try {
-      const uploads = await cleanupExpiredUploads(deps);
-      const reflowUploads = await cleanupExpiredReflowUploads(deps);
-      const purged = await cleanupTrash(deps);
-      const pruned = await pruneSyncLog(deps);
-      const purgedEntities = await purgeDeletedEntities(deps);
-      console.log(
-        `[cleanup] expired ${uploads} upload sessions, ${reflowUploads} reflow upload sessions, purged ${purged} trashed books, pruned ${pruned.pruned} sync changes through revision ${pruned.through} and purged ${purgedEntities.annotations} annotations and ${purgedEntities.bookmarks} bookmarks`,
-      );
-    } catch (error) {
-      console.error(`[cleanup] daily sweep failed with ${errorName(error)}`);
+      // Storage and trash failures must not keep the sync sweeps from running.
+      try {
+        const uploads = await cleanupExpiredUploads(deps);
+        const reflowUploads = await cleanupExpiredReflowUploads(deps);
+        const purged = await cleanupTrash(deps);
+        console.log(
+          `[cleanup] expired ${uploads} upload sessions, ${reflowUploads} reflow upload sessions and purged ${purged} trashed books`,
+        );
+      } catch (error) {
+        console.error(`[cleanup] storage sweep failed with ${errorName(error)}`);
+      }
+
+      try {
+        const pruned = await pruneSyncLog(deps);
+        const purgedEntities = await purgeDeletedEntities(deps);
+        console.log(
+          `[cleanup] pruned ${pruned.pruned} sync changes through revision ${pruned.through} and purged ${purgedEntities.annotations} annotations and ${purgedEntities.bookmarks} bookmarks`,
+        );
+      } catch (error) {
+        console.error(`[cleanup] sync retention failed with ${errorName(error)}`);
+      }
     } finally {
       inFlight = false;
     }

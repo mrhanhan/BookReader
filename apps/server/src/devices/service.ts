@@ -4,7 +4,22 @@ import type { AppDeps } from '../app';
 import { devices } from '../db/schema';
 import { AppError } from '../errors';
 
-type DeviceRow = typeof devices.$inferSelect;
+/** Only the columns a device DTO exposes; token hashes never leave the DB. */
+const deviceColumns = {
+  id: devices.id,
+  name: devices.name,
+  platform: devices.platform,
+  lastSeenAt: devices.lastSeenAt,
+  createdAt: devices.createdAt,
+};
+
+type DeviceFields = {
+  id: string;
+  name: string | null;
+  platform: string | null;
+  lastSeenAt: Date | null;
+  createdAt: Date;
+};
 
 /** A signed-in device as exposed to its owner. */
 export interface DeviceDto {
@@ -17,7 +32,7 @@ export interface DeviceDto {
   current: boolean;
 }
 
-function toDeviceDto(row: DeviceRow, currentDeviceId: string | undefined): DeviceDto {
+function toDeviceDto(row: DeviceFields, currentDeviceId: string | undefined): DeviceDto {
   return {
     id: row.id,
     name: row.name,
@@ -35,7 +50,7 @@ export async function listDevices(
   currentDeviceId?: string,
 ): Promise<DeviceDto[]> {
   const rows = await deps.db
-    .select()
+    .select(deviceColumns)
     .from(devices)
     .where(and(eq(devices.userId, userId), isNull(devices.revokedAt)))
     .orderBy(desc(devices.createdAt), desc(devices.id));
@@ -57,7 +72,7 @@ export async function renameDevice(
     .update(devices)
     .set({ name })
     .where(and(eq(devices.id, deviceId), eq(devices.userId, userId)))
-    .returning();
+    .returning(deviceColumns);
 
   if (!row) {
     throw new AppError(404, ERROR_CODES.NOT_FOUND);

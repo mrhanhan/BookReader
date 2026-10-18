@@ -106,6 +106,15 @@ it('renames and revokes a device', async () => {
   });
   expect(blank.statusCode).toBe(400);
 
+  const exact = await app.inject({
+    method: 'PATCH',
+    url: `/api/devices/${second.id}`,
+    headers,
+    payload: { name: 'x'.repeat(60) },
+  });
+  expect(exact.statusCode).toBe(200);
+  expect((exact.json().device.name as string).length).toBe(60);
+
   const tooLong = await app.inject({
     method: 'PATCH',
     url: `/api/devices/${second.id}`,

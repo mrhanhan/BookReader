@@ -145,3 +145,69 @@ it('hard-deletes tombstones older than 90 days but keeps newer ones', async () =
   const remainingBookmarks = await testDb.select().from(bookmarks);
   expect(remainingBookmarks.map((row) => row.id)).toEqual([recentBookmark.id]);
 });
+
+it('applies the 90-day boundary exactly', async () => {
+  await resetDb();
+  const deps = await buildTestDeps();
+  const now = new Date('2026-10-18T00:00:00.000Z');
+  deps.clock = { now: () => now };
+  const user = await seedUser('member');
+  const book = await seedBook({ uploadedBy: user.id, format: 'pdf' });
+  const before = (days: number): Date => new Date(now.getTime() - days * DAY_MS);
+
+  const deleted91 = await seedAnnotation({
+    userId: user.id,
+    bookId: book.id,
+    deletedAt: before(91),
+  });
+  const deleted90 = await seedAnnotation({
+    userId: user.id,
+    bookId: book.id,
+    deletedAt: before(90),
+  });
+  const deleted89 = await seedAnnotation({
+    userId: user.id,
+    bookId: book.id,
+    deletedAt: before(89),
+  });
+  const liveOld = await seedBookmark({
+    userId: user.id,
+    bookId: book.id,
+    label: '活着的旧书签',
+    deletedAt: null,
+    createdAt: before(400),
+  });
+
+  const result = await purgeDeletedEntities(deps);
+  expect(result).toEqual({ annotations: 1, bookmarks: 0 });
+
+  const remainingAnnotations = await testDb.select().from(annotations);
+  expect(remainingAnnotations.map((row) => row.id).sort()).toEqual(
+    [deleted90.id, deleted89.id].sort(),
+  );
+  expect(remainingAnnotations.map((row) => row.id)).not.toContain(deleted91.id);
+
+  // A second sweep is a no-op and the live bookmark survives both.
+  expect(await purgeDeletedEntities(deps)).toEqual({ annotations: 0, bookmarks: 0 });
+  const remainingBookmarks = await testDb.select().from(bookmarks);
+  expect(remainingBookmarks.map((row) => row.id)).toEqual([liveOld.id]);
+});
+
+it('prunes log rows strictly older than 90 days', async () => {
+  await resetDb();
+  const deps = await buildTestDeps();
+  const now = new Date('2026-10-18T00:00:00.000Z');
+  deps.clock = { now: () => now };
+  const user = await seedUser('member');
+  const before = (days: number): Date => new Date(now.getTime() - days * DAY_MS);
+
+  await appendChangeCreatedAt(user.id, before(89), 'day-89');
+  await appendChangeCreatedAt(user.id, before(90), 'day-90');
+  const day91Revision = await appendChangeCreatedAt(user.id, before(91), 'day-91');
+
+  const result = await pruneSyncLog(deps);
+  expect(result).toEqual({ pruned: 1, through: day91Revision });
+
+  const rows = await testDb.select().from(syncChanges);
+  expect(rows.map((row) => row.entityId).sort()).toEqual(['day-89', 'day-90']);
+});

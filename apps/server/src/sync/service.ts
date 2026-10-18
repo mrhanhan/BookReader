@@ -28,11 +28,11 @@ import type { ReadingActor } from '../reading/guards';
 import { applyChange } from './apply';
 import {
   appendChange,
-  listChanges,
+  listChangesInTx,
   markPrunedThrough,
   maxRevision,
   PRUNED_THROUGH_KEY,
-  prunedThrough,
+  prunedThroughInTx,
   readUserSettings,
 } from './repo';
 
@@ -143,15 +143,24 @@ export async function pullChanges(
   since: number,
   limit: number,
 ): Promise<SyncPullResult> {
-  const watermark = await prunedThrough(deps.db);
+  // Both reads must come from one snapshot. If a prune commits between the
+  // watermark read and the page read under READ COMMITTED, revisions in
+  // (since, newWatermark] are already deleted but the old watermark still
+  // looks valid, so the client neither receives them nor resets: silent loss.
+  return deps.db.transaction(
+    async (tx) => {
+      const watermark = await prunedThroughInTx(tx);
 
-  if (since > 0 && since < watermark) {
-    return { changes: [], cursor: since, hasMore: false, reset: true };
-  }
+      if (since > 0 && since < watermark) {
+        return { changes: [], cursor: since, hasMore: false, reset: true };
+      }
 
-  const page = await listChanges(deps.db, userId, since, limit);
-  const cursor = page.rows.at(-1)?.revision ?? since;
-  return { changes: page.rows, cursor, hasMore: page.hasMore, reset: false };
+      const page = await listChangesInTx(tx, userId, since, limit);
+      const cursor = page.rows.at(-1)?.revision ?? since;
+      return { changes: page.rows, cursor, hasMore: page.hasMore, reset: false };
+    },
+    { isolationLevel: 'repeatable read' },
+  );
 }
 
 /**

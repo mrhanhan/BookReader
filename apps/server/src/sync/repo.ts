@@ -89,6 +89,31 @@ export async function listChanges(
     .orderBy(asc(syncChanges.revision))
     .limit(limit + 1);
 
+  return shapePage(rows, limit);
+}
+
+/** Same read as `listChanges`, but shares the caller's transaction snapshot. */
+export async function listChangesInTx(
+  tx: Transaction,
+  userId: string,
+  since: number,
+  limit: number,
+): Promise<{ rows: SyncChangeEnvelope[]; hasMore: boolean }> {
+  const rows = await tx
+    .select()
+    .from(syncChanges)
+    .where(and(eq(syncChanges.userId, userId), gt(syncChanges.revision, since)))
+    .orderBy(asc(syncChanges.revision))
+    .limit(limit + 1);
+
+  return shapePage(rows, limit);
+}
+
+/** Keeps one extra row only to signal that another page exists. */
+function shapePage(
+  rows: SyncChangeRow[],
+  limit: number,
+): { rows: SyncChangeEnvelope[]; hasMore: boolean } {
   return {
     rows: rows.slice(0, limit).map(toEnvelope),
     hasMore: rows.length > limit,
@@ -107,6 +132,16 @@ export async function maxRevision(db: Database, userId: string): Promise<number>
 /** Returns the highest revision clients no longer need to pull, or 0. */
 export async function prunedThrough(db: Database): Promise<number> {
   const [row] = await db
+    .select()
+    .from(syncMeta)
+    .where(eq(syncMeta.key, PRUNED_THROUGH_KEY))
+    .limit(1);
+  return row?.value ?? 0;
+}
+
+/** Reads the prune watermark inside the caller's transaction snapshot. */
+export async function prunedThroughInTx(tx: Transaction): Promise<number> {
+  const [row] = await tx
     .select()
     .from(syncMeta)
     .where(eq(syncMeta.key, PRUNED_THROUGH_KEY))
