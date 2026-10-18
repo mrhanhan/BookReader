@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { expect } from '@playwright/test';
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Page, Response } from '@playwright/test';
 
 const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'admin';
 const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? 'Admin-Test-Password-123';
@@ -14,9 +14,8 @@ export interface FreshReader {
   username: string;
 }
 
-export interface AuthHeaders {
-  authorization: string;
-}
+/** A type alias, not an interface, so it is assignable to `Record<string, string>`. */
+export type AuthHeaders = { authorization: string };
 
 export async function adminAuth(
   request: APIRequestContext,
@@ -84,19 +83,90 @@ export async function registerFreshReader(
   return { username };
 }
 
+interface DuplicateBookBody {
+  error?: { code?: string; details?: { existingBookId?: string } };
+}
+
+/**
+ * Turns a `DUPLICATE_BOOK` rejection into an operator-facing instruction. The
+ * server only returns the existing id, so the title and owner are looked up as
+ * the administrator; a failure to look them up still names the id.
+ */
+async function describeDuplicateBook(
+  page: Page,
+  existingBookId: string | null,
+): Promise<string> {
+  const id = existingBookId ?? 'unknown';
+  if (!existingBookId) {
+    return (
+      `E2E fixture upload was rejected as a duplicate: an existing book ` +
+      'already has this sha256. Soft-delete it through the admin API and rerun.'
+    );
+  }
+  try {
+    const headers = await adminAuth(page.request);
+    const response = await page.request.get(`/api/books/${existingBookId}`, { headers });
+    if (response.ok()) {
+      const { book } = (await response.json()) as {
+        book: { title: string; uploadedBy: { displayName: string } };
+      };
+      return (
+        `E2E fixture upload was rejected as a duplicate: "${book.title}" (${id}) ` +
+        `owned by ${book.uploadedBy.displayName} already has this sha256. ` +
+        'Soft-delete that book through the admin API and rerun.'
+      );
+    }
+  } catch {
+    // Fall through to the id-only message below.
+  }
+  return (
+    `E2E fixture upload was rejected as a duplicate: existing book ${id} ` +
+    'already has this sha256. Soft-delete it through the admin API and rerun.'
+  );
+}
+
 /**
  * Uploads a fixture through the shelf dialog and renames the resulting card.
  * The metadata job may rename the filename title to the embedded one, so the
  * card is located by the fixture's "reader" stem rather than by position.
+ *
+ * A library-wide sha256 dedupe blocks the upload when a demo copy is still on
+ * the shelf; that rejection is surfaced with the existing book's id and owner
+ * instead of the opaque "上传完成" timeout.
  */
 export async function uploadAndRename(
   page: Page,
   fixture: string,
   title: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: '上传图书' }).click();
-  await page.setInputFiles('input[type=file]', fixture);
-  await expect(page.getByText('上传完成')).toBeVisible({ timeout: 90_000 });
+  const duplicateChecks: Array<Promise<string | null>> = [];
+  const onResponse = (response: Response): void => {
+    if (!response.url().includes('/api/uploads') || response.status() !== 409) return;
+    duplicateChecks.push(
+      (async () => {
+        const body = (await response.json().catch(() => null)) as DuplicateBookBody | null;
+        if (body?.error?.code !== 'DUPLICATE_BOOK') return null;
+        return describeDuplicateBook(page, body.error.details?.existingBookId ?? null);
+      })(),
+    );
+  };
+  page.on('response', onResponse);
+
+  try {
+    await page.getByRole('button', { name: '上传图书' }).click();
+    await page.setInputFiles('input[type=file]', fixture);
+    try {
+      await expect(page.getByText('上传完成')).toBeVisible({ timeout: 90_000 });
+    } catch (error) {
+      const messages = (await Promise.all(duplicateChecks)).filter(
+        (message): message is string => message !== null,
+      );
+      if (messages[0]) throw new Error(messages[0]);
+      throw error;
+    }
+  } finally {
+    page.off('response', onResponse);
+  }
 
   const card = page.getByTestId('book-card').filter({ hasText: /reader/i }).first();
   await expect(card, 'uploaded card before it is renamed').toBeVisible();

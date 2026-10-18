@@ -17,8 +17,8 @@ const REFLOW_FIXTURE = 'e2e/fixtures/reader.bookr.json';
 interface ServerAnnotation {
   locator: {
     kind: string;
-    sourcePage?: number;
-    ranges?: Array<{ blockId: string; charRange: [number, number] }>;
+    blockId?: string;
+    charRange?: [number, number];
   };
 }
 
@@ -31,29 +31,6 @@ async function setFontSize(page: Page, size: number): Promise<void> {
     await slider.press(key);
     current += current < size ? 1 : -1;
   }
-}
-
-/**
- * The page-number jump maps to a percentage of the scroll range, while the
- * reader reports the block above its focus line; the two differ by a page or
- * two. Scroll in small steps until the reader itself reports `target`, so the
- * cross-mode assertion compares like with like.
- */
-async function settleOnSourcePage(page: Page, target: number): Promise<void> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    await revealChrome(page);
-    const label = (await page.locator('.reader-page-label').textContent()) ?? '';
-    const current = Number(/第 (\d+) \//.exec(label)?.[1]);
-    if (current === target) return;
-    if (!Number.isFinite(current)) break;
-    await page.evaluate((amount) => {
-      const host = document.querySelector<HTMLElement>('.bookr-reflow-scroll');
-      if (!host) throw new Error('reflow host missing');
-      host.scrollTop += amount;
-    }, current < target ? 40 : -40);
-    await page.waitForTimeout(80);
-  }
-  throw new Error(`could not settle the reflow reader on source page ${target}`);
 }
 
 test('reads a PDF in reflow mode, keeps its page across modes and saves a reflow highlight', async ({
@@ -74,39 +51,37 @@ test('reads a PDF in reflow mode, keeps its page across modes and saves a reflow
   await revealChrome(page);
   await expect(page.getByRole('button', { name: '重排' })).toBeEnabled();
   await page.getByRole('button', { name: '重排' }).click();
-  await expect(page.locator('.bookr-reflow')).toContainText('Bookr reader fixture - page 1');
+  await expect(page.locator('.bookr-reflow')).toBeVisible();
+  await expect(
+    page.getByText('Bookr reader fixture - page 1', { exact: true }),
+  ).toBeInViewport();
 
-  // Jump to source page 120 in reflow mode.
+  // Jump to source page 120 in reflow mode; the label tracks the target page.
   await revealChrome(page);
   await page.getByLabel('页码').fill('120');
   await page.getByRole('button', { name: '跳转' }).click();
-  await expect(page.getByText('Bookr reader fixture - page 120')).toBeInViewport();
+  await expect(page.getByText('第 120 / 300 页')).toBeVisible();
+  await expect(
+    page.getByText('Bookr reader fixture - page 120', { exact: true }),
+  ).toBeInViewport();
 
-  // Typography applies without reopening the document.
+  // Typography applies without reopening or moving the reader off page 120.
   await revealChrome(page);
   await page.getByRole('button', { name: '设置' }).click();
   await setFontSize(page, 24);
   await expect(page.locator('.bookr-reflow')).toHaveCSS('font-size', '24px');
+  await expect(page.getByText('第 120 / 300 页')).toBeVisible();
   await page
     .getByRole('complementary', { name: '阅读设置' })
     .getByRole('button', { name: '关闭' })
     .click();
 
-  // Larger type grows every block while the engine deliberately keeps
-  // `scrollTop`, so the focus-line source page drifts a couple of pages.
-  // Re-anchor to 120 before the switch so the assertion below tests mode
-  // preservation rather than that expected typography drift.
+  // Switch back: the original PDF lands within one source page of 120.
   await revealChrome(page);
-  await page.getByLabel('页码').fill('120');
-  await page.getByRole('button', { name: '跳转' }).click();
-  await expect(page.getByText('Bookr reader fixture - page 120')).toBeInViewport();
-  await settleOnSourcePage(page, 120);
-
-  // Switch back: the original PDF lands on the same source page (±1).
   await page.getByRole('button', { name: '原版' }).click();
   await expect(page.locator('.bookr-pdf-page canvas').first()).toBeVisible({ timeout: 15_000 });
   await revealChrome(page);
-  await expect(page.getByText(/第 12[01] \/ 300 页/)).toBeVisible();
+  await expect(page.getByText(/第 1(?:19|20|21) \/ 300 页/)).toBeVisible();
 
   // Switch again and create a reflow highlight through the real selection menu.
   await revealChrome(page);
@@ -145,6 +120,11 @@ test('reads a PDF in reflow mode, keeps its page across modes and saves a reflow
     headers: auth,
   });
   const body = (await annotations.json()) as { items: ServerAnnotation[] };
-  expect(body.items[0]?.locator.kind).toBe('reflow');
-  expect(body.items[0]?.locator.ranges?.length ?? 1).toBeGreaterThanOrEqual(1);
+  const locator = body.items[0]?.locator;
+  expect(locator?.kind).toBe('reflow');
+  // The selection sits in page 1's first block (the extra page-1 block only
+  // shifts later indices), so the stored locator must name that block and its
+  // exact character range. `ranges` stays unset for a single-block selection.
+  expect(locator?.blockId).toBe('p1-b0');
+  expect(locator?.charRange).toEqual([0, 12]);
 });
