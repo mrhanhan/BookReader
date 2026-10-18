@@ -9,7 +9,6 @@ import type {
   BookmarkDto,
   Locator,
   ReaderKind,
-  ReflowFileInfo,
   SyncEntityType,
 } from '@bookr/shared';
 import {
@@ -38,9 +37,14 @@ import {
   bookmarksQueryKey,
   fetchReaderFile,
 } from '../../api/reading';
-import type { ReaderFileInfo } from '../../api/reading';
 import { fetchReflowFile } from '../../api/reflow';
 import { messageForApiError } from '../../lib/errorMessages';
+import {
+  OfflineUnavailableError,
+  OFFLINE_UNAVAILABLE_MESSAGE,
+  resolveBookSource,
+} from '../../offline/bookSource';
+import { useOfflineSession } from '../../offline/offlineContext';
 import { useSync } from '../../sync/SyncProvider';
 import type { SyncState } from '../../sync/engine';
 import { Toast } from '../bookshelf/Toast';
@@ -85,9 +89,12 @@ export interface ReaderPageProps {
 }
 
 interface ReaderSource {
-  file: ReaderFileInfo;
-  /** Signed pack URL; null when the book has no pack or the fetch failed. */
-  reflow: ReflowFileInfo | null;
+  /** Signed storage URL when online, cached object URL when reading offline. */
+  fileUrl: string;
+  /** Pack URL; null when the book has no pack or it is unavailable offline. */
+  reflowUrl: string | null;
+  /** True when both URLs point at files downloaded to this device. */
+  offline: boolean;
   initialLocator?: Locator;
 }
 
@@ -100,6 +107,14 @@ function readerFileFailure(error: unknown): string {
     if (error.code === 'FILE_MISSING' || error.status === 404) return FILE_MISSING_MESSAGE;
   }
   return OPEN_FAILED_MESSAGE;
+}
+
+/**
+ * Absence of an offline signal counts as online, which keeps non-browser hosts
+ * (tests) on the normal signing path.
+ */
+function isOnline(): boolean {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 /** Engine navigation is best-effort; a closed engine must not crash the page. */
@@ -217,6 +232,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // the signed-in user is known.
   const userId = user?.id ?? null;
   const { repo, state: syncState, requestSync } = useSync();
+  const { cache } = useOfflineSession();
   const bookQuery = useBook(id ?? null);
   const book = bookQuery.data;
   const bookId = book?.id ?? null;
@@ -313,6 +329,14 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       const inFlight = refreshInFlightRef.current[target];
       if (inFlight) return inFlight;
 
+      // Cached object URLs never expire and there is no signing endpoint to
+      // reach offline; keep the URLs already in the source.
+      if (!isOnline()) {
+        const current = sourceRef.current;
+        if (!current) return Promise.resolve(false);
+        return Promise.resolve(target === 'original' || current.reflowUrl !== null);
+      }
+
       const requestBookId = bookId;
       const request = (async (): Promise<boolean> => {
         try {
@@ -321,7 +345,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
             if (bookIdRef.current !== requestBookId) return false;
             const latest = sourceRef.current;
             if (!latest) return false;
-            const next = { ...latest, reflow };
+            const next = { ...latest, reflowUrl: reflow.url };
             sourceRef.current = next;
             setSource(next);
           } else {
@@ -329,7 +353,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
             if (bookIdRef.current !== requestBookId) return false;
             const latest = sourceRef.current;
             if (!latest) return false;
-            const next = { ...latest, file };
+            const next = { ...latest, fileUrl: file.url };
             sourceRef.current = next;
             setSource(next);
           }
@@ -425,7 +449,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     [changeSettings, engine, refreshSourceFor, showToast],
   );
 
-  const reflowReady = source?.reflow != null;
+  const reflowReady = source?.reflowUrl != null;
   const sourceReady = source !== null;
   const { mode, reflowAvailable, toggleReflow } = useReadingMode({
     book: book ?? null,
@@ -485,13 +509,12 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     readyRef.current = false;
   }, [bookId]);
 
-  // Fetch the signed URL and the locally stored position in parallel, then
-  // compute the one position the reader should open at. Only the file request
-  // is fatal: a local-store failure must fall back to opening at the start
-  // instead of blocking the book. The reflow pack URL is best-effort too: a
-  // failure leaves original mode readable and keeps the switch disabled.
-  // Progress belongs to the signed-in account, so nothing is read until that
-  // account is known.
+  // Resolve the file URL and the locally stored position in parallel, then
+  // compute the one position the reader should open at. The source resolver
+  // signs fresh URLs online, falls back to the device copy, and is the only
+  // path while offline. A local-store failure must fall back to opening at the
+  // start instead of blocking the book. Progress belongs to the signed-in
+  // account, so nothing is read until that account is known.
   const wantsReflow = book?.reflowAvailable === true;
   useEffect(() => {
     if (!bookId || !userId) return;
@@ -499,28 +522,35 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
     void (async () => {
       try {
-        const [file, progress, reflow] = await Promise.all([
-          fetchReaderFile(bookId),
+        const [progress, resolved] = await Promise.all([
           readLocalProgress(repo, userId, bookId).catch(() => null),
-          wantsReflow ? fetchReflowFile(bookId).catch(() => null) : Promise.resolve(null),
+          resolveBookSource({
+            cache,
+            online: isOnline,
+            userId,
+            bookId,
+            reflowAvailable: wantsReflow,
+            fetchFile: (id) => fetchReaderFile(id),
+            fetchReflow: (id) => fetchReflowFile(id),
+          }),
         ]);
         if (cancelled) return;
-        setSource({
-          file,
-          reflow,
-          initialLocator: progress?.locator,
-        });
+        setSource({ ...resolved, initialLocator: progress?.locator });
         setSourceEpoch((value) => value + 1);
       } catch (error) {
         if (cancelled) return;
-        setLoadFailure(readerFileFailure(error));
+        setLoadFailure(
+          error instanceof OfflineUnavailableError
+            ? OFFLINE_UNAVAILABLE_MESSAGE
+            : readerFileFailure(error),
+        );
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [bookId, repo, userId, wantsReflow]);
+  }, [bookId, cache, repo, userId, wantsReflow]);
 
   const initialLocator = source?.initialLocator;
 
@@ -550,7 +580,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     const activeSource = sourceRef.current;
     if (!engine || !activeSource || !mode || !container) return;
 
-    if (mode === 'reflow' && !activeSource.reflow) {
+    if (mode === 'reflow' && !activeSource.reflowUrl) {
       setStatus('error');
       setEngineFailure(REFLOW_MISSING_MESSAGE);
       return;
@@ -598,8 +628,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       : undefined;
     const options: OpenReaderOptions = {
       initialLocator,
-      ...(useReflow ? { sourcePdfUrl: activeSource.file.url } : {}),
-      ...(activeSource.file.format === 'pdf'
+      ...(useReflow ? { sourcePdfUrl: activeSource.fileUrl } : {}),
+      ...(kind === 'pdf'
         ? {
             workerSrc: pdfWorkerUrl,
             cMapUrl: '/cmaps/',
@@ -611,7 +641,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     void (async () => {
       try {
         const info = await engine.open(
-          useReflow ? activeSource.reflow!.url : activeSource.file.url,
+          useReflow ? activeSource.reflowUrl! : activeSource.fileUrl,
           container,
           settingsRef.current,
           options,
@@ -631,7 +661,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       cancelled = true;
       unsubscribe();
     };
-  }, [engine, mode, sourceEpoch, fallbackToOriginal]);
+  }, [engine, kind, mode, sourceEpoch, fallbackToOriginal]);
 
   // A progress change applied from another device (pull or stream) wins over
   // the position this visit opened at. Follow it once the book is open, and
@@ -1313,6 +1343,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               kind={mode ?? 'pdf'}
               reflowAvailable={reflowAvailable}
               reflowReady={reflowReady}
+              offline={source?.offline === true}
               onToggleReflow={toggleReflow}
               documentInfo={documentInfo}
               page={page}

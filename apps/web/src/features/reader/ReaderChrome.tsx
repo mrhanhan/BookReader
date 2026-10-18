@@ -15,6 +15,8 @@ export interface ReaderChromeProps {
   reflowAvailable: boolean;
   /** The signed pack URL resolved; false after a failed fetch until a retry. */
   reflowReady: boolean;
+  /** The book was opened from the copy downloaded to this device. */
+  offline?: boolean;
   onToggleReflow: () => void;
   documentInfo: ReaderDocumentInfo | null;
   /** Current 1-based source page; ignored for EPUB. */
@@ -45,6 +47,7 @@ export function ReaderChrome({
   kind,
   reflowAvailable,
   reflowReady,
+  offline = false,
   onToggleReflow,
   documentInfo,
   page,
@@ -95,6 +98,14 @@ export function ReaderChrome({
         <div className="reader-title-block">
           <h1 className="reader-title">{book.title}</h1>
           <p className="reader-author">{book.author ?? '佚名'}</p>
+          {offline ? (
+            <span
+              className="rounded-sm border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] tracking-wider text-accent"
+              title="正在阅读下载到本机的副本"
+            >
+              离线
+            </span>
+          ) : null}
         </div>
 
         <nav className="reader-actions" aria-label="阅读工具">

@@ -11,6 +11,15 @@ import {
   canRetryConversion,
 } from './labels';
 
+export interface BookOfflineState {
+  /** A downloaded copy is stored for this account. */
+  cached: boolean;
+  /** The copy is pinned, so the LRU eviction never removes it. */
+  pinned: boolean;
+  /** A download, pin or removal request is running. */
+  pending: boolean;
+}
+
 export interface BookCardProps {
   book: BookDto;
   view: ShelfView;
@@ -20,6 +29,11 @@ export interface BookCardProps {
   /** Queues another conversion attempt; only managers see the action. */
   onRetryConversion?: (book: BookDto) => void;
   retryPending?: boolean;
+  /** Offline state for the signed-in account; omitted while no one is signed in. */
+  offline?: BookOfflineState;
+  onDownload?: (book: BookDto) => void;
+  onUnpin?: (book: BookDto) => void;
+  onRemoveOffline?: (book: BookDto) => void;
 }
 
 /** One shelf entry: cover or paper placeholder, metadata, progress and actions. */
@@ -31,6 +45,10 @@ export function BookCard({
   onDelete,
   onRetryConversion,
   retryPending = false,
+  offline,
+  onDownload,
+  onUnpin,
+  onRemoveOffline,
 }: BookCardProps) {
   const progress = Math.max(0, Math.min(100, Math.round(book.progressPercent)));
   const isGrid = view === 'grid';
@@ -86,6 +104,14 @@ export function BookCard({
             {book.reflowAvailable ? (
               <span className="rounded-sm border border-accent/40 px-1.5 py-0.5 text-[10px] tracking-wider text-accent">
                 {REFLOW_BADGE_LABEL}
+              </span>
+            ) : null}
+            {offline?.cached ? (
+              <span
+                className="rounded-sm border border-accent/40 bg-accent/10 px-1.5 py-0.5 text-[10px] tracking-wider text-accent"
+                title="已下载到本机，可离线阅读"
+              >
+                离线
               </span>
             ) : null}
           </div>
@@ -176,6 +202,39 @@ export function BookCard({
           >
             阅读
           </Link>
+          {offline && onDownload && !offline.pinned ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`下载到本机《${book.title}》`}
+              disabled={offline.pending}
+              onClick={() => onDownload(book)}
+            >
+              下载到本机
+            </Button>
+          ) : null}
+          {offline?.pinned && onUnpin ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`取消固定《${book.title}》`}
+              disabled={offline.pending}
+              onClick={() => onUnpin(book)}
+            >
+              取消固定
+            </Button>
+          ) : null}
+          {offline?.cached && onRemoveOffline ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`移出本机《${book.title}》`}
+              disabled={offline.pending}
+              onClick={() => onRemoveOffline(book)}
+            >
+              移出本机
+            </Button>
+          ) : null}
           {canManage ? (
             <>
               <Button

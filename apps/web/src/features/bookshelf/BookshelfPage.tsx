@@ -1,13 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { BookDto } from '@bookr/shared';
 import { Button, Dialog, EmptyState } from '@bookr/ui';
 import { useQueryClient } from '@tanstack/react-query';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { Link } from 'react-router';
 import { BOOKS_QUERY_KEY, useBooks, useDeleteBook, useRetryConversion } from '../../api/books';
 import { useCategories } from '../../api/categories';
+import { fetchReaderFile } from '../../api/reading';
+import { fetchReflowFile } from '../../api/reflow';
 import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
 import { formatBytes } from '../../lib/format';
+import { useOfflineSession } from '../../offline/offlineContext';
+import { SyncContext } from '../../sync/SyncProvider';
+import type { OfflineBookRow } from '../../sync/types';
 import { BookCard } from './BookCard';
 import { EditBookDialog } from './EditBookDialog';
 import { DEFAULT_FILTERS, FilterBar } from './FilterBar';
@@ -52,6 +58,86 @@ export function BookshelfPage() {
   const deleteBook = useDeleteBook();
   const retryConversion = useRetryConversion();
   const dismissToast = useCallback(() => setToast(null), []);
+  const { db, cache } = useOfflineSession();
+  // The shelf lives outside `SyncProvider` in some tests, so read the context
+  // directly rather than through `useSync`, which requires a provider.
+  const sync = useContext(SyncContext);
+  const userId = user?.id ?? null;
+  // Local cache writes arrive through the live query; a finished sync cycle can
+  // also change what this account has on the device.
+  const offlineRows = useLiveQuery(
+    () =>
+      userId === null
+        ? Promise.resolve([] as OfflineBookRow[])
+        : db.offlineBooks.where('userId').equals(userId).toArray(),
+    [db, userId, sync?.state.lastSyncedAt],
+  );
+  const offlineByBook = useMemo(
+    () => new Map((offlineRows ?? []).map((row) => [row.bookId, row])),
+    [offlineRows],
+  );
+  const [offlinePending, setOfflinePending] = useState<ReadonlySet<string>>(new Set());
+
+  const markOfflinePending = useCallback((bookId: string, pending: boolean) => {
+    setOfflinePending((current) => {
+      const next = new Set(current);
+      if (pending) next.add(bookId);
+      else next.delete(bookId);
+      return next;
+    });
+  }, []);
+
+  /** Keeps the book and its reflow pack on this device, and pins them. */
+  async function downloadBook(book: BookDto) {
+    if (!userId) return;
+    markOfflinePending(book.id, true);
+    const wasPinned = await cache.isPinned(userId, book.id).catch(() => false);
+    try {
+      await cache.pin(userId, book.id);
+      const file = await fetchReaderFile(book.id);
+      await cache.cacheFromUrl(userId, book.id, 'book', file.url);
+      if (book.reflowAvailable) {
+        // The pack is optional: the original document is already readable.
+        const reflow = await fetchReflowFile(book.id).catch(() => null);
+        if (reflow) await cache.cacheFromUrl(userId, book.id, 'reflow', reflow.url);
+      }
+      await cache.enforceLru(userId, book.id);
+      setToast(`《${book.title}》已下载到本机，可离线阅读`);
+    } catch {
+      // Do not leave a pinned placeholder behind when the download never landed.
+      if (!wasPinned) await cache.unpin(userId, book.id).catch(() => undefined);
+      setToast('下载失败，请检查网络后重试');
+    } finally {
+      markOfflinePending(book.id, false);
+    }
+  }
+
+  async function unpinBook(book: BookDto) {
+    if (!userId) return;
+    markOfflinePending(book.id, true);
+    try {
+      await cache.unpin(userId, book.id);
+      setToast(`《${book.title}》已取消固定`);
+    } catch {
+      setToast('操作失败，请稍后重试');
+    } finally {
+      markOfflinePending(book.id, false);
+    }
+  }
+
+  /** Removes the downloaded copy only; notes, bookmarks and progress stay. */
+  async function removeBookFromDevice(book: BookDto) {
+    if (!userId) return;
+    markOfflinePending(book.id, true);
+    try {
+      await cache.remove(userId, book.id);
+      setToast(`《${book.title}》已移出本机`);
+    } catch {
+      setToast('操作失败，请稍后重试');
+    } finally {
+      markOfflinePending(book.id, false);
+    }
+  }
 
   function changeView(next: ShelfView) {
     setView(next);
@@ -214,21 +300,38 @@ export function BookshelfPage() {
               : 'flex flex-col gap-3'
           }
         >
-          {books.map((book) => (
-            <BookCard
-              key={book.id}
-              book={book}
-              view={view}
-              canManage={Boolean(user && (user.role === 'admin' || book.uploadedBy.id === user.id))}
-              onEdit={openEditDialog}
-              onDelete={(selected) => {
-                setDeleteError(null);
-                setDeletingBook(selected);
-              }}
-              onRetryConversion={retryBookConversion}
-              retryPending={retryConversion.isPending}
-            />
-          ))}
+          {books.map((book) => {
+            const row = offlineByBook.get(book.id);
+            return (
+              <BookCard
+                key={book.id}
+                book={book}
+                view={view}
+                canManage={Boolean(
+                  user && (user.role === 'admin' || book.uploadedBy.id === user.id),
+                )}
+                onEdit={openEditDialog}
+                onDelete={(selected) => {
+                  setDeleteError(null);
+                  setDeletingBook(selected);
+                }}
+                onRetryConversion={retryBookConversion}
+                retryPending={retryConversion.isPending}
+                offline={
+                  userId === null
+                    ? undefined
+                    : {
+                        cached: (row?.bytes ?? 0) > 0,
+                        pinned: row?.pinned === true,
+                        pending: offlinePending.has(book.id),
+                      }
+                }
+                onDownload={(selected) => void downloadBook(selected)}
+                onUnpin={(selected) => void unpinBook(selected)}
+                onRemoveOffline={(selected) => void removeBookFromDevice(selected)}
+              />
+            );
+          })}
         </div>
       )}
 
