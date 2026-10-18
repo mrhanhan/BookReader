@@ -1,11 +1,13 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import type {
-  AiAction,
-  AiChatRequest,
-  AiMessageDto,
-  AiThreadDto,
-  AiUsageDto,
+import {
+  AI_MAX_PAGE_TEXT_LENGTH,
+  AI_MAX_SELECTED_TEXT_LENGTH,
+  type AiAction,
+  type AiChatRequest,
+  type AiMessageDto,
+  type AiThreadDto,
+  type AiUsageDto,
 } from '@bookr/shared';
 import type { AiStreamHandlers } from '../../../../api/ai';
 import { useAiChat, type AiApi } from '../useAiChat';
@@ -366,4 +368,24 @@ it('abandons the previous stream when starting a new thread', async () => {
     handlers?.onDelta('旧回答');
   });
   expect(result.current.messages).toHaveLength(0);
+});
+
+
+it('caps long selections and page text to the shared schema limits', async () => {
+  const longContext = {
+    getTextContext: vi.fn(async () => ({ text: '页'.repeat(25_000), label: '本章' })),
+    currentLocator: () => locator,
+  };
+  const api = apiWith();
+  const { result } = renderHook(() =>
+    useAiChat({ bookId: 'book-1', offline: false, context: longContext, api }),
+  );
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  await act(async () => {
+    await result.current.explain({ text: '选'.repeat(9_000), locator });
+  });
+  const body = (api.streamChat as ReturnType<typeof vi.fn>).mock.calls[0]![1] as AiChatRequest;
+  expect(body.selectedText).toHaveLength(AI_MAX_SELECTED_TEXT_LENGTH);
+  expect(body.context?.pageText).toHaveLength(AI_MAX_PAGE_TEXT_LENGTH);
 });

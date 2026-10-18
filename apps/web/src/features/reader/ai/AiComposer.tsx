@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { useState } from 'react';
+import { AI_MAX_QUESTION_LENGTH } from '@bookr/shared';
 
 export interface AiComposerProps {
   canSend: boolean;
@@ -37,6 +38,7 @@ export function AiComposer({
         aria-label="向 AI 提问"
         className="ai-composer-input"
         rows={2}
+        maxLength={AI_MAX_QUESTION_LENGTH}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {

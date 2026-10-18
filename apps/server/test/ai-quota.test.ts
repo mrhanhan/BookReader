@@ -101,3 +101,17 @@ it('rounds the estimate up to at least one token', async () => {
   expect(reservation.daily.estimate).toBe(1);
   expect(reservation.monthly.estimate).toBe(1);
 });
+
+it('releases reservations left behind by a crashed request', async () => {
+  const { reclaimStaleReservations } = await import('../src/ai/quota');
+  const user = await seedUser('member');
+  const old = new Date('2026-10-19T09:00:00.000Z');
+  await reserveQuota(testDb, {
+    userId: user.id, timezone: 'UTC', estimate: 5_000, limits, now: old,
+  });
+  const now = new Date('2026-10-19T11:00:00.000Z');
+  expect(await reclaimStaleReservations(testDb, now)).toBeGreaterThan(0);
+  const quota = await readQuota(testDb, { userId: user.id, timezone: 'UTC', limits, now });
+  expect(quota.daily.reserved).toBe(0);
+  expect(quota.monthly.reserved).toBe(0);
+});

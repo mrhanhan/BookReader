@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@bookr/shared';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, gt, lt, or, sql } from 'drizzle-orm';
 import type { Database, Transaction } from '../db/client';
 import { aiUsage, users, type AiUsagePeriod, type AiUsageRow } from '../db/schema';
 import { AppError } from '../errors';
@@ -291,6 +291,32 @@ export async function settleQuota(
       ),
     };
   });
+}
+
+/** A hold older than this cannot belong to a live request (gateway timeout is 60s). */
+export const STALE_RESERVATION_MS = 60 * 60 * 1000;
+
+/**
+ * Releases holds left behind by a crashed process or an unrecoverable
+ * settlement failure. Safe to run daily: any real request has long timed out.
+ */
+export async function reclaimStaleReservations(
+  db: Database,
+  now: Date,
+  olderThanMs: number = STALE_RESERVATION_MS,
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - olderThanMs);
+  const rows = await db
+    .update(aiUsage)
+    .set({ reservedTokens: 0, updatedAt: now })
+    .where(
+      and(
+        gt(aiUsage.reservedTokens, 0),
+        lt(aiUsage.updatedAt, cutoff),
+      ),
+    )
+    .returning({ userId: aiUsage.userId });
+  return rows.length;
 }
 
 /** Drops a reservation without recording usage. */

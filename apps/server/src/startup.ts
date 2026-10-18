@@ -1,4 +1,5 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { reclaimStaleReservations } from './ai/quota';
 import { cleanupExpiredReflowUploads } from './books/reflow';
 import { cleanupTrash } from './books/service';
 import type { AppDeps } from './app';
@@ -109,6 +110,10 @@ export function startDailyCleanup(deps: AppDeps): () => void {
         console.log(
           `[cleanup] pruned ${pruned.pruned} sync changes through revision ${pruned.through}`,
         );
+      });
+      await runStep('stale AI reservations', async () => {
+        const released = await reclaimStaleReservations(deps.db, deps.clock.now());
+        console.log(`[cleanup] released ${released} stale AI reservations`);
       });
       await runStep('tombstone purge', async () => {
         const purged = await purgeDeletedEntities(deps);

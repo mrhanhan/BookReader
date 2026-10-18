@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { AI_THREAD_TITLE_MAX_LENGTH } from '@bookr/shared';
+import {
+  AI_MAX_CHAPTER_TEXT_LENGTH,
+  AI_MAX_PAGE_TEXT_LENGTH,
+  AI_MAX_QUESTION_LENGTH,
+  AI_MAX_SELECTED_TEXT_LENGTH,
+  AI_THREAD_TITLE_MAX_LENGTH,
+} from '@bookr/shared';
 import type {
   AiAction,
   AiChatRequest,
@@ -86,6 +92,11 @@ const QUOTA_ERROR = '今日或本月额度已用尽，额度会按用户时区�
 
 function tempId(): string {
   return `temp-${Date.now()}-${Math.random()}`;
+}
+
+/** Keeps request fields inside the shared schema limits before sending. */
+function capText(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) : text;
 }
 
 function quotaExhausted(window: { used: number; reserved: number; limit: number }): boolean {
@@ -449,6 +460,9 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
           ),
         );
         setError(payload.message);
+        if (payload.code === 'AI_QUOTA_EXCEEDED') {
+          void refreshUsage();
+        }
       },
     };
 
@@ -492,7 +506,11 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
     streamingRef.current = false;
     abortRef.current = null;
 
-    if (metaReceived && currentThreadId) await refreshThread(currentThreadId, token);
+    // After a user stop the server may not have settled the partial answer yet;
+    // refreshing here would replace the local transcript with an empty row.
+    if (metaReceived && currentThreadId && !aborted) {
+      await refreshThread(currentThreadId, token);
+    }
 
     return doneReceived && !aborted && failureMessage === null;
   }
@@ -534,26 +552,30 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
   }
 
   async function explain(selection: { text: string; locator: Locator }): Promise<boolean> {
-    if (selection.text.trim() === '') return false;
+    const selectedText = capText(selection.text, AI_MAX_SELECTED_TEXT_LENGTH);
+    if (selectedText.trim() === '') return false;
 
     let pageText: string | null = null;
     try {
-      pageText = (await contextRef.current.getTextContext('page')).text;
+      pageText = capText(
+        (await contextRef.current.getTextContext('page')).text,
+        AI_MAX_PAGE_TEXT_LENGTH,
+      );
     } catch {
       pageText = null;
     }
 
     const body: AiChatRequest = {
       action: 'explain',
-      selectedText: selection.text,
+      selectedText,
       locator: selection.locator,
       ...(pageText ? { context: { pageText } } : {}),
     };
     return runRequest({
       body,
-      userContent: selection.text,
+      userContent: selectedText,
       userAction: 'explain',
-      userSelectedText: selection.text,
+      userSelectedText: selectedText,
     });
   }
 
@@ -564,6 +586,10 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
     } catch {
       text = '';
     }
+    text = capText(
+      text,
+      scope === 'page' ? AI_MAX_PAGE_TEXT_LENGTH : AI_MAX_CHAPTER_TEXT_LENGTH,
+    );
     if (text.trim() === '') {
       setError(EMPTY_CONTEXT_ERROR);
       return false;
@@ -586,7 +612,10 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
 
   async function pageContext(): Promise<AiChatRequest['context']> {
     try {
-      const text = (await contextRef.current.getTextContext('page')).text;
+      const text = capText(
+        (await contextRef.current.getTextContext('page')).text,
+        AI_MAX_PAGE_TEXT_LENGTH,
+      );
       return text ? { pageText: text } : undefined;
     } catch {
       return undefined;
@@ -597,15 +626,16 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
     question: string,
     selection?: { text: string; locator: Locator },
   ): Promise<boolean> {
-    const trimmed = question.trim();
+    const trimmed = capText(question.trim(), AI_MAX_QUESTION_LENGTH);
     if (trimmed === '') return false;
 
     const pageTextContext = await pageContext();
     if (selection) {
+      const selectedText = capText(selection.text, AI_MAX_SELECTED_TEXT_LENGTH);
       const body: AiChatRequest = {
         action: 'ask',
         question: trimmed,
-        selectedText: selection.text,
+        selectedText,
         locator: selection.locator,
         ...(pageTextContext ? { context: pageTextContext } : {}),
       };
@@ -613,7 +643,7 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
         body,
         userContent: trimmed,
         userAction: 'ask',
-        userSelectedText: selection.text,
+        userSelectedText: selectedText,
       });
     }
 
