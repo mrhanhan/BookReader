@@ -3,13 +3,14 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
+import { assertTestDatabase } from '../src/db/guard';
 import { migrate } from '../src/db/migrate';
 import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
 import { FakeStorage } from '../src/storage/fake';
 
 const TEST_DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgres://bookr:bookr@localhost:5432/bookr_test';
+  process.env.TEST_DATABASE_URL ?? 'postgres://bookr:bookr@localhost:5432/bookr_test';
 
 /** Lock that serialises migrations when test files run in parallel. */
 const MIGRATION_LOCK_ID = 741_852_963;
@@ -35,6 +36,7 @@ async function migrateOnce(): Promise<void> {
  * test files and individual tests never observe each other's rows.
  */
 export async function resetDb(): Promise<void> {
+  assertTestDatabase(TEST_DATABASE_URL);
   schemaReady ??= migrateOnce();
   await schemaReady;
 
