@@ -62,6 +62,38 @@ function makePack(): ReflowPack {
   };
 }
 
+/** One short paragraph per page; used for long-book page jumps. */
+function makeLongPack(pageCount = 300): ReflowPack {
+  return {
+    schemaVersion: 1,
+    source: { sha256: 'b'.repeat(64), pageCount },
+    generatedAt: '2026-10-18T08:00:00.000Z',
+    tool: { name: 'bookr-preprocess', version: '1.0.0' },
+    quality: {
+      pages: pageCount,
+      textBlocks: pageCount,
+      fallbackPages: [],
+      ocrPages: [],
+      avgConfidence: null,
+      warnings: [],
+    },
+    toc: [],
+    pages: Array.from({ length: pageCount }, (_, index) => ({
+      page: index + 1,
+      width: 600,
+      height: 800,
+      blocks: [
+        {
+          id: `p${index + 1}-b0`,
+          type: 'paragraph',
+          text: `第 ${index + 1} 页的正文`,
+          rect: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 },
+        },
+      ],
+    })),
+  };
+}
+
 function scrollMetrics(host: HTMLElement, scrollHeight = 1500, clientHeight = 500): void {
   let top = 0;
   Object.defineProperty(host, 'scrollHeight', { configurable: true, get: () => scrollHeight });
@@ -91,6 +123,28 @@ function stackTextBlocks(container: HTMLElement, step = 200): void {
 /** The engine caches offsets; a resize is the public signal that layout moved. */
 function refreshLayout(host: HTMLElement): void {
   host.ownerDocument.defaultView?.dispatchEvent(new Event('resize'));
+}
+
+/**
+ * Offsets that grow with the article's font size, so a settings change behaves
+ * like a real reflow instead of leaving the layout untouched.
+ */
+function scaleOffsetsWithFontSize(container: HTMLElement, step = 200): void {
+  const article = container.querySelector('.bookr-reflow') as HTMLElement;
+  let offset = 0;
+  for (const element of container.querySelectorAll<HTMLElement>(
+    '[data-block-type="heading"], [data-block-type="paragraph"]',
+  )) {
+    const base = offset;
+    offset += step;
+    Object.defineProperty(element, 'offsetTop', {
+      configurable: true,
+      get: () => {
+        const size = Number.parseFloat(article.style.getPropertyValue('--reflow-font-size'));
+        return (base * (Number.isFinite(size) && size > 0 ? size : 19)) / 19;
+      },
+    });
+  }
 }
 
 function blockElement(container: HTMLElement, blockId: string, page: number): HTMLElement {
@@ -283,9 +337,68 @@ describe('reflow engine', () => {
 
     await engine.goTo({ kind: 'pdf', page: 1, percent: 0.2, rect: { x: 0.1, y: 0.6, w: 0.8, h: 0.02 } });
 
-    expect(host.scrollTop).toBe(176);
+    // Focus-line anchoring: p1-b1 sits at 200, the focus line is 165px down.
+    expect(host.scrollTop).toBe(35);
     expect(events.at(-1)?.blockId).toBe('p1-b1');
     expect(engine.currentLocator()).toMatchObject({ kind: 'reflow', sourcePage: 1, blockId: 'p1-b1' });
+    await engine.destroy();
+  });
+
+  it('anchors a sourcePage-only reflow locator on the requested page', async () => {
+    const { engine, container, host } = await openWith(makePack());
+    scrollMetrics(host);
+    stackTextBlocks(container);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 3, percent: 2 / 3 });
+
+    // Page 3's first text block starts at 600; landing on the percent alone
+    // would leave the focus line inside page 1.
+    expect(host.scrollTop).toBe(600 - 165);
+    expect(engine.currentLocator()).toMatchObject({
+      kind: 'reflow',
+      sourcePage: 3,
+      blockId: 'p3-b0',
+    });
+    await engine.destroy();
+  });
+
+  it('reports the block page after a block-targeted jump', async () => {
+    const { engine, container, host } = await openWith(makePack());
+    scrollMetrics(host);
+    stackTextBlocks(container);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 1, percent: 0.9, blockId: 'p1-b2' });
+
+    expect(host.scrollTop).toBe(400 - 165);
+    expect(engine.currentLocator()).toMatchObject({ sourcePage: 1, blockId: 'p1-b2' });
+    await engine.destroy();
+  });
+
+  it('anchors a stale block id to the first text block of its page', async () => {
+    const { engine, container, host } = await openWith(makePack());
+    scrollMetrics(host);
+    stackTextBlocks(container);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 3, percent: 0.1, blockId: 'missing' });
+
+    expect(host.scrollTop).toBe(600 - 165);
+    expect(engine.currentLocator()).toMatchObject({ sourcePage: 3, blockId: 'p3-b0' });
+    await engine.destroy();
+  });
+
+  it('jumps to source page 120 of a 300-page pack and reports 120', async () => {
+    const { engine, container, host } = await openWith(makeLongPack(300));
+    scrollMetrics(host, 300 * 200 + 500, 500);
+    stackTextBlocks(container, 200);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 120, percent: 119 / 300 });
+
+    expect(host.scrollTop).toBe(119 * 200 - 165);
+    expect(engine.currentLocator()).toMatchObject({ sourcePage: 120, blockId: 'p120-b0' });
     await engine.destroy();
   });
 
@@ -309,7 +422,9 @@ describe('reflow engine', () => {
       const host = container.querySelector('.bookr-reflow-scroll') as HTMLElement;
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ kind: 'reflow' });
-      expect(host.scrollTop).toBe(176);
+      // During open the host has no viewport height, so there is no focus-line
+      // offset yet: the mapped block starts the scroll at its own top.
+      expect(host.scrollTop).toBe(200);
     } finally {
       await engine.destroy();
       restoreLayout();
@@ -589,6 +704,28 @@ describe('reflow engine', () => {
     expect(article.style.getPropertyValue('--reflow-margin')).toBe('12%');
     expect(article.style.getPropertyValue('--reflow-font-family')).toContain('sans-serif');
     expect(host.scrollTop).toBe(top);
+    await engine.destroy();
+  });
+
+  it('keeps the anchored block and source page when typography reflows', async () => {
+    const { engine, container, host } = await openWith(makePack());
+    scrollMetrics(host);
+    scaleOffsetsWithFontSize(container);
+    refreshLayout(host);
+
+    await engine.goTo({ kind: 'reflow', sourcePage: 3, percent: 0.7 });
+    expect(host.scrollTop).toBe(600 - 165);
+    expect(engine.currentLocator()).toMatchObject({ sourcePage: 3, blockId: 'p3-b0' });
+
+    engine.setSettings({
+      ...DEFAULT_READER_SETTINGS,
+      reflow: { fontFamily: 'serif', fontSize: 24, lineHeight: 2.2, margin: 12 },
+    });
+
+    // The block moved from 600 to 600 * 24/19; the engine re-anchors it rather
+    // than keeping the old scrollTop, which would report an earlier page.
+    expect(host.scrollTop).toBeCloseTo((600 * 24) / 19 - 165, 5);
+    expect(engine.currentLocator()).toMatchObject({ sourcePage: 3, blockId: 'p3-b0' });
     await engine.destroy();
   });
 

@@ -57,8 +57,11 @@ const SCROLL_STEP_RATIO = 0.9;
 const FALLBACK_CLIENT_HEIGHT = 600;
 /** Reading focus sits a third of the way down the viewport. */
 const FOCUS_RATIO = 0.33;
-/** Blocks jump a little below the viewport top so their first line is readable. */
-const SCROLL_TOP_OFFSET = 24;
+/**
+ * Sub-pixel slack at the focus line. Browsers may round `scrollTop` when it is
+ * assigned, which would otherwise push an anchored block just below the line.
+ */
+const FOCUS_SLACK = 1;
 const FLASH_DURATION_MS = 1200;
 /** Minimum percentage movement that warrants a new `relocated` event. */
 const RELOCATION_EPSILON = 0.0005;
@@ -145,6 +148,8 @@ export class ReflowReaderEngine implements ReaderEngine {
   private blockTexts = new WeakMap<HTMLElement, string>();
   /** First text element per block id, used to resolve a selection's page. */
   private textBlocksById = new Map<string, HTMLElement>();
+  /** First text element per source page, the anchor for page-only jumps. */
+  private firstTextByPage = new Map<number, HTMLElement>();
   private visualBlocks: VisualBlockSlot[] = [];
   private painter: SourcePagePainterLike | null = null;
   private visualObserver: IntersectionObserver | null = null;
@@ -203,6 +208,7 @@ export class ReflowReaderEngine implements ReaderEngine {
       this.blockTexts = new WeakMap();
       this.markSignatures = new WeakMap();
       this.textBlocksById = new Map();
+      this.firstTextByPage = new Map();
       for (const element of this.textElements) {
         this.blockTexts.set(element, element.textContent ?? '');
         // A freshly rendered block is plain text, i.e. it carries no marks.
@@ -210,6 +216,13 @@ export class ReflowReaderEngine implements ReaderEngine {
         const blockId = element.dataset.blockId;
         if (blockId && !this.textBlocksById.has(blockId)) {
           this.textBlocksById.set(blockId, element);
+        }
+        const sourcePage = Number(element.dataset.sourcePage);
+        if (Number.isFinite(sourcePage) && sourcePage >= 1) {
+          const page = Math.floor(sourcePage);
+          if (!this.firstTextByPage.has(page)) {
+            this.firstTextByPage.set(page, element);
+          }
         }
       }
       this.measureTextBlocks();
@@ -247,8 +260,7 @@ export class ReflowReaderEngine implements ReaderEngine {
   }
 
   async goTo(locator: Locator, options: { flash?: boolean } = {}): Promise<void> {
-    const { pack, rendered } = this.openState();
-    const host = rendered.host;
+    const { pack } = this.openState();
 
     const mapped = reflowLocatorFor(locator, pack);
     if (!mapped) {
@@ -266,10 +278,14 @@ export class ReflowReaderEngine implements ReaderEngine {
     const element = mapped.blockId
       ? this.findBlockElement(mapped.blockId, mapped.sourcePage)
       : null;
-    if (element) {
-      host.scrollTop = Math.max(0, element.offsetTop - SCROLL_TOP_OFFSET);
+    // A page jump without a block (or a stale block id) anchors the page's
+    // first text block on the focus line, so `currentLocator` reports exactly
+    // the requested source page instead of whatever page the percent hits.
+    const target = element ?? this.firstTextElementOnPage(mapped.sourcePage);
+    if (target) {
+      this.scrollElementToFocus(target);
       if (options.flash) {
-        this.flash(element);
+        this.flash(target);
       }
       this.emitRelocated();
       return;
@@ -299,15 +315,34 @@ export class ReflowReaderEngine implements ReaderEngine {
 
   setSettings(settings: ReaderSettings): void {
     this.settings = settings;
-    const article = this.rendered?.article;
-    if (!article) {
+    const rendered = this.rendered;
+    if (!rendered) {
       return;
     }
+
+    // Capture the anchor before the typography changes the layout underneath.
+    const anchor = this.locatorNow();
+    const anchorElement = anchor.blockId
+      ? this.findBlockElement(anchor.blockId, anchor.sourcePage)
+      : null;
+    const anchorTop = anchorElement?.offsetTop ?? null;
     // Typography lives entirely in custom properties: no DOM rewrite, so the
     // browser keeps the scroll offset the reader is sitting at.
-    applyReflowStyles(article, settings);
+    applyReflowStyles(rendered.article, settings);
     // Applying styles reflows the article; cached offsets are stale now.
     this.measureTextBlocks();
+
+    if (anchorElement) {
+      // A settings object that leaves the layout alone must not move the
+      // reader at all; only a real reflow needs re-anchoring.
+      if (anchorTop !== null && anchorElement.offsetTop === anchorTop) {
+        return;
+      }
+      this.scrollElementToFocus(anchorElement);
+      return;
+    }
+    // The anchor block is gone (or the page has no text): keep the old spot.
+    rendered.host.scrollTop = clamp(anchor.percent, 0, 1) * this.maxScroll(rendered.host);
   }
 
   setHighlights(highlights: ReaderHighlight[]): void {
@@ -625,6 +660,7 @@ export class ReflowReaderEngine implements ReaderEngine {
     this.textElements = [];
     this.textMetrics = [];
     this.textBlocksById = new Map();
+    this.firstTextByPage = new Map();
     this.blockTexts = new WeakMap();
     this.markSignatures = new WeakMap();
     this.visualBlocks = [];
@@ -656,6 +692,20 @@ export class ReflowReaderEngine implements ReaderEngine {
 
   private maxScroll(host: HTMLElement): number {
     return Math.max(0, host.scrollHeight - host.clientHeight);
+  }
+
+  /** First text block rendered for a source page, or null for image-only pages. */
+  private firstTextElementOnPage(sourcePage: number): HTMLElement | null {
+    return this.firstTextByPage.get(sourcePage) ?? null;
+  }
+
+  /**
+   * Puts a block on the reading focus line. `currentLocator` uses the same
+   * line, so the block (and therefore its source page) is what gets reported.
+   */
+  private scrollElementToFocus(element: HTMLElement): void {
+    const host = this.openState().rendered.host;
+    host.scrollTop = Math.max(0, element.offsetTop - host.clientHeight * FOCUS_RATIO);
   }
 
   private scrollByViewport(direction: 1 | -1): void {
@@ -705,7 +755,7 @@ export class ReflowReaderEngine implements ReaderEngine {
       return first.element;
     }
 
-    const focusLine = host.scrollTop + host.clientHeight * FOCUS_RATIO;
+    const focusLine = host.scrollTop + host.clientHeight * FOCUS_RATIO + FOCUS_SLACK;
     let low = 0;
     let high = metrics.length - 1;
     let visible = -1;
