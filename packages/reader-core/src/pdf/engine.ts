@@ -27,9 +27,11 @@ import type {
 import { detectCropMargins, type CropMargins } from './crop';
 import {
   DEFAULT_PAGE_PADDING,
+  FOCUS_RATIO,
   computeScale,
+  focusScrollTop,
   pageFromScroll,
-  spreadStart,
+  spreadPages,
   type PageSize,
 } from './layout';
 import { buildPdfToc, type PdfOutlineNode } from './outline';
@@ -45,12 +47,12 @@ const CROP_COVERAGE_LIMIT = 0.9;
 /** Rendered pages outside this window are unloaded again. */
 const MAX_RENDERED_PAGES = 6;
 const SELECTION_DEBOUNCE_MS = 60;
+/** Hard cap from the shared locator schema. */
+const MAX_SELECTION_RECTS = 200;
 const FLASH_DURATION_MS = 1200;
 const SPREAD_GAP = 12;
 const CONTINUOUS_GAP = 16;
 const OBSERVER_ROOT_MARGIN = '150% 0px';
-/** The reading position is the line 35% down the scroll viewport. */
-const FOCUS_LINE = 0.35;
 /** Minimum percentage movement that warrants a new `relocated` event. */
 const RELOCATION_EPSILON = 0.0005;
 const DEFAULT_CMAP_URL = '/cmaps/';
@@ -108,8 +110,13 @@ function configureWorker(workerSrc: string | undefined): void {
   }
 }
 
+type PdfHighlight = ReaderHighlight & { locator: PdfLocator };
+
 interface PageSlot {
   readonly pageNumber: number;
+  /** This page's own base viewport size; pages need not share page 1's size. */
+  baseWidth: number;
+  baseHeight: number;
   readonly outer: HTMLDivElement;
   readonly inner: HTMLDivElement;
   readonly canvas: HTMLCanvasElement;
@@ -159,10 +166,14 @@ export class PdfReaderEngine implements ReaderEngine {
   private observer: IntersectionObserver | null = null;
   private scrollFrame: number | null = null;
   private selectionTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastSelectionActive = false;
   private lastEmittedPage = 0;
   private lastEmittedPercent = -1;
   private layoutVersion = 0;
+  private highlightsByPage = new Map<number, PdfHighlight[]>();
+  private topsCache: number[] | null = null;
+  private topsCacheVersion = -1;
+  private geometryVersion = 0;
+  private resizeObserver: ResizeObserver | null = null;
 
   on<K extends keyof ReaderEventMap>(
     event: K,
@@ -193,26 +204,31 @@ export class PdfReaderEngine implements ReaderEngine {
       });
       this.loadingTask = loadingTask;
       const pdf = await loadingTask.promise;
-      if (this.abort.signal.aborted) {
-        throw new Error('The reader was destroyed while opening');
-      }
+      this.ensureAlive();
       this.pdf = pdf;
       this.pageCount = Math.max(1, pdf.numPages);
 
       const firstPage = await pdf.getPage(1);
+      this.ensureAlive();
       const base = firstPage.getViewport({ scale: 1 });
       this.baseSize = { width: base.width, height: base.height };
       this.detectedCrop = settings.pdf.crop === 'auto'
         ? await this.detectCrop(firstPage)
         : zeroCrop();
+      this.ensureAlive();
       this.crop = this.effectiveCrop(settings);
 
       this.buildDom(container);
       this.rebuildLayout();
       this.attachListeners();
 
+      // Start the first paint before waiting on metadata and the outline; a
+      // large outline must not delay the reader.
+      const firstRender = this.renderPage(1);
       const [title, toc] = await Promise.all([this.readTitle(), this.readToc()]);
-      await this.renderPage(1);
+      this.ensureAlive();
+      await firstRender;
+      this.ensureAlive();
 
       if (options.initialLocator && options.initialLocator.kind === 'pdf') {
         await this.goTo(options.initialLocator);
@@ -222,10 +238,20 @@ export class PdfReaderEngine implements ReaderEngine {
 
       return { kind: 'pdf', title, pageCount: this.pageCount, toc };
     } catch (error) {
+      if (this.abort.signal.aborted) {
+        // destroy() won the race; the caller asked for teardown, not a failure.
+        throw new Error('The reader was destroyed while opening');
+      }
       const message = readableError(error);
       this.emitter.emit('error', { code: 'load-failed', message });
       await this.teardown();
       throw new Error(`Failed to open the PDF: ${message}`);
+    }
+  }
+
+  private ensureAlive(): void {
+    if (this.abort.signal.aborted) {
+      throw new Error('The reader was destroyed while opening');
     }
   }
 
@@ -246,9 +272,18 @@ export class PdfReaderEngine implements ReaderEngine {
       const slot = this.slots.get(page);
       if (host && slot) {
         const hostRect = host.getBoundingClientRect();
-        const offset = slot.outer.getBoundingClientRect().top - hostRect.top + host.scrollTop;
-        const target = offset + (locator.rect?.y ?? 0) * slot.outer.offsetHeight;
-        host.scrollTo({ top: Math.max(0, target), behavior: 'auto' });
+        const pageTop = slot.outer.getBoundingClientRect().top - hostRect.top + host.scrollTop;
+        // A locator rect lands on the focus line; a bare page jump stays at the top.
+        const target = focusScrollTop({
+          pageTop,
+          pageHeight: slot.outer.offsetHeight,
+          viewportHeight: host.clientHeight,
+          rectY: locator.rect?.y,
+          cropTop: this.crop.top,
+          cropBottom: this.crop.bottom,
+        });
+        const maxScroll = Math.max(0, host.scrollHeight - host.clientHeight);
+        host.scrollTo({ top: clamp(target, 0, maxScroll), behavior: 'auto' });
       }
       await this.renderPage(page);
     } else {
@@ -289,10 +324,19 @@ export class PdfReaderEngine implements ReaderEngine {
       return;
     }
 
-    const step = this.mode === 'double' ? 2 : 1;
-    const start = this.mode === 'double' ? spreadStart(this.currentPage) : this.currentPage;
-    const target = clamp(start + step, 1, Math.max(1, this.pageCount));
-    await this.goTo(pageLocator(target, this.pageCount));
+    const count = Math.max(1, this.pageCount);
+    if (this.mode === 'double') {
+      const pages = spreadPages(this.currentPage, count);
+      const target = (pages[pages.length - 1] ?? this.currentPage) + 1;
+      if (target > count) {
+        return;
+      }
+      await this.goTo(pageLocator(target, count));
+      return;
+    }
+
+    const target = clamp(this.currentPage + 1, 1, count);
+    await this.goTo(pageLocator(target, count));
   }
 
   async previous(): Promise<void> {
@@ -308,17 +352,26 @@ export class PdfReaderEngine implements ReaderEngine {
       return;
     }
 
-    const target = this.mode === 'double'
-      ? Math.max(1, spreadStart(this.currentPage) - 2)
-      : Math.max(1, this.currentPage - 1);
-    await this.goTo(pageLocator(target, this.pageCount));
+    const count = Math.max(1, this.pageCount);
+    if (this.mode === 'double') {
+      const first = spreadPages(this.currentPage, count)[0] ?? 1;
+      const target = first - 1;
+      if (target < 1) {
+        return;
+      }
+      await this.goTo(pageLocator(target, count));
+      return;
+    }
+
+    const target = Math.max(1, this.currentPage - 1);
+    await this.goTo(pageLocator(target, count));
   }
 
   currentLocator(): Locator {
     return this.pdfLocatorNow();
   }
 
-  private pdfLocatorNow(): PdfLocator {
+  private pdfLocatorNow(precomputedTops?: number[]): PdfLocator {
     if (!this.pdf) {
       throw new Error('Reader is not open');
     }
@@ -330,7 +383,7 @@ export class PdfReaderEngine implements ReaderEngine {
     if (this.mode === 'continuous') {
       const host = this.scrollHost;
       if (host) {
-        const tops = this.pageTops();
+        const tops = precomputedTops ?? this.pageTops();
         page = pageFromScroll(host.scrollTop, tops, host.clientHeight);
         this.currentPage = page;
 
@@ -339,7 +392,7 @@ export class PdfReaderEngine implements ReaderEngine {
         if (slot && top !== undefined) {
           const height = slot.outer.offsetHeight;
           if (height > 0) {
-            const focus = host.scrollTop + host.clientHeight * FOCUS_LINE;
+            const focus = host.scrollTop + host.clientHeight * FOCUS_RATIO;
             const visibleFraction = clamp((focus - top) / height, 0, 1);
             // Report the full-page fraction so cropping never moves a locator.
             fraction = clamp(
@@ -393,6 +446,20 @@ export class PdfReaderEngine implements ReaderEngine {
 
   setHighlights(highlights: ReaderHighlight[]): void {
     this.highlights = Array.isArray(highlights) ? highlights.slice() : [];
+    this.highlightsByPage = new Map();
+    for (const highlight of this.highlights) {
+      const { locator } = highlight;
+      if (locator.kind !== 'pdf') {
+        continue;
+      }
+      const pdfHighlight: PdfHighlight = { ...highlight, locator };
+      let group = this.highlightsByPage.get(locator.page);
+      if (!group) {
+        group = [];
+        this.highlightsByPage.set(locator.page, group);
+      }
+      group.push(pdfHighlight);
+    }
     for (const slot of this.slots.values()) {
       this.paintHighlightsForSlot(slot);
     }
@@ -424,6 +491,8 @@ export class PdfReaderEngine implements ReaderEngine {
     this.flashTimers.clear();
     this.observer?.disconnect();
     this.observer = null;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
 
     for (const slot of this.slots.values()) {
       this.cancelSlot(slot);
@@ -459,9 +528,17 @@ export class PdfReaderEngine implements ReaderEngine {
     this.detectedCrop = zeroCrop();
     this.crop = zeroCrop();
     this.highlights = [];
-    this.lastSelectionActive = false;
+    this.highlightsByPage.clear();
+    this.topsCache = null;
+    this.topsCacheVersion = -1;
+    this.geometryVersion += 1;
     this.lastEmittedPage = 0;
     this.lastEmittedPercent = -1;
+  }
+
+  private invalidateTops(): void {
+    this.topsCache = null;
+    this.geometryVersion += 1;
   }
 
   private buildDom(container: HTMLElement): void {
@@ -494,6 +571,13 @@ export class PdfReaderEngine implements ReaderEngine {
     if (scrollHost) {
       scrollHost.addEventListener('scroll', this.handleScroll, { passive: true, signal: this.abort.signal });
     }
+    if (scrollHost && typeof ResizeObserver !== 'undefined') {
+      const resizeObserver = new ResizeObserver(() => {
+        this.invalidateTops();
+      });
+      resizeObserver.observe(scrollHost);
+      this.resizeObserver = resizeObserver;
+    }
   }
 
   private rebuildLayout(): void {
@@ -506,8 +590,10 @@ export class PdfReaderEngine implements ReaderEngine {
     const mode = this.mode;
     pagesHost.style.display = 'flex';
     pagesHost.style.flexDirection = mode === 'continuous' ? 'column' : 'row';
-    pagesHost.style.alignItems = 'center';
-    pagesHost.style.justifyContent = 'center';
+    // "safe center" aligns to the start edge when a page is wider than the
+    // viewport, so oversized numeric zoom never hides the left margin.
+    pagesHost.style.alignItems = mode === 'continuous' ? 'safe center' : 'center';
+    pagesHost.style.justifyContent = mode === 'continuous' ? 'flex-start' : 'safe center';
     pagesHost.style.boxSizing = 'border-box';
     pagesHost.style.width = '100%';
     pagesHost.style.gap = mode === 'double'
@@ -525,6 +611,7 @@ export class PdfReaderEngine implements ReaderEngine {
     this.renderedPages.clear();
     this.visiblePages.clear();
     pagesHost.replaceChildren();
+    this.invalidateTops();
 
     this.updateScale();
 
@@ -562,20 +649,9 @@ export class PdfReaderEngine implements ReaderEngine {
   }
 
   private pagesForCurrent(): number[] {
-    const current = clamp(Math.floor(this.currentPage), 1, Math.max(1, this.pageCount));
-    if (this.mode === 'single') {
-      return [current];
-    }
-    if (current <= 1) {
-      // Page 1 has no left partner; it always occupies a spread by itself.
-      return [1];
-    }
-    const start = spreadStart(current);
-    const pages = [start];
-    if (start + 1 <= this.pageCount) {
-      pages.push(start + 1);
-    }
-    return pages;
+    const count = Math.max(1, this.pageCount);
+    const current = clamp(Math.floor(this.currentPage), 1, count);
+    return this.mode === 'single' ? [current] : spreadPages(current, count);
   }
 
   private updateScale(): void {
@@ -663,6 +739,8 @@ export class PdfReaderEngine implements ReaderEngine {
 
     const slot: PageSlot = {
       pageNumber,
+      baseWidth: this.baseSize.width,
+      baseHeight: this.baseSize.height,
       outer,
       inner,
       canvas,
@@ -697,8 +775,10 @@ export class PdfReaderEngine implements ReaderEngine {
     const sx = 1 / visibleWidth;
     const sy = 1 / visibleHeight;
 
-    const fullWidth = this.baseSize.width * this.scale;
-    const fullHeight = this.baseSize.height * this.scale;
+    const baseWidth = slot.baseWidth > 0 ? slot.baseWidth : this.baseSize.width;
+    const baseHeight = slot.baseHeight > 0 ? slot.baseHeight : this.baseSize.height;
+    const fullWidth = baseWidth * this.scale;
+    const fullHeight = baseHeight * this.scale;
     const boxWidth = fullWidth * visibleWidth;
     const boxHeight = fullHeight * visibleHeight;
 
@@ -709,6 +789,7 @@ export class PdfReaderEngine implements ReaderEngine {
     slot.inner.style.transform = `translate(${-left * boxWidth * sx}px, ${-top * boxHeight * sy}px) scale(${sx}, ${sy})`;
     slot.textLayer.style.transform = `scale(${1 / sx}, ${1 / sy})`;
     slot.textLayer.style.setProperty('--total-scale-factor', String(this.scale));
+    this.invalidateTops();
   }
 
   private observeSlots(): void {
@@ -730,6 +811,14 @@ export class PdfReaderEngine implements ReaderEngine {
           void this.renderPage(pageNumber);
         } else {
           this.visiblePages.delete(pageNumber);
+          // Away from the window, cancel in-flight work and release the bitmap.
+          // The current page and its neighbours stay warm.
+          if (Math.abs(pageNumber - this.currentPage) > 1) {
+            const slot = this.slots.get(pageNumber);
+            if (slot) {
+              this.evictSlot(slot);
+            }
+          }
         }
       }
       this.trimRendered(this.currentPage);
@@ -785,6 +874,8 @@ export class PdfReaderEngine implements ReaderEngine {
       return;
     }
     slot.pageProxy = page;
+    const pageBase = page.getViewport({ scale: 1 });
+    this.updateSlotBaseSize(slot, pageBase.width, pageBase.height);
 
     const viewport = page.getViewport({ scale: this.scale });
     const dpr = this.devicePixelRatio();
@@ -800,12 +891,18 @@ export class PdfReaderEngine implements ReaderEngine {
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
 
-    const task = page.render({
-      canvas: null,
-      canvasContext: context,
-      viewport,
-      transform: [dpr, 0, 0, dpr, 0, 0],
-    });
+    let task: RenderTask;
+    try {
+      task = page.render({
+        canvas: null,
+        canvasContext: context,
+        viewport,
+        transform: [dpr, 0, 0, dpr, 0, 0],
+      });
+    } catch (error) {
+      this.emitRenderFailure(error);
+      return;
+    }
     slot.renderTask = task;
     try {
       await task.promise;
@@ -848,7 +945,39 @@ export class PdfReaderEngine implements ReaderEngine {
     slot.renderedScale = this.scale;
     this.renderedPages.add(slot.pageNumber);
     this.paintHighlightsForSlot(slot);
-    this.trimRendered(slot.pageNumber);
+    this.trimRendered(this.currentPage);
+  }
+
+  /**
+   * Applies a page's real base size to its slot. Mixed-size PDFs no longer
+   * inherit page 1's aspect, and a size that changes after the placeholder was
+   * reserved compensates the scroll position when the slot sits above the
+   * viewport.
+   */
+  private updateSlotBaseSize(slot: PageSlot, width: number, height: number): void {
+    if (!(width > 0) || !(height > 0)) {
+      return;
+    }
+    if (Math.abs(slot.baseWidth - width) < 0.5 && Math.abs(slot.baseHeight - height) < 0.5) {
+      return;
+    }
+
+    const host = this.scrollHost;
+    const hostTop = host ? host.getBoundingClientRect().top : 0;
+    const beforeTop = host ? slot.outer.getBoundingClientRect().top : 0;
+    const beforeHeight = slot.outer.offsetHeight;
+
+    slot.baseWidth = width;
+    slot.baseHeight = height;
+    this.applySlotLayout(slot);
+
+    if (!host) {
+      return;
+    }
+    const delta = slot.outer.offsetHeight - beforeHeight;
+    if (delta !== 0 && beforeTop < hostTop) {
+      host.scrollTop += delta;
+    }
   }
 
   private trimRendered(anchorPage: number): void {
@@ -856,8 +985,10 @@ export class PdfReaderEngine implements ReaderEngine {
       return;
     }
 
+    // Enforce the cap even when several pages are technically visible at a low
+    // zoom; the current page is always kept.
     const candidates = [...this.renderedPages]
-      .filter((page) => page !== anchorPage && !this.visiblePages.has(page))
+      .filter((page) => page !== anchorPage)
       .sort((a, b) => Math.abs(b - anchorPage) - Math.abs(a - anchorPage));
 
     for (const page of candidates) {
@@ -916,7 +1047,15 @@ export class PdfReaderEngine implements ReaderEngine {
     this.emitter.emit('error', { code: 'render-failed', message: readableError(error) });
   }
 
+  /**
+   * Content offsets of every page slot. The result only changes when slot
+   * geometry changes, so it is cached per geometry version and shared by the
+   * scroll handler and `currentLocator`.
+   */
   private pageTops(): number[] {
+    if (this.topsCache !== null && this.topsCacheVersion === this.geometryVersion) {
+      return this.topsCache;
+    }
     const scrollHost = this.scrollHost;
     if (!scrollHost) {
       return [];
@@ -931,6 +1070,8 @@ export class PdfReaderEngine implements ReaderEngine {
       }
       tops.push(slot.outer.getBoundingClientRect().top - hostRect.top + scrollHost.scrollTop);
     }
+    this.topsCache = tops;
+    this.topsCacheVersion = this.geometryVersion;
     return tops;
   }
 
@@ -939,20 +1080,24 @@ export class PdfReaderEngine implements ReaderEngine {
     if (!host || !this.pdf || this.mode !== 'continuous') {
       return;
     }
-    const page = pageFromScroll(host.scrollTop, this.pageTops(), host.clientHeight);
+    const tops = this.pageTops();
+    const page = pageFromScroll(host.scrollTop, tops, host.clientHeight);
     this.currentPage = clamp(page, 1, Math.max(1, this.pageCount));
-    const locator = this.pdfLocatorNow();
+    // The window cap can evict a page that is still visible at a low zoom; make
+    // sure the page under the focus line comes back.
+    void this.renderPage(this.currentPage);
+    const locator = this.pdfLocatorNow(tops);
     if (locator.page !== this.lastEmittedPage
       || Math.abs(locator.percent - this.lastEmittedPercent) >= RELOCATION_EPSILON) {
       this.emitRelocated(locator);
     }
   }
 
-  private emitRelocated(locator: Locator = this.pdfLocatorNow()): void {
+  private emitRelocated(locator?: Locator): void {
     if (!this.pdf) {
       return;
     }
-    const resolved = locator.kind === 'pdf'
+    const resolved = locator === undefined ? this.pdfLocatorNow() : locator.kind === 'pdf'
       ? locator
       : pageLocator(this.currentPage, this.pageCount);
     this.lastEmittedPage = resolved.page;
@@ -1044,15 +1189,20 @@ export class PdfReaderEngine implements ReaderEngine {
       return;
     }
 
+    // Keep only rects that belong to the anchor page: a selection spanning two
+    // pages must not paint phantom strips on the wrong page.
     const clientRects = Array.from(range.getClientRects())
-      .filter((rect) => rect.width > 0 && rect.height > 0);
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .filter((rect) => rect.right > pageBox.left && rect.left < pageBox.right
+        && rect.bottom > pageBox.top && rect.top < pageBox.bottom);
     if (clientRects.length === 0) {
       this.clearSelection();
       return;
     }
 
     const rects = rectsFromClientRects(clientRects, pageBox)
-      .filter((rect) => rect.w > 0 && rect.h > 0);
+      .filter((rect) => rect.w > 0 && rect.h > 0)
+      .slice(0, MAX_SELECTION_RECTS);
     const union = unionRects(rects);
     if (!union) {
       this.clearSelection();
@@ -1085,15 +1235,10 @@ export class PdfReaderEngine implements ReaderEngine {
       rect: { left, top, width: right - left, height: bottom - top },
     };
 
-    this.lastSelectionActive = true;
     this.emitter.emit('selection', payload);
   }
 
   private clearSelection(): void {
-    if (!this.lastSelectionActive) {
-      return;
-    }
-    this.lastSelectionActive = false;
     this.emitter.emit('selection', null);
   }
 
@@ -1101,10 +1246,7 @@ export class PdfReaderEngine implements ReaderEngine {
     const layer = slot.highlightLayer;
     layer.replaceChildren();
 
-    for (const highlight of this.highlights) {
-      if (highlight.locator.kind !== 'pdf' || highlight.locator.page !== slot.pageNumber) {
-        continue;
-      }
+    for (const highlight of this.highlightsByPage.get(slot.pageNumber) ?? []) {
       const rects = highlight.locator.rects?.length
         ? highlight.locator.rects
         : highlight.locator.rect ? [highlight.locator.rect] : [];
@@ -1209,7 +1351,8 @@ export class PdfReaderEngine implements ReaderEngine {
 
       const scale = CROP_PREVIEW_WIDTH / base.width;
       const viewport = page.getViewport({ scale });
-      const canvas = document.createElement('canvas');
+      const doc = this.container?.ownerDocument ?? document;
+      const canvas = doc.createElement('canvas');
       canvas.width = Math.max(1, Math.round(viewport.width));
       canvas.height = Math.max(1, Math.round(viewport.height));
       const context = canvas.getContext('2d', { willReadFrequently: true });

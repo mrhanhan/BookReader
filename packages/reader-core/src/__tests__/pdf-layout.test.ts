@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeScale, pageFromScroll, spreadStart } from '../pdf/layout';
+import { computeScale, focusScrollTop, pageFromScroll, spreadPages, spreadStart } from '../pdf/layout';
 
 const page = { width: 600, height: 800 };
 const viewport = { width: 1000, height: 900 };
@@ -28,5 +28,27 @@ describe('pdf layout', () => {
     expect(pageFromScroll(0, tops, 800)).toBe(1);
     expect(pageFromScroll(950, tops, 800)).toBe(2);
     expect(pageFromScroll(1900, tops, 800)).toBe(3);
+  });
+
+  it('builds two-page spreads without skipping page 2', () => {
+    expect(spreadPages(1, 10)).toEqual([1]);
+    expect(spreadPages(2, 10)).toEqual([1, 2]);
+    expect(spreadPages(3, 10)).toEqual([3, 4]);
+    expect(spreadPages(4, 10)).toEqual([3, 4]);
+    expect(spreadPages(10, 10)).toEqual([9, 10]);
+    expect(spreadPages(3, 3)).toEqual([3]);
+    expect(spreadPages(1, 1)).toEqual([1]);
+  });
+
+  it('places a locator rect on the focus line, allowing for crop', () => {
+    expect(focusScrollTop({
+      pageTop: 1000, pageHeight: 800, viewportHeight: 600, rectY: 0.5,
+      cropTop: 0.1, cropBottom: 0.1,
+    })).toBe(1190);
+    expect(focusScrollTop({ pageTop: 1000, pageHeight: 800, viewportHeight: 600 })).toBe(1000);
+    expect(focusScrollTop({
+      pageTop: 100, pageHeight: 800, viewportHeight: 600, rectY: 0.1,
+      cropTop: 0.1, cropBottom: 0.1,
+    })).toBe(0);
   });
 });

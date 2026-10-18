@@ -1171,7 +1171,7 @@ it('normalizes multiple client rects against the page box', () => {
   const pageBox = { left: 100, top: 50, width: 200, height: 400 };
   expect(rectsFromClientRects([
     { left: 120, top: 70, width: 20, height: 40 },
-    { left: 300, top: 70, width: 20, height: 40 },
+    { left: 290, top: 70, width: 20, height: 40 },
     { left: 120, top: 120, width: 60, height: 40 },
   ], pageBox)).toEqual([
     { x: 0.1, y: 0.05, w: 0.1, h: 0.1 },
