@@ -26,6 +26,12 @@ export interface ReflowEngineDeps {
   fetchPack?: ReflowPackLoader;
 }
 
+/** One text block's cached vertical position, in document order. */
+interface TextBlockMetric {
+  element: HTMLElement;
+  offsetTop: number;
+}
+
 /** Fraction of the viewport one `next`/`previous` step covers. */
 const SCROLL_STEP_RATIO = 0.9;
 /** Viewport height assumed before the host has layout. */
@@ -89,18 +95,22 @@ export class ReflowReaderEngine implements ReaderEngine {
 
   private readonly emitter = new TypedEmitter<ReaderEventMap>();
   private readonly fetchPack: ReflowPackLoader;
-  private readonly flashTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly flashTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
 
   private container: HTMLElement | null = null;
   private pack: ReflowPack | null = null;
   private rendered: RenderedReflowDocument | null = null;
   private textElements: HTMLElement[] = [];
+  /** Cached text-block offsets; the scroll hot path binary-searches this. */
+  private textMetrics: TextBlockMetric[] = [];
   private settings: ReaderSettings | null = null;
   private highlights: ReaderHighlight[] = [];
-  private scrollAbort: AbortController | null = null;
+  private listenerAbort: AbortController | null = null;
+  private resizeObserver: ResizeObserver | null = null;
   private scrollFrame: number | null = null;
   private lastEmittedPercent = -1;
   private lastEmittedBlockId: string | null = null;
+  private lastEmittedSourcePage: number | null = null;
   private emitCount = 0;
   /** Incremented by every teardown so stale async work can detect it is gone. */
   private lifecycle = 0;
@@ -141,7 +151,8 @@ export class ReflowReaderEngine implements ReaderEngine {
           '[data-block-type="heading"], [data-block-type="paragraph"]',
         ),
       );
-      this.attachScroll(rendered.host);
+      this.measureTextBlocks();
+      this.attachListeners(rendered.host, rendered.article);
 
       const emittedBefore = this.emitCount;
       if (options.initialLocator) {
@@ -173,11 +184,8 @@ export class ReflowReaderEngine implements ReaderEngine {
   }
 
   async goTo(locator: Locator, options: { flash?: boolean } = {}): Promise<void> {
-    const pack = this.pack;
-    const host = this.rendered?.host;
-    if (!pack || !host) {
-      return;
-    }
+    const { pack, rendered } = this.openState();
+    const host = rendered.host;
 
     const mapped = reflowLocatorFor(locator, pack);
     if (!mapped) {
@@ -207,10 +215,7 @@ export class ReflowReaderEngine implements ReaderEngine {
   }
 
   async goToPercent(percent: number): Promise<void> {
-    const host = this.rendered?.host;
-    if (!host) {
-      return;
-    }
+    const host = this.openState().rendered.host;
     const value = clamp(Number.isFinite(percent) ? percent : 0, 0, 1);
     host.scrollTop = value * this.maxScroll(host);
     this.emitRelocated();
@@ -225,6 +230,7 @@ export class ReflowReaderEngine implements ReaderEngine {
   }
 
   currentLocator(): Locator {
+    this.assertOpen();
     return this.locatorNow();
   }
 
@@ -237,6 +243,8 @@ export class ReflowReaderEngine implements ReaderEngine {
     // Typography lives entirely in custom properties: no DOM rewrite, so the
     // browser keeps the scroll offset the reader is sitting at.
     applyReflowStyles(article, settings);
+    // Applying styles reflows the article; cached offsets are stale now.
+    this.measureTextBlocks();
   }
 
   setHighlights(highlights: ReaderHighlight[]): void {
@@ -255,11 +263,38 @@ export class ReflowReaderEngine implements ReaderEngine {
     }
   }
 
-  private attachScroll(host: HTMLElement): void {
-    this.scrollAbort?.abort();
+  /** Navigation and locators are only meaningful after `open` and before `destroy`. */
+  private assertOpen(): void {
+    if (!this.pack || !this.rendered) {
+      throw new Error('Reader is not open');
+    }
+  }
+
+  private openState(): { pack: ReflowPack; rendered: RenderedReflowDocument } {
+    this.assertOpen();
+    // assertOpen guarantees both fields; keeps callers free of non-null noise.
+    return { pack: this.pack as ReflowPack, rendered: this.rendered as RenderedReflowDocument };
+  }
+
+  private attachListeners(host: HTMLElement, article: HTMLElement): void {
+    this.listenerAbort?.abort();
     const abort = new AbortController();
-    this.scrollAbort = abort;
+    this.listenerAbort = abort;
     host.addEventListener('scroll', this.handleScroll, { passive: true, signal: abort.signal });
+
+    const view = this.container?.ownerDocument?.defaultView;
+    view?.addEventListener('resize', this.handleLayoutChange, {
+      passive: true,
+      signal: abort.signal,
+    });
+
+    if (typeof ResizeObserver !== 'undefined') {
+      // The article's height changes when typography or fonts reflow the text;
+      // the scroll host keeps a fixed size and would never report that.
+      const observer = new ResizeObserver(() => this.measureTextBlocks());
+      observer.observe(article);
+      this.resizeObserver = observer;
+    }
   }
 
   private teardown(): void {
@@ -268,10 +303,12 @@ export class ReflowReaderEngine implements ReaderEngine {
       this.cancelFrame(this.scrollFrame);
       this.scrollFrame = null;
     }
-    this.scrollAbort?.abort();
-    this.scrollAbort = null;
+    this.listenerAbort?.abort();
+    this.listenerAbort = null;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
 
-    for (const timer of this.flashTimers) {
+    for (const timer of this.flashTimers.values()) {
       clearTimeout(timer);
     }
     this.flashTimers.clear();
@@ -281,22 +318,37 @@ export class ReflowReaderEngine implements ReaderEngine {
     this.pack = null;
     this.rendered = null;
     this.textElements = [];
+    this.textMetrics = [];
     this.settings = null;
     this.highlights = [];
     this.lastEmittedPercent = -1;
     this.lastEmittedBlockId = null;
+    this.lastEmittedSourcePage = null;
     this.emitCount = 0;
   }
+
+  /**
+   * Snapshots every text block's document offset. Called after render and then
+   * only when layout can change (settings, resize), so the scroll hot path
+   * never touches `offsetTop` and stays O(log n).
+   */
+  private measureTextBlocks(): void {
+    this.textMetrics = this.textElements.map((element) => ({
+      element,
+      offsetTop: element.offsetTop,
+    }));
+  }
+
+  private readonly handleLayoutChange = (): void => {
+    this.measureTextBlocks();
+  };
 
   private maxScroll(host: HTMLElement): number {
     return Math.max(0, host.scrollHeight - host.clientHeight);
   }
 
   private scrollByViewport(direction: 1 | -1): void {
-    const host = this.rendered?.host;
-    if (!host) {
-      return;
-    }
+    const host = this.openState().rendered.host;
     const step = SCROLL_STEP_RATIO * (host.clientHeight || FALLBACK_CLIENT_HEIGHT);
     host.scrollTop = clamp(host.scrollTop + direction * step, 0, this.maxScroll(host));
     this.emitRelocated();
@@ -327,20 +379,36 @@ export class ReflowReaderEngine implements ReaderEngine {
     return max > 0 ? clamp(host.scrollTop / max, 0, 1) : 0;
   }
 
-  /** Last text block above the reading focus line, falling back to the first. */
+  /**
+   * Last text block above the reading focus line, falling back to the first.
+   * Offsets are cached in document order, so a binary search finds the block
+   * without walking a book that may contain hundreds of thousands of blocks.
+   */
   private visibleTextElement(host: HTMLElement | null): HTMLElement | null {
-    const first = this.textElements[0] ?? null;
-    if (!first || !host) {
-      return first;
+    const metrics = this.textMetrics;
+    const first = metrics[0];
+    if (!first) {
+      return null;
     }
-    const threshold = host.scrollTop + host.clientHeight * FOCUS_RATIO;
-    let visible = first;
-    for (const element of this.textElements) {
-      if (element.offsetTop <= threshold) {
-        visible = element;
+    if (!host) {
+      return first.element;
+    }
+
+    const focusLine = host.scrollTop + host.clientHeight * FOCUS_RATIO;
+    let low = 0;
+    let high = metrics.length - 1;
+    let visible = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const metric = metrics[mid];
+      if (metric && metric.offsetTop <= focusLine) {
+        visible = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
       }
     }
-    return visible;
+    return (metrics[visible === -1 ? 0 : visible] ?? first).element;
   }
 
   private findBlockElement(blockId: string, sourcePage: number): HTMLElement | null {
@@ -354,26 +422,33 @@ export class ReflowReaderEngine implements ReaderEngine {
     }
     const article = this.rendered?.article;
     if (!article) {
-      return direct;
+      return null;
     }
     for (const element of article.querySelectorAll<HTMLElement>('[data-block-id]')) {
       if (element.dataset.blockId === blockId && element.dataset.sourcePage === String(sourcePage)) {
         return element;
       }
     }
-    return direct;
+    // The id belongs to another page; the caller falls back to the percent.
+    return null;
   }
 
   private flash(element: HTMLElement): void {
+    // Re-targeting the same block restarts the animation and its 1.2s window,
+    // so a second click is not cut short by the first click's timer.
+    const previous = this.flashTimers.get(element);
+    if (previous !== undefined) {
+      clearTimeout(previous);
+    }
     element.classList.remove('bookr-reflow-flash');
-    // Force a style flush so re-targeting the same block restarts the animation.
+    // Force a style flush so the restarted animation actually plays.
     void element.offsetWidth;
     element.classList.add('bookr-reflow-flash');
     const timer = setTimeout(() => {
-      this.flashTimers.delete(timer);
+      this.flashTimers.delete(element);
       element.classList.remove('bookr-reflow-flash');
     }, FLASH_DURATION_MS);
-    this.flashTimers.add(timer);
+    this.flashTimers.set(element, timer);
   }
 
   private readonly handleScroll = (): void => {
@@ -391,9 +466,12 @@ export class ReflowReaderEngine implements ReaderEngine {
       return;
     }
     const locator = this.locatorNow();
+    // Position changes qualify on any axis: page-only moves must not be hidden
+    // by a percent that rounds to the previous value.
     if (
       Math.abs(locator.percent - this.lastEmittedPercent) > RELOCATION_EPSILON
       || (locator.blockId ?? null) !== this.lastEmittedBlockId
+      || locator.sourcePage !== this.lastEmittedSourcePage
     ) {
       this.emitLocator(locator);
     }
@@ -409,6 +487,7 @@ export class ReflowReaderEngine implements ReaderEngine {
   private emitLocator(locator: ReflowLocator): void {
     this.lastEmittedPercent = locator.percent;
     this.lastEmittedBlockId = locator.blockId ?? null;
+    this.lastEmittedSourcePage = locator.sourcePage;
     this.emitCount += 1;
     this.emitter.emit('relocated', { locator, percent: locator.percent });
   }
