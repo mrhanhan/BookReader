@@ -6,7 +6,7 @@ import { SyncStatusBadge } from '../settings/SyncStatusBadge';
 import { SAVE_STATE_LABELS } from './useReaderProgress';
 import type { ReaderSaveState } from './useReaderProgress';
 
-export type ReaderPanelName = 'toc' | 'settings' | 'annotations' | 'bookmarks';
+export type ReaderPanelName = 'toc' | 'settings' | 'annotations' | 'bookmarks' | 'ai';
 
 export interface ReaderChromeProps {
   book: BookDto;
@@ -148,6 +148,13 @@ export function ReaderChrome({
             onClick={onNotes}
           >
             笔记
+          </button>
+          <button
+            type="button"
+            aria-pressed={activePanel === 'ai'}
+            onClick={() => onTogglePanel('ai')}
+          >
+            AI
           </button>
           <button
             type="button"

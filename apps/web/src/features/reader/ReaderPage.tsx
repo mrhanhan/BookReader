@@ -66,6 +66,9 @@ import type { ReaderPanelName } from './ReaderChrome';
 import { TocPanel } from './TocPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { SelectionMenu } from './SelectionMenu';
+import { AiPanel } from './ai/AiPanel';
+import { useAiChat } from './ai/useAiChat';
+import type { AiApi, AiContextSource } from './ai/useAiChat';
 import { AnnotationDialog } from './AnnotationDialog';
 import { AnnotationsPanel } from './AnnotationsPanel';
 import { BookmarkDialog } from './BookmarkDialog';
@@ -100,6 +103,8 @@ const FIRST_SYNC_WAIT_MS = 1_500;
 export interface ReaderPageProps {
   /** Tests inject a recording fake; the route uses the real factory. */
   engineFactory?: (kind: ReaderEngineKind) => ReaderEngine;
+  /** Tests inject the AI transport; production uses the default API. */
+  aiApi?: Partial<AiApi>;
 }
 
 interface ReaderSource {
@@ -239,7 +244,7 @@ function ReaderScreen({ message, busy = false }: { message: string; busy?: boole
  * signed file URL at the newest saved position, and keeps the chrome, panels,
  * keyboard shortcuts and autosave in sync with the engine.
  */
-export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPageProps) {
+export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: ReaderPageProps) {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
   // Local progress is namespaced per account; never read or write it before
@@ -303,6 +308,11 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const [currentLocator, setCurrentLocator] = useState<Locator | null>(null);
   const [panel, setPanel] = useState<ReaderPanelName | null>(null);
   const [selection, setSelection] = useState<ReaderSelection | null>(null);
+  const [online, setOnline] = useState(() => isOnline());
+  const [pendingSelection, setPendingSelection] = useState<{
+    text: string;
+    locator: Locator;
+  } | null>(null);
   const [annotationDialog, setAnnotationDialog] = useState<AnnotationDialogState | null>(null);
   const [bookmarkDialog, setBookmarkDialog] = useState<BookmarkDialogState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -327,6 +337,29 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   const currentLocatorRef = useRef<Locator | null>(null);
   currentLocatorRef.current = currentLocator;
+
+  // The context source reads the engine and position through refs so the AI
+  // controller never depends on the identity of the latest render.
+  const engineRef = useRef<ReaderEngine | null>(engine);
+  engineRef.current = engine;
+  const aiContextRef = useRef<AiContextSource>({
+    getTextContext: async (scope) => {
+      const active = engineRef.current;
+      if (!active) throw new Error('阅读器尚未就绪');
+      const result = await active.getTextContext(scope);
+      return { text: result.text, label: result.label };
+    },
+    currentLocator: () => currentLocatorRef.current,
+  });
+
+  // The companion lives at page level: closing its panel only hides it, so a
+  // summary or explanation keeps streaming while the reader looks at the page.
+  const ai = useAiChat({
+    bookId: bookId ?? '',
+    offline: !online,
+    context: aiContextRef.current,
+    api: aiApi,
+  });
 
   const showToast = useCallback((message: string) => setToast(message), []);
   const dismissToast = useCallback(() => setToast(null), []);
@@ -575,6 +608,23 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     setToast(null);
     readyRef.current = false;
   }, [bookId]);
+
+  // Connectivity follows the browser's own events; the source resolver keeps
+  // deciding its own fallbacks through `isOnline()`.
+  useEffect(() => {
+    const update = (): void => setOnline(isOnline());
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+
+  // A quote belongs to one book and one account; crossing either drops it.
+  useEffect(() => {
+    setPendingSelection(null);
+  }, [bookId, userId]);
 
   // Resolve the file URL while this open's sync settles, then read the
   // settings and the position the reader should open at. Waiting for the pull
@@ -1120,6 +1170,28 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     showToast(copied ? '已复制' : '复制失败，请手动选择复制');
   }, [selection, showToast]);
 
+  const explainSelection = useCallback(() => {
+    if (!selection) return;
+    const { text, locator } = selection;
+    setSelection(null);
+    setPanel('ai');
+    void ai.explain({ text, locator });
+  }, [ai, selection]);
+
+  const summarizePage = useCallback(() => {
+    setSelection(null);
+    setPanel('ai');
+    void ai.summarize('page');
+  }, [ai]);
+
+  const askAboutSelection = useCallback(() => {
+    if (!selection) return;
+    const { text, locator } = selection;
+    setSelection(null);
+    setPanel('ai');
+    setPendingSelection({ text, locator });
+  }, [selection]);
+
   const openNoteDialog = useCallback(
     (color: AnnotationColor) => {
       if (!selection) return;
@@ -1220,6 +1292,11 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         case 'T':
           revealChrome();
           togglePanel('toc');
+          break;
+        case 'i':
+        case 'I':
+          revealChrome();
+          togglePanel('ai');
           break;
         case 'b':
         case 'B':
@@ -1438,6 +1515,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               onNote={openNoteDialog}
               onCopy={() => void copySelection()}
               onDismiss={() => setSelection(null)}
+              onExplain={explainSelection}
+              onSummarizePage={summarizePage}
+              onAsk={askAboutSelection}
             />
           ) : null}
 
@@ -1501,6 +1581,16 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               onRename={(bookmark) => setBookmarkDialog({ mode: 'edit', bookmark })}
               onDelete={(bookmark) => void removeBookmark(bookmark)}
               onClose={() => setPanel(null)}
+            />
+          ) : null}
+
+          {status === 'ready' && panel === 'ai' ? (
+            <AiPanel
+              controller={ai}
+              offline={!online}
+              onClose={() => setPanel(null)}
+              pendingSelection={pendingSelection}
+              onClearPending={() => setPendingSelection(null)}
             />
           ) : null}
 

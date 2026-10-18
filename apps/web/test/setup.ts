@@ -298,6 +298,9 @@ export const handlers = [
     const body = (await request.json()) as { enabled: boolean };
     return HttpResponse.json({ enabled: body.enabled });
   }),
+  // The reader mounts the AI controller for every book, so its thread list
+  // must resolve even when a test never touches the companion.
+  http.get('/api/books/:id/ai/threads', () => HttpResponse.json({ items: [] })),
 
   http.get('/api/books', ({ request }) => HttpResponse.json(listBooksFromUrl(request.url))),
   http.get('/api/books/:id', ({ params }) => {

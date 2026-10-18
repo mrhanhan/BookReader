@@ -10,6 +10,12 @@ export interface SelectionMenuProps {
   onNote: (color: AnnotationColor) => void;
   onCopy: () => void;
   onDismiss: () => void;
+  /** Sends the selection to the AI companion as an explain request. */
+  onExplain: () => void;
+  /** Summarizes the page that contains the selection. */
+  onSummarizePage: () => void;
+  /** Opens the companion with the selection quoted for a follow-up question. */
+  onAsk: () => void;
 }
 
 /** First-render estimate, replaced by the measured box in a layout effect. */
@@ -56,6 +62,9 @@ export function SelectionMenu({
   onNote,
   onCopy,
   onDismiss,
+  onExplain,
+  onSummarizePage,
+  onAsk,
 }: SelectionMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState<MenuSize>(FALLBACK_SIZE);
@@ -97,6 +106,15 @@ export function SelectionMenu({
       </div>
       <button type="button" className="reader-selection-action" onClick={() => onNote('yellow')}>
         写批注
+      </button>
+      <button type="button" className="reader-selection-action" onClick={onExplain}>
+        解释
+      </button>
+      <button type="button" className="reader-selection-action" onClick={onSummarizePage}>
+        总结本页
+      </button>
+      <button type="button" className="reader-selection-action" onClick={onAsk}>
+        提问
       </button>
       <button type="button" className="reader-selection-action" onClick={onCopy}>
         复制

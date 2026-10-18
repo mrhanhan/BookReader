@@ -290,3 +290,20 @@ it('requests and exits fullscreen through the document APIs', async () => {
     restoreProperty(document, 'fullscreenElement', originalElement);
   }
 });
+
+it('opens and closes the AI panel from the toolbar and the i shortcut', async () => {
+  await renderReader();
+  const toggle = screen.getByRole('button', { name: 'AI' });
+  expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+  await userEvent.click(toggle);
+  expect(await screen.findByRole('complementary', { name: 'AI 伴读' })).toBeInTheDocument();
+  expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+  // The same switch as the other reader shortcuts toggles the panel back off.
+  await userEvent.keyboard('i');
+  expect(screen.queryByRole('complementary', { name: 'AI 伴读' })).not.toBeInTheDocument();
+
+  await userEvent.keyboard('I');
+  expect(await screen.findByRole('complementary', { name: 'AI 伴读' })).toBeInTheDocument();
+});
