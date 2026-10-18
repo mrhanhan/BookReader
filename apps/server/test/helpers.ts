@@ -1,10 +1,13 @@
-import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES, newId } from '@bookr/shared';
+import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES, newId, type Role } from '@bookr/shared';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
+import { hashPassword } from '../src/auth/password';
+import { signAccessToken } from '../src/auth/tokens';
 import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
 import { assertTestDatabase } from '../src/db/guard';
 import { migrate } from '../src/db/migrate';
+import { users } from '../src/db/schema';
 import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
 import { FakeStorage } from '../src/storage/fake';
@@ -98,6 +101,47 @@ export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise
     ids: { newId },
     jobs: fakeJobQueue,
   };
+}
+
+/** Password every seeded test user shares. */
+export const SEEDED_PASSWORD = 'valid-password-1';
+
+/** A user inserted by `seedUser`. */
+export interface SeededUser {
+  id: string;
+  username: string;
+  password: string;
+  role: Role;
+}
+
+let seededPasswordHash: Promise<string> | undefined;
+
+/**
+ * Inserts a user with a real Argon2id hash so login flows can be exercised.
+ * Users are global in this system, so no library row is created.
+ */
+export async function seedUser(role: Role, username?: string): Promise<SeededUser> {
+  seededPasswordHash ??= hashPassword(SEEDED_PASSWORD);
+  const resolvedUsername = username ?? `${role}_${newId().replaceAll('-', '').slice(0, 12)}`;
+  const [user] = await testDb
+    .insert(users)
+    .values({
+      username: resolvedUsername,
+      passwordHash: await seededPasswordHash,
+      displayName: resolvedUsername,
+      role,
+    })
+    .returning();
+  return { id: user!.id, username: user!.username, password: SEEDED_PASSWORD, role: user!.role };
+}
+
+/** Builds an `Authorization` header carrying a valid access token for a user. */
+export async function authHeader(
+  user: Pick<SeededUser, 'id' | 'role'>,
+  secret: string = DEFAULT_CONFIG.jwtSecret,
+): Promise<{ authorization: string }> {
+  const token = await signAccessToken({ sub: user.id, role: user.role }, secret);
+  return { authorization: `Bearer ${token}` };
 }
 
 /** Builds the app with fake dependencies, without touching Postgres or S3. */
