@@ -6,5 +6,8 @@ node_modules/
 dist/
 coverage/
 .turbo/
+test-results/
+playwright-report/
+blob-report/
 *.log
 .env
