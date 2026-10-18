@@ -3,14 +3,50 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
+import { migrate } from '../src/db/migrate';
 import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
 import { FakeStorage } from '../src/storage/fake';
 
-const TEST_DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://bookr:bookr@localhost:5432/bookr';
+const TEST_DATABASE_URL =
+  process.env.DATABASE_URL ?? 'postgres://bookr:bookr@localhost:5432/bookr_test';
+
+/** Lock that serialises migrations when test files run in parallel. */
+const MIGRATION_LOCK_ID = 741_852_963;
 
 /** Drizzle client shared by tests; it connects lazily on first use. */
 export const testDb = createDb(TEST_DATABASE_URL);
+
+let schemaReady: Promise<void> | undefined;
+
+async function migrateOnce(): Promise<void> {
+  const client = await testDb.$client.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
+    await migrate(testDb);
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]);
+    client.release();
+  }
+}
+
+/**
+ * Applies migrations once per process, then empties every application table so
+ * test files and individual tests never observe each other's rows.
+ */
+export async function resetDb(): Promise<void> {
+  schemaReady ??= migrateOnce();
+  await schemaReady;
+
+  const { rows } = await testDb.$client.query<{ tablename: string }>(
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+  );
+  if (rows.length === 0) {
+    return;
+  }
+  const tables = rows.map((row) => `"${row.tablename}"`).join(', ');
+  await testDb.$client.query(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+}
 
 /** In-memory storage shared by the test app and background jobs. */
 export const fakeStorage = new FakeStorage();
