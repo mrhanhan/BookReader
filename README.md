@@ -308,7 +308,8 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 
 ## 12. 端到端验收测试（E2E）
 
-E2E 使用 Playwright 驱动真实浏览器验证邀请注册、上传、编辑、筛选、删除与恢复。
+E2E 使用 Playwright 驱动真实浏览器验证邀请注册、上传、编辑、筛选、删除与恢复，以及
+阅读器的原版/重排切换、定位与划线。
 
 ```bash
 # 首次运行安装 Chromium
@@ -321,6 +322,10 @@ pnpm --filter @bookr/web e2e
 - 前提：`docker compose up -d` 全部服务 healthy，且已存在管理员；默认使用 `admin`，可通过 `E2E_ADMIN_USERNAME` / `E2E_ADMIN_PASSWORD` 指定。
 - 测试会**创建真实用户与邀请码、上传图书并软删除图书**（结束时留在回收站），还会清理此前 E2E 遗留的在架图书。请只对它使用一次性测试栈。
 - 默认只允许 `localhost` / `127.0.0.1`；指向其他主机时测试会拒绝启动。仅在目标确实是可丢弃的测试环境时才设置 `E2E_ALLOW_REMOTE=1`。**永远不要对生产环境运行 E2E，也不要为生产设置该变量。**
+- 阅读器与重排用例（`e2e/reader.spec.ts`、`e2e/reflow.spec.ts`）使用
+  `apps/web/scripts/make-reader-fixtures.mjs` 在全局 setup 中重新生成的
+  `reader.pdf`、`reader.epub` 与 `reader.bookr.json`。fixture 不入库；重排用例会
+  上传重排包并切换模式，属于破坏性测试。
 
 
 ## 13. 阅读器功能
@@ -329,6 +334,9 @@ pnpm --filter @bookr/web e2e
 
 - **PDF**：原文模式渲染（pdf.js），带文本层，可直接选中文字；高亮与批注、笔记、书签、
   页面裁剪（crop）、目录（TOC）跳转；页码定位与阅读进度自动保存。
+- **PDF 重排**：上传本地预处理工具生成的重排包后，可在「原版 / 重排」间一键切换；
+  重排模式支持字体、字号、行距、页边距与主题调整；图片、表格、公式以原页裁绘保留；
+  两种模式共享同一阅读位置，来回切换误差不超过 1 页。
 - **EPUB**：分章/滚动阅读，主题切换（纸张、护眼、夜间）、字号与行距调整、目录跳转；
   文本高亮、批注与书签；阅读进度自动保存。
 - 进度、批注与书签通过 `/api/books/:id/progress`、`/api/books/:id/annotations`、
@@ -337,7 +345,59 @@ pnpm --filter @bookr/web e2e
 - 书架支持格式/状态/分类筛选、搜索、排序、上传、编辑、封面上传、回收站恢复；
   EPUB/PDF 文件通过 MinIO 预签名 URL 直接读取。
 
-## 14. 桌面端（Tauri 2）
+### 13.1 重排包与相关 API
+
+重排包（`.bookr.json`）由本地预处理工具生成，在 **书架 → 编辑（仅上传者/管理员）→
+重排包** 上传。服务端会校验包的 schema 版本与完整结构、大小（≤32 MiB），以及包内
+`source.sha256` 是否等于图书原始文件的哈希；同一本书同时只允许一个未完成的上传会话，
+每本书最多保留一个包。重排包不计入书籍上传配额。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/books/:id/reflow/uploads` | 创建直传会话；请求体为 `size` 与 `source.sha256`，返回预签名上传目标 |
+| `POST` | `/api/books/:id/reflow/uploads/:uploadId/complete` | 校验上传的包并挂到图书，返回图书 DTO 与包摘要 |
+| `GET` | `/api/books/:id/reflow` | 返回重排包的预签名下载地址、schema 版本与页数 |
+| `DELETE` | `/api/books/:id/reflow` | 移除当前重排包 |
+
+PDF 的阅读进度、批注与书签接口同时接受 `pdf` 与 `reflow` 两种 locator，因此切换模式
+不会丢失位置或标注。
+
+## 14. 本地 PDF 预处理工具
+
+源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
+[`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
+的电脑上运行，**不部署到服务器**；服务器不做 OCR 或版面分析，除显式启用 AI 纠错外
+工具不联网。
+
+需要 Python 3.10+：
+
+```bash
+cd tools/pdf-preprocess
+python -m venv .venv
+. .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -e '.[dev]'
+pip install -e '.[ocr]'         # 可选：扫描版 PDF 的 OCR（paddle 需另行安装）
+```
+
+```bash
+bookr-preprocess book.pdf --out book.bookr.json
+bookr-preprocess scan.pdf --out scan.bookr.json --ocr auto --text-pdf scan-searchable.pdf
+bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --report scan.report.json
+```
+
+- `--out` 必填；源 PDF、输出包、报告和文字层 PDF 不能使用同一路径。
+- 退出码：`0` 成功，`2` 参数/输入/输出错误，`3` 缺少运行依赖。
+- `--report` 写出质量报告，重点检查 `quality.fallbackPages`（整页回退）与
+  `quality.warnings`；上传前建议在源 PDF 中逐页核对回退页。`--verbose` 打印全部警告。
+- AI 纠错必须显式加 `--ai-correct` 并设置 `DEEPSEEK_API_KEY`；每块最多发送 4000 个
+  UTF-16 单元的文本到 DeepSeek，不发送图像或整本书。
+- 重排包包含书籍全文，请与书籍文件一起保管，不要提交到公开仓库。
+
+生成后，在 **书架 → 编辑（仅上传者/管理员）→ 重排包** 选择 `.bookr.json` 上传。
+服务端会校验包内 `source.sha256`、schema 版本与大小（≤32 MiB）；每本书最多一个包，
+重排包不计入书籍配额。
+
+## 15. 桌面端（Tauri 2）
 
 源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
 
@@ -356,7 +416,7 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
-## 15. Android 端（Capacitor 7）
+## 16. Android 端（Capacitor 7）
 
 源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
 `apps/mobile/README.md`。
@@ -375,10 +435,15 @@ WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost`
 `capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
 预签名文件地址都必须是设备可达的 HTTPS 地址。
 
-## 16. 已知范围
+## 17. 已知范围
 
 - 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
   均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
 - 原生端依赖服务端可访问：部署在局域网或本机时，手机/另一台电脑需要能解析并访问
   `VITE_API_BASE_URL` 与 `S3_PUBLIC_ENDPOINT`。
 - 阅读进度目前走直连 API 保存（Plan 4 替换为本地优先同步）。
+- 重排模式依赖本地生成的重排包：服务器不做 OCR 或版面分析，没有上传包时只能使用
+  原版 PDF。
+- 重排包是纯文本 JSON（≤32 MiB），不内嵌图片；图片、表格、公式均以源页裁绘显示。
+  重排仅重新排版文字，表格与公式不会变成可重排的内容。
+- 每本书最多保留一个重排包；重排包不计入书籍上传配额，重新上传会替换旧包。

@@ -13,5 +13,10 @@ blob-report/
 apps/web/e2e/fixtures/reader.pdf
 apps/web/e2e/fixtures/reader.epub
 apps/web/e2e/fixtures/reader.bookr.json
+# Python artifacts from tools/pdf-preprocess.
+__pycache__/
+.pytest_cache/
+tools/pdf-preprocess/.venv/
+*.egg-info/
 *.log
 .env
