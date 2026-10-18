@@ -353,7 +353,7 @@ pnpm --filter @bookr/desktop check    # cargo check
 VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 ```
 
-服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`；
+服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
 ## 15. Android 端（Capacitor 7）

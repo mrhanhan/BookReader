@@ -1,9 +1,8 @@
 import type { ApiErrorBody, AuthTokens, ErrorCode } from '@bookr/shared';
 
-/** Normalizes a configured API origin, trimming whitespace and one trailing slash. */
+/** Normalizes a configured API origin, trimming whitespace and trailing slashes. */
 export function resolveApiBase(value: string | undefined): string {
-  const raw = (value ?? '').trim();
-  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+  return (value ?? '').trim().replace(/\/+$/, '');
 }
 
 /** Origin for API calls; empty for the same-origin web build. */

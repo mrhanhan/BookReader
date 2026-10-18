@@ -6,13 +6,15 @@
   "scripts": {
     "add:android": "cap add android",
     "sync": "cap sync android",
-    "open": "cap open android"
+    "open": "cap open android",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@capacitor/core": "7.6.9"
   },
   "devDependencies": {
     "@capacitor/android": "7.6.9",
-    "@capacitor/cli": "7.6.9"
+    "@capacitor/cli": "7.6.9",
+    "typescript": "^5.9.3"
   }
 }

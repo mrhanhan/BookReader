@@ -192,6 +192,9 @@ importers:
       '@capacitor/cli':
         specifier: 7.6.9
         version: 7.6.9
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   apps/server:
     dependencies:

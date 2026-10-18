@@ -32,7 +32,7 @@ pnpm --filter @bookr/desktop dev
 ## 打包
 
 打包后的应用没有同源后端，必须在构建 Web 产物时把 API 地址烘焙进 bundle，并要求服务端
-`CORS_ORIGIN` 允许 Tauri 源（`https://tauri.localhost`、`http://tauri.localhost`）：
+`CORS_ORIGIN` 允许 Tauri 源（Windows 为 `https://tauri.localhost`、`http://tauri.localhost`；macOS/Linux 还需要 `tauri://localhost`）：
 
 ```bash
 # Windows PowerShell
@@ -50,8 +50,9 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 部署侧还需：
 
 ```dotenv
-# server 的允许源列表（逗号分隔），保留两个 Tauri 源
-CORS_ORIGIN=https://bookr.example.com,https://tauri.localhost,http://tauri.localhost
+# server 的允许源列表（逗号分隔），保留 Tauri 源；
+# macOS/Linux 构建还需要追加 tauri://localhost
+CORS_ORIGIN=https://bookr.example.com,https://tauri.localhost,http://tauri.localhost,tauri://localhost
 # 预签名 PDF/EPUB URL 使用的、桌面端可访问的 MinIO/S3 地址
 S3_PUBLIC_ENDPOINT=https://files.bookr.example.com
 ```
