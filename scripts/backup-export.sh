@@ -63,13 +63,16 @@ S3_SECRET_KEY="${S3_SECRET_KEY:-$(container_env minio MINIO_ROOT_PASSWORD)}"
 [ -n "$S3_ACCESS_KEY" ] && [ -n "$S3_SECRET_KEY" ] || fail "MinIO credentials were not found"
 
 log "mirroring bucket '$S3_BUCKET' to $MINIO_DIR"
+# Deliberately no --remove: mirroring deletions would erase the only
+# server-side copy when the bucket is wiped by mistake. Objects removed from
+# the bucket simply disappear from future restic snapshots' delta.
 docker run --rm \
   --network "$COMPOSE_NETWORK" \
   --env "MC_HOST_local=http://${S3_ACCESS_KEY}:${S3_SECRET_KEY}@${MINIO_HOST}" \
   --volume "$MINIO_DIR:/backup" \
   --entrypoint mc \
   "$MINIO_IMAGE" \
-  mirror --overwrite --remove "local/$S3_BUCKET" /backup
+  mirror --overwrite "local/$S3_BUCKET" /backup
 
 # --- Manifest ---------------------------------------------------------------
 MANIFEST="$BACKUP_ROOT/manifest-$TIMESTAMP.txt"

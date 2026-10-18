@@ -133,7 +133,7 @@ export RESTIC_PASSWORD_FILE="$HOME/.config/bookr/restic-password"
 
 Windows 任务计划可用：`wsl.exe -e bash -lc '~/bin/pull-backup.sh'`。建议服务器 03:15 导出、备份 PC 04:00 拉取。
 
-### 7.3 恢复
+### 7.3 从服务器本地备份恢复
 
 ```bash
 cd /srv/bookr
@@ -159,6 +159,89 @@ curl -fsS http://localhost:8180/healthz
 ```
 
 恢复后务必抽查：登录、书架列表、打开一本 PDF、下载/阅读一本 EPUB。每季度至少演练一次完整恢复。
+
+### 7.4 异地恢复（服务器丢失或磁盘损坏）
+
+服务器整机不可用时，本地 `/srv/bookr/backups` 一并丢失，必须从备份 PC 的 restic 仓库恢复。
+
+**1. 在备份 PC 上取出最新快照**
+
+```bash
+export RESTIC_REPOSITORY='sftp:backup@nas.example:/srv/restic/bookr'
+export RESTIC_PASSWORD_FILE="$HOME/.config/bookr/restic-password"
+
+restic snapshots --tag bookr          # 确认最新快照时间
+mkdir -p ~/bookr-restore
+restic restore latest --tag bookr --target ~/bookr-restore
+```
+
+restic 会保留原始绝对路径。若 `BOOKR_BACKUP_DEST=$HOME/bookr-backups`，恢复后的布局为：
+
+```text
+~/bookr-restore/home/<用户名>/bookr-backups/
+├── db/bookr-<时间戳>.sql.gz     # 最新的 Postgres dump
+├── minio/                       # 最新的桶镜像（对象目录结构）
+├── manifest-<时间戳>.txt        # 大小、SHA-256、对象数
+└── manifest.txt -> manifest-<时间戳>.txt
+```
+
+`BOOKR_BACKUP_DEST` 不是默认值时，用 `find ~/bookr-restore -name manifest.txt` 定位目录。先按 manifest 校验 dump：
+
+```bash
+RESTORED="$(dirname "$(find ~/bookr-restore -name manifest.txt | head -n 1)")"
+grep db_sha256 "$RESTORED/manifest.txt"
+sha256sum "$RESTORED/db/bookr-<时间戳>.sql.gz"   # 两个哈希必须一致
+```
+
+**2. 在新服务器上准备空栈**
+
+按第 3 节部署代码与 `.env`（数据库/MinIO 凭据保持与备份时一致），只启动存储：
+
+```bash
+cd /srv/bookr
+docker compose up -d --wait postgres minio
+```
+
+**3. 把恢复数据送到新服务器**
+
+```bash
+# 在备份 PC 上执行；目录名按上一步的实际布局替换
+rsync -az "$RESTORED/" bookr@new-server:/srv/bookr/restore/
+```
+
+**4. 恢复数据库与对象存储**
+
+```bash
+cd /srv/bookr
+# 数据库：重建空库后导入异地 dump
+docker compose exec -T postgres psql -U bookr -d postgres \
+  -c 'DROP DATABASE IF EXISTS bookr WITH (FORCE);' \
+  -c 'CREATE DATABASE bookr OWNER bookr;'
+gunzip -c restore/db/bookr-<时间戳>.sql.gz \
+  | docker compose exec -T postgres psql -U bookr -d bookr
+
+# MinIO：把异地镜像写回 bookr 桶
+set -a; . ./.env; set +a
+docker run --rm --network bookr_default \
+  -e "MC_HOST_local=http://${S3_ACCESS_KEY}:${S3_SECRET_KEY}@minio:9000" \
+  -v /srv/bookr/restore/minio:/backup \
+  --entrypoint mc quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z \
+  mirror --overwrite /backup local/bookr
+
+# 启动应用（迁移自动执行、桶已存在时自动跳过创建）
+docker compose up -d --wait
+curl -fsS http://localhost:8180/healthz
+```
+
+**5. 验证与收尾**
+
+- `docker compose ps` 四个服务均为 healthy；`/healthz` 返回 `{"status":"ok"}`。
+- 用管理员账号登录，核对书架数量与 `manifest.txt` 中的 `minio_files`/`minio_bytes` 是否接近。
+- 随机打开一本 PDF、一本 EPUB 与一本 MOBI/AZW3（确认转换后的 EPUB 仍在）。
+- 抽查数据库中最近一次上传/阅读记录存在。
+- 恢复完成后重新配置服务器 cron（第 7.1 节），并让备份 PC 重新执行一次 `pull-backup.sh`，避免下一轮 `rsync --delete-after` 用到旧目录。
+- 确认无误后再删除 `/srv/bookr/restore`。
+
 
 ## 8. 磁盘阈值
 
