@@ -245,10 +245,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // snapshot written by the shelf keeps the title and format available.
   const cachedShelfRow = useLiveQuery(
     async () => {
-      if (id === undefined) return null;
-      return (await db.shelf.get(id)) ?? null;
+      if (id === undefined || userId === null) return null;
+      const row = await db.shelf.get([userId, id]);
+      // The compound key already scopes the row; the check keeps a legacy or
+      // hand-written row from another account out of this session.
+      return row !== undefined && row.userId === userId ? row : null;
     },
-    [db, id],
+    [db, id, userId],
   );
   const book = bookQuery.data ?? (cachedShelfRow ? bookFromShelfSnapshot(cachedShelfRow) : null);
   const bookId = book?.id ?? null;

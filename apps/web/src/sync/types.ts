@@ -79,4 +79,9 @@ export interface CachedShelfBook {
   updatedAt: string;
   /** Whether a reflow pack exists, so the offline reader can offer the switch. */
   reflowAvailable: boolean;
+  /**
+   * Deletion instant from the last snapshot, so trashed books stay out of the
+   * offline shelf. Absent on rows written before tombstones were recorded.
+   */
+  deletedAt?: string | null;
 }

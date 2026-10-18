@@ -51,6 +51,20 @@ it('keeps a cached session usable when the app starts offline', async () => {
   expect(localStorage.getItem(PROFILE_STORAGE_KEY)).not.toBeNull();
 });
 
+it('restores the cached profile when the first request fails at the transport layer', async () => {
+  setTokens(tokens);
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(cachedUser));
+  // `navigator.onLine` still reports true; fetch itself rejects (TypeError).
+  server.use(http.get('/api/auth/me', () => HttpResponse.error()));
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  expect(await screen.findByText('深入理解计算机系统')).toBeInTheDocument();
+  expect(router.state.location.pathname).toBe('/');
+  expect(getTokens()).not.toBeNull();
+});
+
 it('ends the session when the API explicitly rejects the stored tokens', async () => {
   setTokens(tokens);
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(cachedUser));

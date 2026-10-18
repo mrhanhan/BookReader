@@ -18,6 +18,8 @@ export function shelfSnapshotOf(book: BookDto, userId: string): CachedShelfBook 
     updatedAt: book.updatedAt,
     // Kept so the offline reader can still offer the reflow switch.
     reflowAvailable: book.reflowAvailable,
+    // Tombstones keep a book deleted on another device out of the offline shelf.
+    deletedAt: book.deletedAt,
   };
 }
 
@@ -51,6 +53,6 @@ export function bookFromShelfSnapshot(row: CachedShelfBook): BookDto {
     reflowPageCount: null,
     createdAt: row.updatedAt,
     updatedAt: row.updatedAt,
-    deletedAt: null,
+    deletedAt: row.deletedAt ?? null,
   };
 }

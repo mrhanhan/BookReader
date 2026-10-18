@@ -25,7 +25,7 @@ export class BookrDb extends Dexie {
   outbox!: Table<OutboxRow, string>;
   meta!: Table<SyncMetaRow, string>;
   offlineBooks!: Table<OfflineBookRow, [string, string]>;
-  shelf!: Table<CachedShelfBook, string>;
+  shelf!: Table<CachedShelfBook, [string, string]>;
 
   constructor(name = 'bookr-sync') {
     super(name);
@@ -49,6 +49,17 @@ export class BookrDb extends Dexie {
     });
     this.version(3).stores({
       offlineBooks: '[userId+bookId], userId, bookId, pinned, lastReadAt',
+    });
+
+    // Shelf snapshots became per-user too: on a shared browser one account's
+    // cached metadata must not overwrite another's. Same two-step dance as
+    // above because Dexie cannot change a primary key in place; snapshots are
+    // rebuildable, so version 4 drops the table and version 5 recreates it.
+    this.version(4).stores({
+      shelf: null,
+    });
+    this.version(5).stores({
+      shelf: '[userId+id], userId, id',
     });
   }
 }

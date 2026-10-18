@@ -116,16 +116,6 @@ export function BookshelfPage() {
     };
   }, [offlineRows, store, userId]);
 
-  // Every successful shelf load refreshes the on-device snapshot used when the
-  // library API is unreachable. Only the `CachedShelfBook` fields are stored.
-  useEffect(() => {
-    const items = booksQuery.data?.items;
-    if (!items || items.length === 0 || userId === null) return;
-    void db.shelf
-      .bulkPut(items.map((item) => shelfSnapshotOf(item, userId)))
-      .catch(() => undefined);
-  }, [booksQuery.data, db, userId]);
-
   const markOfflinePending = useCallback((bookId: string, pending: boolean) => {
     setOfflinePending((current) => {
       const next = new Set(current);
@@ -214,9 +204,12 @@ export function BookshelfPage() {
 
   function confirmDelete() {
     if (!deletingBook) return;
+    const target = deletingBook;
     setDeleteError(null);
-    deleteBook.mutate(deletingBook.id, {
+    deleteBook.mutate(target.id, {
       onSuccess: () => {
+        // Drop the snapshot immediately; the next full load would prune it too.
+        if (userId) void db.shelf.delete([userId, target.id]).catch(() => undefined);
         setDeletingBook(null);
         setToast('已移入回收站');
       },
@@ -238,13 +231,51 @@ export function BookshelfPage() {
       filters.categoryId ||
       filters.sort !== DEFAULT_FILTERS.sort,
   );
+
+  // Every successful shelf load refreshes the on-device snapshot used when the
+  // library API is unreachable. Only the `CachedShelfBook` fields are stored.
+  // A complete, unfiltered first page is the whole truth for this account, so
+  // rows missing from it (deleted or trashed elsewhere) are pruned.
+  useEffect(() => {
+    const data = booksQuery.data;
+    if (!data || userId === null) return;
+    const items = data.items;
+    const completeShelf = !filtersActive && data.page === 1 && data.total <= data.pageSize;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        if (cancelled) return;
+        if (items.length > 0) {
+          await db.shelf.bulkPut(items.map((item) => shelfSnapshotOf(item, userId)));
+        }
+        // A newer load owns the snapshot now; its own pass prunes.
+        if (cancelled || !completeShelf) return;
+        const keep = new Set(items.map((item) => item.id));
+        const existing = await db.shelf.where('userId').equals(userId).toArray();
+        if (cancelled) return;
+        const stale = existing
+          .filter((row) => !keep.has(row.id))
+          .map((row) => [userId, row.id] as [string, string]);
+        if (stale.length > 0) await db.shelf.bulkDelete(stale);
+      } catch {
+        // The snapshot is best-effort; reading still falls back to the API.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [booksQuery.data, db, filtersActive, userId]);
   const quotaRatio =
     user && user.libraryQuotaBytes > 0 ? user.libraryUsedBytes / user.libraryQuotaBytes : 0;
   const nearingQuota = quotaRatio > 0.9;
   const isAdmin = user?.role === 'admin';
   // Offline, or after a failed library request, the shelf falls back to the
   // metadata snapshot so books downloaded to this device stay openable.
-  const fallbackBooks = cachedShelfRows?.map(bookFromShelfSnapshot);
+  const fallbackBooks = cachedShelfRows
+    ?.filter((row) => row.deletedAt == null)
+    .map(bookFromShelfSnapshot);
   const usingCachedShelf =
     booksQuery.data === undefined &&
     fallbackBooks !== undefined &&

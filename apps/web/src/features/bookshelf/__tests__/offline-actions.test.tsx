@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
-import type { LocalAnnotationRow } from '../../../sync/types';
+import type { CachedShelfBook, LocalAnnotationRow } from '../../../sync/types';
 import { setTokens } from '../../../api/client';
 import { routes } from '../../../app/router';
 import type { OfflineSession } from '../../../offline/offlineContext';
@@ -40,6 +40,20 @@ function createSession(): OfflineSession {
     store: createMemoryStore(),
     fetchImpl: fetchImpl as unknown as typeof fetch,
   });
+}
+
+function shelfRow(
+  overrides: Partial<CachedShelfBook> & Pick<CachedShelfBook, 'id' | 'userId' | 'title'>,
+): CachedShelfBook {
+  return {
+    author: null,
+    format: 'epub',
+    coverUrl: null,
+    updatedAt: new Date().toISOString(),
+    reflowAvailable: false,
+    deletedAt: null,
+    ...overrides,
+  };
 }
 
 function renderShelf(session: OfflineSession) {
@@ -154,7 +168,7 @@ it('writes the shelf snapshot after a successful load', async () => {
   await cardFor('三体');
 
   await waitFor(async () => {
-    expect(await session.db.shelf.get(BOOK)).toMatchObject({
+    expect(await session.db.shelf.get([USER, BOOK])).toMatchObject({
       userId: USER,
       title: '三体',
       author: '刘慈欣',
@@ -162,10 +176,11 @@ it('writes the shelf snapshot after a successful load', async () => {
     });
   });
   // Only `CachedShelfBook` fields are stored; reading data stays in its tables.
-  const row = await session.db.shelf.get(BOOK);
+  const row = await session.db.shelf.get([USER, BOOK]);
   expect(Object.keys(row ?? {}).sort()).toEqual([
     'author',
     'coverUrl',
+    'deletedAt',
     'format',
     'id',
     'reflowAvailable',
@@ -201,7 +216,9 @@ it('remembers reflow availability in the shelf snapshot', async () => {
 
   expect(await screen.findByText('可重排的书')).toBeInTheDocument();
   await waitFor(async () => {
-    expect((await session.db.shelf.get('book-reflowable'))?.reflowAvailable).toBe(true);
+    expect(
+      (await session.db.shelf.get([USER, 'book-reflowable']))?.reflowAvailable,
+    ).toBe(true);
   });
 });
 
@@ -216,6 +233,7 @@ it('renders the cached shelf on a cold offline start', async () => {
     coverUrl: null,
     updatedAt: new Date().toISOString(),
     reflowAvailable: false,
+    deletedAt: null,
   });
   await session.cache.cacheFromUrl(USER, BOOK, 'book', 'https://files.test/cached.epub');
   server.use(http.get('/api/books', () => HttpResponse.error()));
@@ -230,4 +248,97 @@ it('renders the cached shelf on a cold offline start', async () => {
     'href',
     `/books/${BOOK}/read`,
   );
+});
+
+it('keeps shelf snapshots per account', async () => {
+  const session = createSession();
+  // Another account already cached the same book id with different metadata.
+  await session.db.shelf.put(
+    shelfRow({ id: BOOK, userId: 'user-other', title: '三体（他人快照）' }),
+  );
+
+  renderShelf(session);
+  await cardFor('三体');
+
+  await waitFor(async () => {
+    expect((await session.db.shelf.get([USER, BOOK]))?.title).toBe('三体');
+  });
+  // Loading the shelf must not overwrite another account's snapshot.
+  expect((await session.db.shelf.get(['user-other', BOOK]))?.title).toBe(
+    '三体（他人快照）',
+  );
+});
+
+it('shows only the current account snapshot when offline', async () => {
+  const session = createSession();
+  await session.db.shelf.put(
+    shelfRow({ id: 'book-shared', userId: USER, title: '我的缓存书' }),
+  );
+  await session.db.shelf.put(
+    shelfRow({ id: 'book-shared', userId: 'user-other', title: '他人的缓存书' }),
+  );
+  server.use(http.get('/api/books', () => HttpResponse.error()));
+  setOnline(false);
+
+  renderShelf(session);
+
+  expect(await screen.findByText('我的缓存书')).toBeInTheDocument();
+  expect(screen.queryByText('他人的缓存书')).toBeNull();
+});
+
+it('prunes snapshots for books that left the shelf', async () => {
+  const session = createSession();
+  await session.db.shelf.put(
+    shelfRow({ id: 'book-removed', userId: USER, title: '已经不在书架上的书' }),
+  );
+
+  renderShelf(session);
+  await cardFor('三体');
+
+  // A complete, unfiltered load is authoritative for this account.
+  await waitFor(async () => {
+    expect(await session.db.shelf.get([USER, 'book-removed'])).toBeUndefined();
+  });
+  expect(await session.db.shelf.get([USER, BOOK])).toBeDefined();
+});
+
+it('removes the snapshot when a book is deleted', async () => {
+  const session = createSession();
+  renderShelf(session);
+
+  await cardFor('深入理解计算机系统');
+  await waitFor(async () => {
+    expect(await session.db.shelf.get([USER, 'book-csapp'])).toBeDefined();
+  });
+
+  await userEvent.click(
+    await screen.findByRole('button', { name: '删除《深入理解计算机系统》' }),
+  );
+  await userEvent.click(screen.getByRole('button', { name: '确认删除' }));
+  expect(await screen.findByText('已移入回收站')).toBeInTheDocument();
+
+  await waitFor(async () => {
+    expect(await session.db.shelf.get([USER, 'book-csapp'])).toBeUndefined();
+  });
+});
+
+it('hides trashed snapshot rows from the offline shelf', async () => {
+  const session = createSession();
+  await session.db.shelf.put(
+    shelfRow({
+      id: 'book-trashed',
+      userId: USER,
+      title: '已经进回收站的书',
+      deletedAt: new Date().toISOString(),
+    }),
+  );
+  server.use(http.get('/api/books', () => HttpResponse.error()));
+  setOnline(false);
+
+  renderShelf(session);
+
+  expect(
+    await screen.findByText('当前离线，书架也还没有同步到本机。'),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('已经进回收站的书')).toBeNull();
 });
