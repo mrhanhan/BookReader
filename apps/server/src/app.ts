@@ -16,6 +16,7 @@ import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
 import { registerReadingRoutes } from './reading/routes';
 import type { StorageService } from './storage/types';
+import { registerSyncRoutes } from './sync/routes';
 import { registerUploadRoutes } from './uploads/routes';
 
 /** Source of the current time, injected so tests can control it. */
@@ -139,6 +140,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
   registerReadingRoutes(app, deps);
+  registerSyncRoutes(app, deps);
   registerCategoryRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {

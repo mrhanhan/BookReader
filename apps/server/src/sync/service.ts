@@ -5,9 +5,21 @@ import type {
   SyncChangeEnvelope,
   SyncEntityType,
   SyncOp,
+  SyncPullResult,
+  SyncSnapshot,
 } from '@bookr/shared';
+import { and, desc, eq, isNull } from 'drizzle-orm';
+import type { AppDeps } from '../app';
 import type { Transaction } from '../db/client';
-import { appendChange } from './repo';
+import { annotations, bookmarks, readingProgress } from '../db/schema';
+import { toAnnotationDto, toBookmarkDto, toProgressDto } from '../reading/dto';
+import {
+  appendChange,
+  listChanges,
+  maxRevision,
+  prunedThrough,
+  readUserSettings,
+} from './repo';
 
 /** Identity and payload of one change, as built by the helpers below. */
 export type SyncPayloadFor = {
@@ -98,4 +110,75 @@ export async function recordChange(
   },
 ): Promise<SyncChangeEnvelope> {
   return appendChange(tx, input);
+}
+
+/**
+ * Reads one page of the caller's change log. A cursor older than the retained
+ * window is answered with `reset` so the client rebuilds from a snapshot
+ * instead of silently missing pruned changes.
+ */
+export async function pullChanges(
+  deps: AppDeps,
+  userId: string,
+  since: number,
+  limit: number,
+): Promise<SyncPullResult> {
+  const cursor = await maxRevision(deps.db);
+  const watermark = await prunedThrough(deps.db);
+
+  if (since > 0 && since < watermark) {
+    return { changes: [], cursor, hasMore: false, reset: true };
+  }
+
+  const page = await listChanges(deps.db, userId, since, limit);
+  return { changes: page.rows, cursor, hasMore: page.hasMore, reset: false };
+}
+
+/**
+ * Builds the full state a device pulls when it cannot resume from a cursor.
+ * Only the caller's own live rows are included; soft-deleted entities are
+ * represented by the change log instead.
+ */
+export async function buildSnapshot(deps: AppDeps, userId: string): Promise<SyncSnapshot> {
+  const cursor = await maxRevision(deps.db);
+
+  const progressRows = await deps.db
+    .select()
+    .from(readingProgress)
+    .where(eq(readingProgress.userId, userId))
+    .orderBy(desc(readingProgress.updatedAt));
+
+  const annotationRows = await deps.db
+    .select()
+    .from(annotations)
+    .where(and(eq(annotations.userId, userId), isNull(annotations.deletedAt)))
+    .orderBy(desc(annotations.updatedAt));
+
+  const bookmarkRows = await deps.db
+    .select()
+    .from(bookmarks)
+    .where(and(eq(bookmarks.userId, userId), isNull(bookmarks.deletedAt)))
+    .orderBy(desc(bookmarks.createdAt));
+
+  const settings = await readUserSettings(deps.db, userId);
+
+  return {
+    cursor,
+    progress: progressRows.map((row) =>
+      progressChangePayload(toProgressDto(row), row.clientUpdatedAt ?? row.updatedAt),
+    ),
+    annotations: annotationRows.map((row) =>
+      annotationChangePayload(toAnnotationDto(row), row.clientUpdatedAt ?? row.updatedAt),
+    ),
+    bookmarks: bookmarkRows.map((row) =>
+      bookmarkChangePayload(toBookmarkDto(row), row.clientUpdatedAt ?? row.updatedAt),
+    ),
+    settings: settings
+      ? settingsChangePayload(
+          settings.payload,
+          settings.clientUpdatedAt,
+          settings.clientUpdatedAt,
+        )
+      : null,
+  };
 }
