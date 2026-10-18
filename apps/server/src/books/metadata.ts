@@ -27,6 +27,53 @@ type XmlRecord = Record<string, unknown>;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
 
+/** Maximum total decompressed size accepted for one EPUB upload. */
+export const MAX_EPUB_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
+
+/** Maximum bytes read for container.xml and the package document. */
+export const MAX_EPUB_XML_BYTES = 10 * 1024 * 1024;
+
+/** Maximum bytes read for an EPUB cover image. */
+export const MAX_EPUB_COVER_BYTES = 20 * 1024 * 1024;
+
+/** Raised when a compressed EPUB would expand past the configured limits. */
+class EpubSizeLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EpubSizeLimitError';
+  }
+}
+
+/** The part of a zip entry the size guards need; kept narrow for unit tests. */
+export interface SizedEntry {
+  header: { size: number };
+}
+
+/**
+ * Rejects an archive whose declared uncompressed entry sizes exceed the
+ * upload limit. Runs on central-directory headers, before any entry is
+ * decompressed, so a small zip bomb is refused without allocating its output.
+ */
+export function assertZipWithinLimit(
+  entries: readonly SizedEntry[],
+  maxBytes: number = MAX_EPUB_UNCOMPRESSED_BYTES,
+): void {
+  let total = 0;
+  for (const entry of entries) {
+    total += entry.header.size;
+    if (total > maxBytes) {
+      throw new EpubSizeLimitError('EPUB uncompressed size exceeds the limit');
+    }
+  }
+}
+
+/** Rejects a single entry whose declared uncompressed size exceeds its read cap. */
+export function assertEntryWithinLimit(entry: SizedEntry, maxBytes: number): void {
+  if (entry.header.size > maxBytes) {
+    throw new EpubSizeLimitError('EPUB entry exceeds the size limit');
+  }
+}
+
 /** Parsing options that keep attributes addressable and avoid coercing text to numbers. */
 const XML_OPTIONS = {
   ignoreAttributes: false,
@@ -112,7 +159,11 @@ function coverFromData(data: Buffer): ExtractedCover | undefined {
 }
 
 /** Finds a zip entry, tolerating case and URL-encoding differences in package paths. */
-function readZipEntry(zip: AdmZip, entryPath: string): Buffer | undefined {
+function readZipEntry(
+  zip: AdmZip,
+  entryPath: string,
+  maxBytes: number,
+): Buffer | undefined {
   const candidates = [entryPath];
   try {
     const decoded = decodeURIComponent(entryPath);
@@ -126,6 +177,7 @@ function readZipEntry(zip: AdmZip, entryPath: string): Buffer | undefined {
   for (const candidate of candidates) {
     const entry = zip.getEntry(candidate);
     if (entry) {
+      assertEntryWithinLimit(entry, maxBytes);
       return entry.getData();
     }
   }
@@ -134,7 +186,11 @@ function readZipEntry(zip: AdmZip, entryPath: string): Buffer | undefined {
   const match = zip
     .getEntries()
     .find((entry) => lowerCandidates.has(entry.entryName.toLowerCase()));
-  return match?.getData();
+  if (!match) {
+    return undefined;
+  }
+  assertEntryWithinLimit(match, maxBytes);
+  return match.getData();
 }
 
 function resolvePackagePath(opfPath: string, href: string): string {
@@ -184,14 +240,17 @@ function findCoverEntry(zip: AdmZip, opfPath: string, opf: XmlRecord): Extracted
     return undefined;
   }
 
-  const data = readZipEntry(zip, resolvePackagePath(opfPath, href));
+  const data = readZipEntry(zip, resolvePackagePath(opfPath, href), MAX_EPUB_COVER_BYTES);
   return data ? coverFromData(data) : undefined;
 }
 
 function extractEpub(buffer: Buffer): ExtractedMetadata {
   const zip = new AdmZip(buffer);
 
-  const containerXml = readZipEntry(zip, 'META-INF/container.xml');
+  // Check declared sizes before decompressing anything.
+  assertZipWithinLimit(zip.getEntries());
+
+  const containerXml = readZipEntry(zip, 'META-INF/container.xml', MAX_EPUB_XML_BYTES);
   if (!containerXml) {
     throw new Error('EPUB container.xml is missing');
   }
@@ -204,7 +263,7 @@ function extractEpub(buffer: Buffer): ExtractedMetadata {
     throw new Error('EPUB container.xml has no rootfile');
   }
 
-  const opfXml = readZipEntry(zip, opfPath);
+  const opfXml = readZipEntry(zip, opfPath, MAX_EPUB_XML_BYTES);
   if (!opfXml) {
     throw new Error('EPUB package document is missing');
   }

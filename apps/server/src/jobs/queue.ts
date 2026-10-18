@@ -1,7 +1,7 @@
-import { and, asc, eq, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type { Clock } from '../app';
 import type { Database } from '../db/client';
-import { jobs } from '../db/schema';
+import { jobs, type JobStatus } from '../db/schema';
 import { jobPayload, type ClaimedJob, type Job, type JobQueue } from './types';
 
 /** First retry delay; each further attempt doubles it. */
@@ -42,10 +42,17 @@ export class PostgresJobQueue implements JobQueue {
   async claimNext(): Promise<ClaimedJob | null> {
     const now = this.clock.now();
     return this.db.transaction(async (tx) => {
-      // Reclaim jobs whose worker died while holding the lease.
+      // Reclaim jobs whose worker died while holding the lease. A crash is an
+      // attempt: jobs that keep killing their worker stop retrying forever.
       await tx
         .update(jobs)
-        .set({ status: 'pending', lockedAt: null, updatedAt: now })
+        .set({
+          attempts: sql`${jobs.attempts} + 1`,
+          status: sql<JobStatus>`case when ${jobs.attempts} + 1 >= ${jobs.maxAttempts} then 'failed' else 'pending' end`,
+          lastError: sql<string>`case when ${jobs.attempts} + 1 >= ${jobs.maxAttempts} then 'Job lease expired too many times' else ${jobs.lastError} end`,
+          lockedAt: null,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(jobs.status, 'running'),

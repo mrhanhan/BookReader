@@ -1,7 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-import { extractMetadata } from '../src/books/metadata';
+import {
+  MAX_EPUB_UNCOMPRESSED_BYTES,
+  MAX_EPUB_XML_BYTES,
+  assertEntryWithinLimit,
+  assertZipWithinLimit,
+  extractMetadata,
+} from '../src/books/metadata';
 import { books, type JobType } from '../src/db/schema';
 import type { JobQueue } from '../src/jobs/types';
 import { runNextJob } from '../src/jobs/worker';
@@ -82,6 +88,22 @@ it('keeps a manually edited title and still stores the extracted cover', async (
   expect(row!.metadataStatus).toBe('done');
   expect(row!.coverKey).toBe(`covers/${book.id}.png`);
   expect(await fakeStorage.head(row!.coverKey!)).not.toBeNull();
+});
+
+it('rejects EPUB archives whose declared sizes exceed the limits', () => {
+  const sizedEntry = (size: number) => ({ header: { size } });
+
+  expect(() => assertZipWithinLimit([sizedEntry(MAX_EPUB_UNCOMPRESSED_BYTES)])).not.toThrow();
+  expect(() =>
+    assertZipWithinLimit([sizedEntry(MAX_EPUB_UNCOMPRESSED_BYTES), sizedEntry(1)]),
+  ).toThrow('EPUB uncompressed size exceeds the limit');
+
+  expect(() =>
+    assertEntryWithinLimit(sizedEntry(MAX_EPUB_XML_BYTES), MAX_EPUB_XML_BYTES),
+  ).not.toThrow();
+  expect(() =>
+    assertEntryWithinLimit(sizedEntry(MAX_EPUB_XML_BYTES + 1), MAX_EPUB_XML_BYTES),
+  ).toThrow('EPUB entry exceeds the size limit');
 });
 
 it('fails a job whose type this worker does not know', async () => {
