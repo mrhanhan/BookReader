@@ -35,6 +35,14 @@ export interface CreateAdminInput {
   displayName: string;
 }
 
+/**
+ * Rotated tokens plus the session owner. Routes use the username to clear only
+ * that user's rate-limit key and strip it before sending the response.
+ */
+export interface RefreshedSession extends AuthTokens {
+  username: string;
+}
+
 /** Serialises concurrent admin bootstraps so only one account can be created. */
 const CREATE_ADMIN_LOCK_ID = 741_852_964;
 
@@ -208,7 +216,10 @@ export async function loginUser(
  * Rotates a refresh token. The update is conditional on the old hash, so two
  * concurrent uses of the same token cannot both succeed.
  */
-export async function refreshSession(deps: AppDeps, refreshToken: string): Promise<AuthTokens> {
+export async function refreshSession(
+  deps: AppDeps,
+  refreshToken: string,
+): Promise<RefreshedSession> {
   const oldHash = hashRefreshToken(refreshToken);
   const now = deps.clock.now();
 
@@ -262,7 +273,7 @@ export async function refreshSession(deps: AppDeps, refreshToken: string): Promi
     { sub: session.userId, role: session.role },
     deps.config.jwtSecret,
   );
-  return tokensFor(accessToken, next.token);
+  return { ...tokensFor(accessToken, next.token), username: session.username };
 }
 
 /** Revokes the device session owning a refresh token. Unknown tokens are a no-op. */

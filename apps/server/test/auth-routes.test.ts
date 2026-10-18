@@ -7,7 +7,9 @@ import {
   buildTestApp,
   buildTestDeps,
   createInvite,
+  loginAs,
   resetDb,
+  seedUser,
   setUserInactive,
   testDb,
 } from './helpers';
@@ -81,6 +83,47 @@ it('rate-limits repeated failed logins', async () => {
   const limited = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'reader', password: 'wrong-password' } });
   expect(limited.statusCode).toBe(429);
   expect(limited.json().error.code).toBe('RATE_LIMITED');
+});
+
+it('keys login rate limiting on the forwarded client IP when one proxy hop is trusted', async () => {
+  await resetDb();
+  const app = await buildTestApp({ loginRateLimit: 1, trustProxy: 1 });
+  const code = await createInvite(app);
+  await app.inject({ method: 'POST', url: '/api/auth/register', payload: { inviteCode: code, username: 'reader', password: 'a-long-password', displayName: '读者' } });
+
+  const login = (clientIp: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'x-forwarded-for': clientIp },
+      payload: { username: 'reader', password: 'wrong-password' },
+    });
+
+  expect((await login('203.0.113.9')).statusCode).toBe(401);
+  expect((await login('203.0.113.9')).statusCode).toBe(429);
+  expect((await login('203.0.113.10')).statusCode).toBe(401);
+});
+
+it("does not clear another user's failure counter on refresh", async () => {
+  await resetDb();
+  const app = await buildTestApp({ loginRateLimit: 2 });
+  const alice = await seedUser('member', 'alice');
+  const bob = await seedUser('member', 'bob');
+
+  const failed = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: alice.username, password: 'wrong-password' } });
+  expect(failed.statusCode).toBe(401);
+
+  const bobTokens = await loginAs(app, bob);
+  const refreshed = await app.inject({ method: 'POST', url: '/api/auth/refresh', payload: { refreshToken: bobTokens.refreshToken } });
+  expect(refreshed.statusCode).toBe(200);
+
+  const secondFailure = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: alice.username, password: 'wrong-password' } });
+  expect(secondFailure.statusCode).toBe(401);
+  const limited = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: alice.username, password: 'wrong-password' } });
+  expect(limited.statusCode).toBe(429);
+
+  const secondRefresh = await app.inject({ method: 'POST', url: '/api/auth/refresh', payload: { refreshToken: refreshed.json().refreshToken } });
+  expect(secondRefresh.statusCode).toBe(200);
 });
 
 describe('createAdmin', () => {

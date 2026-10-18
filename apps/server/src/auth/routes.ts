@@ -10,6 +10,12 @@ import { loginUser, logoutSession, refreshSession, registerUser } from './servic
 /** Fixed window in which failed logins are counted. */
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
+/** How often expired failure entries are swept. */
+const RATE_LIMIT_SWEEP_MS = 60_000;
+
+/** Hard cap on tracked keys so a spray of usernames cannot exhaust memory. */
+const RATE_LIMIT_MAX_ENTRIES = 10_000;
+
 interface FailureWindow {
   count: number;
   resetAt: number;
@@ -18,11 +24,20 @@ interface FailureWindow {
 /** Counts failed logins per `${ip}:${username}` in this single server process. */
 class LoginRateLimiter {
   private readonly failures = new Map<string, FailureWindow>();
+  private readonly sweepTimer: NodeJS.Timeout;
 
   constructor(
     private readonly limit: number,
     private readonly clock: Clock,
-  ) {}
+  ) {
+    this.sweepTimer = setInterval(() => this.sweep(), RATE_LIMIT_SWEEP_MS);
+    this.sweepTimer.unref();
+  }
+
+  /** Stops the sweep timer when the app closes. */
+  dispose(): void {
+    clearInterval(this.sweepTimer);
+  }
 
   /** Throws 429 once the window has reached the configured failure limit. */
   assertAllowed(key: string): void {
@@ -44,18 +59,43 @@ class LoginRateLimiter {
     const entry = this.failures.get(key);
     if (!entry || entry.resetAt <= now) {
       this.failures.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-      return;
+    } else {
+      entry.count += 1;
     }
-    entry.count += 1;
+    // Keep memory bounded between sweeps as well.
+    if (this.failures.size > RATE_LIMIT_MAX_ENTRIES) {
+      this.sweep();
+    }
   }
 
   clear(key: string): void {
     this.failures.delete(key);
   }
 
-  /** A successful refresh proves valid credentials, so all counters reset. */
-  clearAll(): void {
-    this.failures.clear();
+  /** Drops expired entries, then the oldest insertion-order entries over the cap. */
+  private sweep(): void {
+    const now = this.now();
+    for (const [key, entry] of this.failures) {
+      if (entry.resetAt <= now) {
+        this.failures.delete(key);
+      }
+    }
+    this.evictOverflow();
+  }
+
+  private evictOverflow(): void {
+    const overflow = this.failures.size - RATE_LIMIT_MAX_ENTRIES;
+    if (overflow <= 0) {
+      return;
+    }
+    let dropped = 0;
+    for (const key of this.failures.keys()) {
+      if (dropped >= overflow) {
+        break;
+      }
+      this.failures.delete(key);
+      dropped += 1;
+    }
   }
 
   private now(): number {
@@ -75,6 +115,9 @@ function bytesOf(value: string | number | null | undefined): number {
 /** Registers every auth route on the application. */
 export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
   const limiter = new LoginRateLimiter(deps.config.loginRateLimit, deps.clock);
+  app.addHook('onClose', () => {
+    limiter.dispose();
+  });
 
   app.post('/api/auth/register', async (request, reply) => {
     const input = registerSchema.parse(request.body);
@@ -106,8 +149,10 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.post('/api/auth/refresh', async (request) => {
     const input = refreshSchema.parse(request.body);
-    const tokens = await refreshSession(deps, input.refreshToken);
-    limiter.clearAll();
+    const { username, ...tokens } = await refreshSession(deps, input.refreshToken);
+    // Clear only the caller's counter; one member must not be able to reset
+    // another member's lockout.
+    limiter.clear(`${request.ip}:${username}`);
     return tokens;
   });
 

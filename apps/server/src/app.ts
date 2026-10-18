@@ -70,6 +70,19 @@ function statusCodeOf(error: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined;
 }
 
+/**
+ * Fastify 5.12 fails closed when `trustProxy` is a number, so express the hop
+ * count as a predicate instead: trust exactly the first `hops` proxies. With
+ * one hop this trusts only the immediate Caddy peer and reads the rightmost
+ * `X-Forwarded-For` entry, which Caddy appends as the real client IP.
+ */
+function trustProxyOption(hops: number | false): false | ((address: string, hop: number) => boolean) {
+  if (hops === false) {
+    return false;
+  }
+  return (_address, hop) => hop < hops;
+}
+
 function validationErrorBody(error: ZodError): ApiErrorBody {
   return {
     error: {
@@ -96,7 +109,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         censor: '[REDACTED]',
       },
     },
-    trustProxy: deps.config.trustProxy,
+    trustProxy: trustProxyOption(deps.config.trustProxy),
     genReqId: () => deps.ids.newId(),
   });
 

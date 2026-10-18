@@ -8,12 +8,12 @@ export interface AppConfig {
   port: number;
   host: string;
   /**
-   * Whether Fastify trusts `X-Forwarded-For` from the reverse proxy. Docker
-   * Compose deployed behind Caddy must set `TRUST_PROXY=true`, otherwise every
-   * request carries Caddy's address and login rate limiting keys on it instead
-   * of the real client IP.
+   * Number of trusted reverse-proxy hops, or `false` when disabled. Docker
+   * Compose deployed behind Caddy must set `TRUST_PROXY=true` (equivalent to
+   * one hop), otherwise every request carries Caddy's address and login rate
+   * limiting keys on it instead of the real client IP.
    */
-  trustProxy: boolean;
+  trustProxy: number | false;
   databaseUrl: string;
   s3: {
     endpoint: string;
@@ -29,13 +29,35 @@ export interface AppConfig {
   corsOrigin: string;
 }
 
+/** Parses `TRUST_PROXY` into a number of trusted proxy hops, or `false`. */
+const trustProxySchema = z
+  .string()
+  .optional()
+  .transform((value, ctx): number | false => {
+    if (value === undefined || value === '' || value === 'false' || value === '0') {
+      return false;
+    }
+    if (value === 'true') {
+      // Fastify treats `true` as trusting every hop, which lets clients spoof
+      // their IP. One proxy hop matches the Caddy deployment.
+      return 1;
+    }
+    const hops = Number(value);
+    if (Number.isInteger(hops) && hops > 0) {
+      return hops;
+    }
+    ctx.addIssue({
+      code: 'custom',
+      message: 'must be "true", "false" or a positive integer number of trusted proxies',
+      input: value,
+    });
+    return z.NEVER;
+  });
+
 const configSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().min(1).default('0.0.0.0'),
-  TRUST_PROXY: z
-    .enum(['true', 'false', '1', '0'])
-    .default('false')
-    .transform((value) => value === 'true' || value === '1'),
+  TRUST_PROXY: trustProxySchema,
   DATABASE_URL: z.string().min(1),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().min(1).default('us-east-1'),
