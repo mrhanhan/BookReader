@@ -1,8 +1,14 @@
 import builtins
+import sys
+import types
 
 import pytest
 
-from bookr_preprocess.ocr import PaddleOcrBackend, parse_paddle_result
+from bookr_preprocess.ocr import (
+    PaddleOcrBackend,
+    _default_decoder,
+    parse_paddle_result,
+)
 
 
 def test_parses_paddle_v2_result_and_normalizes_boxes():
@@ -107,3 +113,132 @@ def test_backend_reports_missing_dependencies(monkeypatch):
     monkeypatch.setattr(builtins, '__import__', fake_import)
     with pytest.raises(RuntimeError, match='OCR dependencies missing'):
         PaddleOcrBackend('ch')
+
+
+def _install_fake_paddle(monkeypatch, paddle_class):
+    """Install fake ``numpy``/``PIL``/``paddleocr`` modules for construction."""
+    pil = types.ModuleType('PIL')
+    pil_image = types.ModuleType('PIL.Image')
+    pil.Image = pil_image
+    monkeypatch.setitem(sys.modules, 'numpy', types.ModuleType('numpy'))
+    monkeypatch.setitem(sys.modules, 'PIL', pil)
+    monkeypatch.setitem(sys.modules, 'PIL.Image', pil_image)
+    paddleocr = types.ModuleType('paddleocr')
+    paddleocr.PaddleOCR = paddle_class
+    monkeypatch.setitem(sys.modules, 'paddleocr', paddleocr)
+
+
+def test_builds_paddle_v2_engine_with_legacy_arguments(monkeypatch):
+    calls = []
+
+    class FakePaddleOCR:
+        def __init__(self, use_angle_cls=False, lang=None, show_log=True):
+            calls.append(
+                {
+                    'use_angle_cls': use_angle_cls,
+                    'lang': lang,
+                    'show_log': show_log,
+                }
+            )
+
+    _install_fake_paddle(monkeypatch, FakePaddleOCR)
+    PaddleOcrBackend('ch')
+    assert calls == [
+        {'use_angle_cls': True, 'lang': 'ch', 'show_log': False}
+    ]
+
+
+def test_builds_paddle_v3_engine_with_textline_orientation(monkeypatch):
+    calls = []
+
+    class FakePaddleOCR:
+        def __init__(self, lang=None, use_textline_orientation=False, **kwargs):
+            calls.append(
+                {
+                    'lang': lang,
+                    'use_textline_orientation': use_textline_orientation,
+                    **kwargs,
+                }
+            )
+
+    _install_fake_paddle(monkeypatch, FakePaddleOCR)
+    PaddleOcrBackend('ch')
+    assert calls == [{'lang': 'ch', 'use_textline_orientation': True}]
+    assert 'show_log' not in calls[0]
+
+
+@pytest.mark.parametrize('error', [ValueError('bad config'), OSError('model gone')])
+def test_engine_construction_failure_becomes_runtime_error(monkeypatch, error):
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            raise error
+
+    _install_fake_paddle(monkeypatch, FakePaddleOCR)
+    with pytest.raises(
+        RuntimeError, match=f'OCR engine unavailable: {type(error).__name__}'
+    ):
+        PaddleOcrBackend('ch')
+
+
+def test_backend_dispatches_paddle_v3_to_predict():
+    class Engine:
+        def __init__(self, use_textline_orientation=True):
+            self.calls = []
+
+        def predict(self, image):
+            self.calls.append(image)
+            return [{
+                'rec_texts': ['v3'],
+                'rec_scores': [0.9],
+                'rec_polys': [[[0, 0], [10, 0], [10, 10], [0, 10]]],
+            }]
+
+        def ocr(self, *args, **kwargs):
+            raise AssertionError('the 2.x ocr() API must not be used')
+
+    engine = Engine()
+    image = object()
+    backend = PaddleOcrBackend(
+        'ch', engine=engine, decoder=lambda png: (image, 10, 10)
+    )
+    assert [line.text for line in backend.recognize(b'png', 'ch')] == ['v3']
+    assert engine.calls == [image]
+
+
+def test_recognize_rejects_language_change():
+    class Engine:
+        def ocr(self, image, cls=True):
+            return []
+
+    backend = PaddleOcrBackend(
+        'ch', engine=Engine(), decoder=lambda png: (object(), 10, 10)
+    )
+    with pytest.raises(ValueError, match='OCR language cannot change'):
+        backend.recognize(b'png', 'en')
+
+
+def test_parses_dict_result_with_numpy_arrays():
+    np = pytest.importorskip('numpy')
+    raw = [{
+        'rec_texts': ['numpy'],
+        'rec_scores': np.array([0.75]),
+        'rec_polys': np.array([[[0, 0], [10, 0], [10, 10], [0, 10]]]),
+    }]
+    lines = parse_paddle_result(raw, width=10, height=10)
+    assert lines[0].text == 'numpy'
+    assert lines[0].confidence == 0.75
+    assert (lines[0].x1, lines[0].y1) == (1.0, 1.0)
+
+
+def test_default_decoder_returns_bgr_pixels():
+    pytest.importorskip('numpy')
+    Image = pytest.importorskip('PIL.Image')
+    from io import BytesIO
+
+    buffer = BytesIO()
+    Image.new('RGB', (2, 1), (10, 20, 30)).save(buffer, format='PNG')
+    pixels, width, height = _default_decoder(buffer.getvalue())
+    assert (width, height) == (2, 1)
+    assert pixels.shape == (1, 2, 3)
+    assert pixels[0, 0].tolist() == [30, 20, 10]
+

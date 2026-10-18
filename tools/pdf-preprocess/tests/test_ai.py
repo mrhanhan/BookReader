@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from bookr_preprocess.ai import DeepSeekCorrector
+from bookr_preprocess.ai import SYSTEM_PROMPT, DeepSeekCorrector
 
 
 def test_deepseek_request_shape_and_content():
@@ -30,7 +30,9 @@ def test_deepseek_request_shape_and_content():
     assert seen['body']['model'] == 'deepseek-chat'
     assert seen['body']['temperature'] == 0.2
     assert seen['body']['stream'] is False
+    assert seen['body']['messages'][0]['content'] == SYSTEM_PROMPT
     assert 'OCR' in seen['body']['messages'][0]['content']
+    assert seen['body']['max_tokens'] >= 256
     assert seen['body']['messages'][0]['role'] == 'system'
     assert seen['body']['messages'][1]['content'] == '原文'
 

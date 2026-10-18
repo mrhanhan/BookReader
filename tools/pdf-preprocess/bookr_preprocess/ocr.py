@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from io import BytesIO
 from typing import Callable, Iterator
 
 from .model import OcrLine
 
 _MISSING_DEPENDENCIES = "OCR dependencies missing: pip install -e '.[ocr]'"
+_ENGINE_ERRORS = (ImportError, OSError, TypeError, ValueError, RuntimeError)
 
 Decoder = Callable[[bytes], tuple[object, int, int]]
 
@@ -146,17 +148,44 @@ def _default_decoder(png: bytes) -> tuple[object, int, int]:
 
     with Image.open(BytesIO(png)) as image:
         rgb = image.convert("RGB")
-        return np.asarray(rgb), rgb.width, rgb.height
+        # PaddleOCR follows the cv2 convention and expects BGR channel order.
+        pixels = np.ascontiguousarray(np.asarray(rgb)[:, :, ::-1])
+        return pixels, rgb.width, rgb.height
 
 
-def _build_engine(lang: str) -> object:
+def _is_paddle_v3(engine_or_class: object) -> bool:
+    """True when the engine exposes the PaddleOCR 3.x constructor.
+
+    Signature inspection works for real classes and for injected fakes, so
+    recognition dispatch is decided once, at construction time.
+    """
+    target = (
+        engine_or_class
+        if inspect.isclass(engine_or_class)
+        else type(engine_or_class)
+    )
+    try:
+        parameters = inspect.signature(target.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+    return "use_textline_orientation" in parameters
+
+
+def _build_engine(lang: str) -> tuple[object, bool]:
+    """Construct the PaddleOCR engine and report whether it is the 3.x API."""
     try:
         import numpy  # noqa: F401 - required by the default decoder
         from PIL import Image  # noqa: F401 - required by the default decoder
         from paddleocr import PaddleOCR
     except ImportError as exc:
         raise RuntimeError(_MISSING_DEPENDENCIES) from exc
-    return PaddleOCR(use_angle_cls=True, lang=lang, show_log=False)
+
+    try:
+        if _is_paddle_v3(PaddleOCR):
+            return PaddleOCR(lang=lang, use_textline_orientation=True), True
+        return PaddleOCR(use_angle_cls=True, lang=lang, show_log=False), False
+    except _ENGINE_ERRORS as exc:
+        raise RuntimeError(f"OCR engine unavailable: {type(exc).__name__}") from exc
 
 
 class PaddleOcrBackend:
@@ -164,6 +193,8 @@ class PaddleOcrBackend:
 
     The engine and the PNG decoder are injectable so tests (and callers with
     an alternate pipeline) do not need the optional dependencies installed.
+    PaddleOCR 2.x builds are driven through ``ocr(image, cls=True)``; 3.x
+    builds through ``predict(image)``; the branch is fixed in ``__init__``.
     """
 
     def __init__(
@@ -173,15 +204,24 @@ class PaddleOcrBackend:
         decoder: Decoder | None = None,
     ) -> None:
         self.lang = lang
-        self._engine = engine if engine is not None else _build_engine(lang)
+        if engine is not None:
+            self._engine = engine
+            self._use_predict = _is_paddle_v3(engine)
+        else:
+            self._engine, self._use_predict = _build_engine(lang)
         self._decoder = decoder if decoder is not None else _default_decoder
 
     def recognize(self, png: bytes, lang: str) -> list[OcrLine]:
-        """Recognize one PNG page; ``lang`` comes from the shared protocol.
+        """Recognize one PNG page.
 
-        The engine is created with the language passed to ``__init__`` (the
-        CLI always passes the same value to both).
+        The engine language is fixed at construction; the shared protocol
+        always passes the same value the CLI configured.
         """
+        if lang != self.lang:
+            raise ValueError("OCR language cannot change after initialization")
         image, width, height = self._decoder(png)
-        raw = self._engine.ocr(image, cls=True)
+        if self._use_predict:
+            raw = self._engine.predict(image)
+        else:
+            raw = self._engine.ocr(image, cls=True)
         return parse_paddle_result(raw, width, height)

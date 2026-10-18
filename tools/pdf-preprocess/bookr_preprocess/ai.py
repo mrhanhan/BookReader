@@ -57,6 +57,9 @@ class DeepSeekCorrector:
             ],
             "temperature": 0.2,
             "stream": False,
+            # Give the model room to reflow and fix the text without letting
+            # a runaway completion inflate the bill.
+            "max_tokens": max(256, 2 * utf16_len(text)),
         }
         request = urllib.request.Request(
             self._endpoint,
