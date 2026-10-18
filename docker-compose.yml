@@ -59,6 +59,9 @@ services:
       TRUST_PROXY: '1'
       DATABASE_URL: postgres://bookr:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/bookr
       S3_ENDPOINT: http://minio:9000
+      # Presigned upload/cover URLs are followed by the browser, so they must
+      # use the host-published MinIO port instead of the container hostname.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9200}
       S3_REGION: us-east-1
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}

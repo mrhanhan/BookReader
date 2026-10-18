@@ -18,6 +18,18 @@ describe('loadConfig S3 credentials', () => {
   });
 });
 
+describe('loadConfig S3 public endpoint', () => {
+  it('defaults presigned URLs to the internal endpoint', () => {
+    expect(loadConfig(BASE_ENV).s3.publicEndpoint).toBe('http://localhost:9000');
+  });
+
+  it('accepts a browser-reachable endpoint for presigned URLs', () => {
+    const config = loadConfig({ ...BASE_ENV, S3_PUBLIC_ENDPOINT: 'http://localhost:9200' });
+    expect(config.s3.publicEndpoint).toBe('http://localhost:9200');
+    expect(config.s3.endpoint).toBe('http://localhost:9000');
+  });
+});
+
 describe('loadConfig TRUST_PROXY', () => {
   it('defaults to false', () => {
     expect(loadConfig(BASE_ENV).trustProxy).toBe(false);

@@ -32,9 +32,9 @@ function toBuffer(body: unknown): Buffer {
   throw new Error('S3 response body is not a byte stream');
 }
 
-function createClient(config: AppConfig['s3']): S3Client {
+function createClient(config: AppConfig['s3'], endpoint: string): S3Client {
   return new S3Client({
-    endpoint: config.endpoint,
+    endpoint,
     region: config.region,
     forcePathStyle: true,
     credentials: {
@@ -59,7 +59,7 @@ function isAlreadyOwned(error: unknown): boolean {
  * means the deployment is ready; every other failure is fatal at startup.
  */
 export async function ensureBucket(config: AppConfig['s3']): Promise<void> {
-  const client = createClient(config);
+  const client = createClient(config, config.endpoint);
   try {
     await client.send(new CreateBucketCommand({ Bucket: config.bucket }));
   } catch (error) {
@@ -74,16 +74,22 @@ export async function ensureBucket(config: AppConfig['s3']): Promise<void> {
 /** S3-compatible object storage; `forcePathStyle` targets MinIO. */
 export class S3Storage implements StorageService {
   private readonly client: S3Client;
+  /** Signs URLs against the endpoint browsers can reach; may be the same client. */
+  private readonly presignClient: S3Client;
   private readonly bucket: string;
 
   constructor(config: AppConfig['s3']) {
     this.bucket = config.bucket;
-    this.client = createClient(config);
+    this.client = createClient(config, config.endpoint);
+    this.presignClient =
+      config.publicEndpoint === config.endpoint
+        ? this.client
+        : createClient(config, config.publicEndpoint);
   }
 
   async presignPut(key: string, contentType: string, expiresInSeconds: number): Promise<string> {
     return getSignedUrl(
-      this.client,
+      this.presignClient,
       new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: contentType }),
       { expiresIn: expiresInSeconds },
     );
@@ -91,7 +97,7 @@ export class S3Storage implements StorageService {
 
   async presignGet(key: string, expiresInSeconds: number): Promise<string> {
     return getSignedUrl(
-      this.client,
+      this.presignClient,
       new GetObjectCommand({ Bucket: this.bucket, Key: key }),
       { expiresIn: expiresInSeconds },
     );

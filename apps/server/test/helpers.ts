@@ -94,6 +94,7 @@ const DEFAULT_CONFIG: AppConfig = {
   databaseUrl: TEST_DATABASE_URL,
   s3: {
     endpoint: 'http://localhost:9000',
+    publicEndpoint: 'http://localhost:9000',
     region: 'us-east-1',
     accessKey: 'test-access-key',
     secretKey: 'test-secret-key',

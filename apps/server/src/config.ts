@@ -17,6 +17,11 @@ export interface AppConfig {
   databaseUrl: string;
   s3: {
     endpoint: string;
+    /**
+     * Endpoint baked into presigned URLs. Browsers follow these directly, so
+     * behind Docker they cannot use the container-internal `endpoint`.
+     */
+    publicEndpoint: string;
     region: string;
     accessKey: string;
     secretKey: string;
@@ -60,6 +65,7 @@ const configSchema = z.object({
   TRUST_PROXY: trustProxySchema,
   DATABASE_URL: z.string().min(1),
   S3_ENDPOINT: z.string().min(1),
+  S3_PUBLIC_ENDPOINT: z.string().min(1).optional(),
   S3_REGION: z.string().min(1).default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),
   S3_SECRET_KEY: z.string().min(1),
@@ -110,6 +116,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseUrl: parsed.DATABASE_URL,
     s3: {
       endpoint: parsed.S3_ENDPOINT,
+      publicEndpoint: parsed.S3_PUBLIC_ENDPOINT ?? parsed.S3_ENDPOINT,
       region: parsed.S3_REGION,
       accessKey: parsed.S3_ACCESS_KEY,
       secretKey: parsed.S3_SECRET_KEY,

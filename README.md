@@ -287,9 +287,10 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | `MEMBER_UPLOAD_QUOTA_BYTES` | 否 | 成员上传配额，默认 20 GiB |
 | `LOGIN_RATE_LIMIT` | 否 | 每个 IP 的登录尝试上限，默认 10 |
 | `CORS_ORIGIN` | 否 | 浏览器访问源，默认 `http://localhost:8180` |
+| `S3_PUBLIC_ENDPOINT` | 否 | 预签名上传/封面 URL 中供浏览器访问的 MinIO 地址；compose 默认 `http://localhost:9200`，跨机访问时改为公网地址 |
 | `LOG_LEVEL` | 否 | `debug`/`info`/`warn`/`error`，默认 `info` |
 
-`DATABASE_URL`、`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`TRUST_PROXY` 由 compose 固定为容器网络内的值，无需在 `.env` 覆盖。
+`DATABASE_URL`、`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`TRUST_PROXY` 由 compose 固定为容器网络内的值，无需在 `.env` 覆盖；`S3_PUBLIC_ENDPOINT` 必须是用户浏览器能解析的地址。
 
 ## 11. 故障排查
 
