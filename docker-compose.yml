@@ -27,6 +27,10 @@ services:
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+      # Browsers fetch presigned upload/cover/file URLs directly from MinIO,
+      # so the S3 API must answer CORS preflights. Restrict this when the
+      # public MinIO endpoint is exposed beyond the app origins.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-*}
     ports:
       # Host ports differ from the defaults so they do not clash with other
       # MinIO instances on the machine.
@@ -70,7 +74,7 @@ services:
       LIBRARY_QUOTA_BYTES: ${LIBRARY_QUOTA_BYTES:-85899345920}
       MEMBER_UPLOAD_QUOTA_BYTES: ${MEMBER_UPLOAD_QUOTA_BYTES:-21474836480}
       LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-10}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8180}
+      CORS_ORIGIN: '${CORS_ORIGIN:-http://localhost:8180,https://tauri.localhost,http://tauri.localhost,https://localhost,capacitor://localhost}'
       LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:
       test:
@@ -89,6 +93,10 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        # Empty for the same-origin web deployment; set it only when the same
+        # bundle is served to native shells (Tauri/Capacitor).
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
     restart: unless-stopped
     depends_on:
       server:

@@ -267,7 +267,7 @@ curl -fsS http://localhost:8180/healthz
    }
    ```
 3. 在 `docker-compose.yml` 中把 `web` 的端口改为 `'80:80'` 与 `'443:443'`；`caddy_data` 卷已挂载，证书会持久化。
-4. 更新 `.env` 的 `CORS_ORIGIN=https://bookr.example.com`，然后：
+4. 更新 `.env` 的 `CORS_ORIGIN=https://bookr.example.com,https://tauri.localhost,http://tauri.localhost,https://localhost,capacitor://localhost`（保留原生端源，否则桌面端/Android 端会被 CORS 拒绝），然后：
    ```bash
    docker compose up -d --build web
    docker compose up -d server
@@ -286,7 +286,9 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | `LIBRARY_QUOTA_BYTES` | 否 | 共享库总配额，默认 80 GiB |
 | `MEMBER_UPLOAD_QUOTA_BYTES` | 否 | 成员上传配额，默认 20 GiB |
 | `LOGIN_RATE_LIMIT` | 否 | 每个 IP 的登录尝试上限，默认 10 |
-| `CORS_ORIGIN` | 否 | 浏览器访问源，默认 `http://localhost:8180` |
+| `CORS_ORIGIN` | 否 | 逗号分隔的允许源列表；默认 `http://localhost:8180,https://tauri.localhost,http://tauri.localhost,https://localhost,capacitor://localhost` |
+| `VITE_API_BASE_URL` | 否 | 构建期 API 源。Web 同源部署留空；Tauri/Android 打包时设为 `https://your-domain`，并同时加入 `CORS_ORIGIN` |
+| `MINIO_API_CORS_ALLOW_ORIGIN` | 否 | MinIO S3 API 的 CORS 允许源，默认 `*`（浏览器需直接读取预签名书籍文件） |
 | `S3_PUBLIC_ENDPOINT` | 否 | 预签名上传/封面 URL 中供浏览器访问的 MinIO 地址；compose 默认 `http://localhost:9200`，跨机访问时改为公网地址 |
 | `LOG_LEVEL` | 否 | `debug`/`info`/`warn`/`error`，默认 `info` |
 
@@ -319,3 +321,64 @@ pnpm --filter @bookr/web e2e
 - 前提：`docker compose up -d` 全部服务 healthy，且已存在管理员；默认使用 `admin`，可通过 `E2E_ADMIN_USERNAME` / `E2E_ADMIN_PASSWORD` 指定。
 - 测试会**创建真实用户与邀请码、上传图书并软删除图书**（结束时留在回收站），还会清理此前 E2E 遗留的在架图书。请只对它使用一次性测试栈。
 - 默认只允许 `localhost` / `127.0.0.1`；指向其他主机时测试会拒绝启动。仅在目标确实是可丢弃的测试环境时才设置 `E2E_ALLOW_REMOTE=1`。**永远不要对生产环境运行 E2E，也不要为生产设置该变量。**
+
+
+## 13. 阅读器功能
+
+阅读器位于共享 Web 构建 `apps/web`，桌面端与 Android 端加载同一份产物，因此三端功能一致：
+
+- **PDF**：原文模式渲染（pdf.js），带文本层，可直接选中文字；高亮与批注、笔记、书签、
+  页面裁剪（crop）、目录（TOC）跳转；页码定位与阅读进度自动保存。
+- **EPUB**：分章/滚动阅读，主题切换（纸张、护眼、夜间）、字号与行距调整、目录跳转；
+  文本高亮、批注与书签；阅读进度自动保存。
+- 进度、批注与书签通过 `/api/books/:id/progress`、`/api/books/:id/annotations`、
+  `/api/books/:id/bookmarks` 保存；离线/本地优先同步队列由 Plan 4 接入，DTO 与 locator
+  契约不变。
+- 书架支持格式/状态/分类筛选、搜索、排序、上传、编辑、封面上传、回收站恢复；
+  EPUB/PDF 文件通过 MinIO 预签名 URL 直接读取。
+
+## 14. 桌面端（Tauri 2）
+
+源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
+
+前置条件：Node 22、pnpm 12、Rust stable；Windows 需安装 Visual Studio Build Tools 的
+「使用 C++ 的桌面开发」工作负载（MSVC 链接器），WebView2 在 Windows 10/11 自带。
+
+```bash
+pnpm install
+pnpm --filter @bookr/desktop dev      # 本地开发（Vite + Tauri 窗口）
+pnpm --filter @bookr/desktop check    # cargo check
+
+# 打包：必须把绝对 API 源烘焙进 Web 产物
+VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
+```
+
+服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`；
+预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
+
+## 15. Android 端（Capacitor 7）
+
+源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
+`apps/mobile/README.md`。
+
+前置条件：**JDK 21**、Android Studio 与 Android SDK（Platform 35 / Build Tools /
+Platform Tools），设置 `ANDROID_HOME`；`cap sync` 不依赖 JDK，但构建 APK 与
+`cap open android` 需要完整环境。
+
+```bash
+VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/web build
+pnpm --filter @bookr/mobile sync      # 复制 Web 产物到 android/
+pnpm --filter @bookr/mobile open      # 用 Android Studio 打开并运行
+```
+
+WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost` 与
+`capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
+预签名文件地址都必须是设备可达的 HTTPS 地址。
+
+## 16. 已知范围
+
+- 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
+  均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
+- 原生端依赖服务端可访问：部署在局域网或本机时，手机/另一台电脑需要能解析并访问
+  `VITE_API_BASE_URL` 与 `S3_PUBLIC_ENDPOINT`。
+- 阅读进度目前走直连 API 保存（Plan 4 替换为本地优先同步）。
