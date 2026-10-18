@@ -17,8 +17,8 @@ export const listBooksQuerySchema = z.object({
   format: bookFormatSchema.optional(),
   status: bookStatusSchema.optional(),
   sort: z.enum(['recent', 'added', 'title']).default('recent'),
-  page: z.number().int().min(1).default(1),
-  pageSize: z.number().int().min(1).max(100).default(24),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(24),
 });
 
 export const updateBookSchema = z.object({

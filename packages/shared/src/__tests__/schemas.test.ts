@@ -17,3 +17,7 @@ it('defaults book list pagination to 24 and caps it at 100', () => {
   expect(listBooksQuerySchema.parse({}).pageSize).toBe(24);
   expect(listBooksQuerySchema.safeParse({ pageSize: 101 }).success).toBe(false);
 });
+it('coerces query-string pagination to numbers', () => {
+  expect(listBooksQuerySchema.parse({ page: '2', pageSize: '50' })).toMatchObject({ page: 2, pageSize: 50 });
+  expect(listBooksQuerySchema.safeParse({ page: 'abc' }).success).toBe(false);
+});
