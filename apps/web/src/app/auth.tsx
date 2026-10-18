@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { MeDto } from '@bookr/shared';
-import { clearTokens, getTokens } from '../api/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { clearTokens, getTokens, setSessionEndedHandler } from '../api/client';
 import { fetchCurrentUser, login as loginRequest, logout as logoutRequest, register as registerRequest } from '../api/auth';
 import type { LoginInput, RegisterInput } from '../api/auth';
 
@@ -16,9 +17,17 @@ export interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<MeDto | null>(null);
   // Only mount in a loading state when a stored session has to be verified.
   const [loading, setLoading] = useState(() => getTokens() !== null);
+
+  useEffect(() => {
+    // A refresh failure ends the session inside the API client; route that
+    // cleanup through this provider's query client rather than a second cache.
+    setSessionEndedHandler(() => queryClient.clear());
+    return () => setSessionEndedHandler(null);
+  }, [queryClient]);
 
   useEffect(() => {
     if (!getTokens()) {
@@ -34,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         if (!cancelled) {
           clearTokens();
+          queryClient.clear();
           setUser(null);
         }
       })
@@ -44,22 +54,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [queryClient]);
 
-  const login = useCallback(async (input: LoginInput) => {
-    const me = await loginRequest(input);
-    setUser(me);
-  }, []);
+  const login = useCallback(
+    async (input: LoginInput) => {
+      const me = await loginRequest(input);
+      // A different account may be signing in on a shared browser.
+      queryClient.clear();
+      setUser(me);
+    },
+    [queryClient],
+  );
 
-  const register = useCallback(async (input: RegisterInput) => {
-    const me = await registerRequest(input);
-    setUser(me);
-  }, []);
+  const register = useCallback(
+    async (input: RegisterInput) => {
+      const me = await registerRequest(input);
+      queryClient.clear();
+      setUser(me);
+    },
+    [queryClient],
+  );
 
   const logout = useCallback(async () => {
     await logoutRequest();
+    queryClient.clear();
     setUser(null);
-  }, []);
+  }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ user, loading, login, register, logout }),

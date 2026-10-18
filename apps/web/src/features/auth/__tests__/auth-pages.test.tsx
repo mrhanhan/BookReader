@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { routes } from '../../../app/router';
+import { setTokens } from '../../../api/client';
 import { renderWithProviders, server } from '../../../../test/setup';
 
 it('redirects an unauthenticated visitor from / to /login', async () => {
@@ -39,4 +40,23 @@ it('localizes an English unauthorized message from the server', async () => {
 
   expect(await screen.findByText('用户名或密码错误')).toBeInTheDocument();
   expect(screen.queryByText('Authentication required')).not.toBeInTheDocument();
+});
+
+it('clears cached queries when logging out', async () => {
+  setTokens({
+    accessToken: 'test-access-token',
+    refreshToken: 'test-refresh-token-which-is-long-enough',
+    expiresIn: 900,
+  });
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  const { queryClient } = renderWithProviders(<RouterProvider router={router} />);
+
+  await screen.findByText('书架还是空的');
+  queryClient.setQueryData(['books'], [{ id: 'cached-book' }]);
+
+  await userEvent.click(screen.getByRole('button', { name: '退出登录' }));
+
+  await waitFor(() => expect(queryClient.getQueryData(['books'])).toBeUndefined());
+  expect(router.state.location.pathname).toBe('/login');
 });

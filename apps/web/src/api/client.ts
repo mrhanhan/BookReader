@@ -53,6 +53,18 @@ export function clearTokens(): void {
   storage()?.removeItem(TOKEN_STORAGE_KEY);
 }
 
+type SessionEndedHandler = () => void;
+let sessionEndedHandler: SessionEndedHandler | null = null;
+
+/**
+ * Registers app-level cleanup that must run when a session ends. The auth
+ * provider points this at its QueryClient so one account's cached data cannot
+ * leak into the next session.
+ */
+export function setSessionEndedHandler(handler: SessionEndedHandler | null): void {
+  sessionEndedHandler = handler;
+}
+
 /** Builds an ApiError from the shared error envelope, falling back to HTTP text. */
 export async function errorFromResponse(response: Response): Promise<ApiError> {
   let body: ApiErrorBody | undefined;
@@ -94,8 +106,24 @@ async function refreshSession(refreshToken: string): Promise<AuthTokens> {
   return tokens;
 }
 
+let refreshInFlight: Promise<AuthTokens> | null = null;
+
+/**
+ * Shares one refresh across concurrent 401s. The server rotates refresh
+ * tokens, so replaying a rotated token would fail and end the session.
+ */
+function refreshOnce(refreshToken: string): Promise<AuthTokens> {
+  if (!refreshInFlight) {
+    refreshInFlight = refreshSession(refreshToken).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
 function endSession(): void {
   clearTokens();
+  sessionEndedHandler?.();
   if (typeof window === 'undefined') return;
   // Login itself never goes through apiFetch, so this is always a dead session.
   if (window.location.pathname !== '/login') {
@@ -105,25 +133,33 @@ function endSession(): void {
 
 /**
  * Fetches a JSON API endpoint with the bearer token, refreshing it once on a
- * 401 and retrying the original request. A failed refresh clears the session
- * and sends the browser to `/login`.
+ * 401 and retrying the original request. Concurrent 401s share a single
+ * refresh; only a genuine refresh failure clears the session and sends the
+ * browser to `/login`.
  */
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let tokens = getTokens();
   let response = await fetch(path, buildRequest(init, tokens?.accessToken ?? null));
 
   if (response.status === 401) {
-    if (!tokens?.refreshToken) {
+    const latest = getTokens();
+
+    if (latest && latest.accessToken !== tokens?.accessToken) {
+      // Another request refreshed while this one was in flight, so reuse the
+      // new access token instead of replaying the rotated refresh token.
+      tokens = latest;
+      response = await fetch(path, buildRequest(init, tokens.accessToken));
+    } else if (latest?.refreshToken) {
+      try {
+        tokens = await refreshOnce(latest.refreshToken);
+        response = await fetch(path, buildRequest(init, tokens.accessToken));
+      } catch (error) {
+        endSession();
+        throw error instanceof ApiError ? error : await errorFromResponse(response);
+      }
+    } else {
       endSession();
       throw await errorFromResponse(response);
-    }
-
-    try {
-      tokens = await refreshSession(tokens.refreshToken);
-      response = await fetch(path, buildRequest(init, tokens.accessToken));
-    } catch (error) {
-      endSession();
-      throw error instanceof ApiError ? error : await errorFromResponse(response);
     }
 
     if (response.status === 401) {
