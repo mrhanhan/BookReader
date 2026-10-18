@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { BookDto } from '@bookr/shared';
 import type { ReaderDocumentInfo, ReaderEngineKind } from '@bookr/reader-core';
 import { Link } from 'react-router';
+import { SyncStatusBadge } from '../settings/SyncStatusBadge';
 import { SAVE_STATE_LABELS } from './useReaderProgress';
 import type { ReaderSaveState } from './useReaderProgress';
 
@@ -150,6 +151,7 @@ export function ReaderChrome({
         <span className="reader-sync" role="status" aria-live="polite">
           {SAVE_STATE_LABELS[saveState]}
         </span>
+        <SyncStatusBadge className="reader-sync" />
       </header>
 
       <footer className="reader-chrome reader-chrome-bottom" onPointerDown={onActivity}>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router';
 import { Button, cn } from '@bookr/ui';
+import { SyncStatusBadge } from '../features/settings/SyncStatusBadge';
 import { useAuth } from './auth';
 
 const NAV_ITEMS = [
@@ -52,6 +53,7 @@ export function AppLayout() {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm text-muted">
+            <SyncStatusBadge />
             <span>{user?.displayName ?? user?.username}</span>
             <Button variant="ghost" size="sm" loading={loggingOut} onClick={handleLogout}>
               退出登录

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { AuthProvider } from './auth';
+import { SyncProvider } from '../sync/SyncProvider';
 
 /** Query cache and auth session shared by every route. */
 export function AppProviders({ children }: { children: ReactNode }) {
@@ -19,7 +20,9 @@ export function AppProviders({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>{children}</AuthProvider>
+      <AuthProvider>
+        <SyncProvider>{children}</SyncProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
