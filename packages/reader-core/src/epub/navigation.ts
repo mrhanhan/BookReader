@@ -65,13 +65,21 @@ function isPathSuffix(target: string, wanted: readonly string[]): boolean {
   return shorter.every((segment, index) => longer[offset + index] === segment);
 }
 
-/** `Section.cfiBase` is the chapter component (`/6/4[ch1]`), not a full CFI. */
+/**
+ * `Section.cfiBase` is the chapter component (`/6/4[ch1]`), not a complete CFI.
+ * epub.js requires a local path after the `!` indirection to parse a CFI, so
+ * the chapter-start CFI points at the chapter's body element (`!/4`). A TOC href
+ * fragment is not representable this way; callers keep the href on the locator.
+ */
 function sectionCfi(section: unknown): string | null {
   const base = (section as { cfiBase?: unknown } | null)?.cfiBase;
   if (typeof base !== 'string' || base.length === 0) {
     return null;
   }
-  return base.startsWith('epubcfi(') ? base : `epubcfi(${base})`;
+  if (base.startsWith('epubcfi(')) {
+    return base;
+  }
+  return `epubcfi(${base}${base.includes('!') ? '' : '!/4'})`;
 }
 
 /**

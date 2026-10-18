@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { decorateNoteMarksInViews } from '../epub/highlights';
+import { decorateNoteMarksInViews, viewsOf } from '../epub/highlights';
 
 function markUp(ids: readonly string[]): HTMLElement {
   const view = document.createElement('div');
@@ -39,4 +39,22 @@ it('ignores views without an element and empty highlight lists', () => {
   decorateNoteMarksInViews([{ element: null }, {}], [{ id: 'h1', hasNote: true }]);
   expect(view.querySelector('.bookr-epub-hl')!.classList.contains('bookr-epub-hl-note'))
     .toBe(false);
+});
+
+it('reads the rendition Views collection through all()', () => {
+  const view = markUp(['h1']);
+  const collection = {
+    _views: [{ element: view }],
+    all() {
+      return this._views;
+    },
+  };
+
+  expect(viewsOf(collection)).toEqual([{ element: view }]);
+  expect(viewsOf(null)).toEqual([]);
+  expect(viewsOf({})).toEqual([]);
+
+  decorateNoteMarksInViews(viewsOf(collection), [{ id: 'h1', hasNote: true }]);
+  expect(view.querySelector('.bookr-epub-hl')!.classList.contains('bookr-epub-hl-note'))
+    .toBe(true);
 });

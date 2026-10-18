@@ -46,6 +46,27 @@ export function decorateNoteMarks(
 }
 
 /**
+ * Normalizes epub.js' `Views` collection. `rendition.views()` returns a
+ * collection with `all()` (it is not iterable), while tests and future versions
+ * may hand over a plain array.
+ */
+export function viewsOf(collection: unknown): unknown[] {
+  if (Array.isArray(collection)) {
+    return collection;
+  }
+  const all = (collection as { all?: unknown } | null)?.all;
+  if (typeof all !== 'function') {
+    return [];
+  }
+  try {
+    const views = all.call(collection);
+    return Array.isArray(views) ? views : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Decorates every rendition view. Marks live in `view.element` (the parent
  * document), which is why the iframe documents must not be queried instead.
  */

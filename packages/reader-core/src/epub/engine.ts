@@ -1,5 +1,5 @@
 import type { EpubLocator, Locator } from '@bookr/shared';
-import ePub from 'epubjs';
+import ePub, { EpubCFI } from 'epubjs';
 import type { Book, Contents, Location as EpubLocation, Rendition } from 'epubjs';
 
 import { TypedEmitter } from '../emitter';
@@ -23,6 +23,7 @@ import { bookHrefResolver, epubLocator, flattenNavigation } from './navigation';
 import {
   EPUB_HIGHLIGHT_CLASS,
   decorateNoteMarksInViews,
+  viewsOf,
 } from './highlights';
 
 /** epub.js splits generated locations into chunks of this many characters. */
@@ -63,6 +64,23 @@ function readableError(error: unknown, fallback = 'Unknown EPUB error'): string 
 
 function finite(value: number): number {
   return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * epub.js' display queue has no try/catch, so handing it an unparseable CFI
+ * wedges every later display. Validate first and fall back to the href.
+ */
+function isDisplayableCfi(cfi: unknown): cfi is string {
+  if (typeof cfi !== 'string' || cfi.length === 0) {
+    return false;
+  }
+  try {
+    // Construction is the cheapest parse epub.js exposes.
+    new EpubCFI(cfi);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readTitle(metadata: unknown): string | null {
@@ -179,12 +197,14 @@ export class EpubReaderEngine implements ReaderEngine {
     }
 
     const rendition = this.rendition;
-    try {
-      await rendition.display(locator.cfi);
-      return;
-    } catch {
-      // A stale or malformed CFI should not strand the reader; the href that
-      // came with the locator is the next best target.
+    if (isDisplayableCfi(locator.cfi)) {
+      try {
+        await rendition.display(locator.cfi);
+        return;
+      } catch {
+        // A stale CFI should not strand the reader; the href that came with
+        // the locator is the next best target.
+      }
     }
 
     if (locator.href) {
@@ -270,9 +290,9 @@ export class EpubReaderEngine implements ReaderEngine {
 
     this.applyThemes(rendition, settings);
 
-    const layoutChanged = previous.epub.flow !== settings.epub.flow
-      || previous.epub.spread !== settings.epub.spread;
-    if (!layoutChanged) {
+    const flowChanged = previous.epub.flow !== settings.epub.flow;
+    const spreadChanged = previous.epub.spread !== settings.epub.spread;
+    if (!flowChanged && !spreadChanged) {
       return;
     }
 
@@ -283,8 +303,13 @@ export class EpubReaderEngine implements ReaderEngine {
     try {
       // Flow/spread changes are supported in place; rebuilding the rendition
       // would re-register epub.js' internal spine hooks and leak listeners.
-      rendition.flow(settings.epub.flow);
-      rendition.spread(settings.epub.spread);
+      // Only touch the setting that changed: `flow()` re-renders.
+      if (flowChanged) {
+        rendition.flow(settings.epub.flow);
+      }
+      if (spreadChanged) {
+        rendition.spread(settings.epub.spread);
+      }
       const width = this.container?.clientWidth ?? 0;
       const height = this.container?.clientHeight ?? 0;
       if (width > 0 && height > 0) {
@@ -425,12 +450,14 @@ export class EpubReaderEngine implements ReaderEngine {
     initialLocator: OpenReaderOptions['initialLocator'],
   ): Promise<void> {
     if (initialLocator && initialLocator.kind === 'epub') {
-      try {
-        await rendition.display(initialLocator.cfi);
-        return;
-      } catch {
-        // A stale CFI (different book revision, hand-edited file) must not
-        // prevent the book from opening.
+      if (isDisplayableCfi(initialLocator.cfi)) {
+        try {
+          await rendition.display(initialLocator.cfi);
+          return;
+        } catch {
+          // A stale CFI (different book revision, hand-edited file) must not
+          // prevent the book from opening.
+        }
       }
       if (initialLocator.href) {
         try {
@@ -654,7 +681,8 @@ export class EpubReaderEngine implements ReaderEngine {
       return;
     }
     try {
-      decorateNoteMarksInViews(rendition.views() as unknown[], this.highlights);
+      // `rendition.views()` is a Views collection; `all()` is its array form.
+      decorateNoteMarksInViews(viewsOf(rendition.views()), this.highlights);
     } catch {
       // A view manager mid-teardown has no views to decorate.
     }

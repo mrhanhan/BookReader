@@ -1,3 +1,4 @@
+import { EpubCFI } from 'epubjs';
 import { expect, it } from 'vitest';
 import {
   bookHrefResolver,
@@ -59,14 +60,20 @@ it('resolves nav hrefs to spine CFI bases instead of canonical URLs', () => {
     spine,
   };
 
-  expect(spineCfiFor(book, 'text/ch1.xhtml')).toBe('epubcfi(/6/2[ch1])');
+  expect(spineCfiFor(book, 'text/ch1.xhtml')).toBe('epubcfi(/6/2[ch1]!/4)');
   // Navigation files in another directory resolve by path suffix.
-  expect(spineCfiFor(book, '../text/ch2.xhtml#s2')).toBe('epubcfi(/6/4[ch2])');
-  expect(spineCfiFor(book, 'notes.xhtml')).toBe('epubcfi(/6/6[notes])');
+  expect(spineCfiFor(book, '../text/ch2.xhtml#s2')).toBe('epubcfi(/6/4[ch2]!/4)');
+  expect(spineCfiFor(book, 'notes.xhtml')).toBe('epubcfi(/6/6[notes]!/4)');
   // The canonical URL is also a viable suffix-matching candidate.
   expect(spineCfiFor(book, 'https://example.test/books/1/text/ch1.xhtml'))
-    .toBe('epubcfi(/6/2[ch1])');
+    .toBe('epubcfi(/6/2[ch1]!/4)');
   expect(spineCfiFor(book, 'missing.xhtml')).toBeNull();
+
+  // Every produced CFI must actually parse and land on the right section.
+  const chapterOne = spineCfiFor(book, 'text/ch1.xhtml')!;
+  expect(new EpubCFI(chapterOne).spinePos).toBe(0);
+  const chapterTwo = spineCfiFor(book, '../text/ch2.xhtml#s2')!;
+  expect(new EpubCFI(chapterTwo).spinePos).toBe(1);
 });
 
 it('uses spine CFI bases in TOC locators and skips unresolvable entries', () => {
@@ -86,8 +93,16 @@ it('uses spine CFI bases in TOC locators and skips unresolvable entries', () => 
   expect(toc.map((item) => item.label)).toEqual(['第一章']);
   expect(toc[0]!.locator).toMatchObject({
     kind: 'epub',
-    cfi: 'epubcfi(/6/2[ch1])',
+    cfi: 'epubcfi(/6/2[ch1]!/4)',
     href: 'ch1.xhtml',
     percent: 0,
   });
+  expect(() => new EpubCFI(toc[0]!.locator.kind === 'epub'
+    ? toc[0]!.locator.cfi
+    : '')).not.toThrow();
+  const locator = toc[0]!.locator;
+  expect(locator.kind).toBe('epub');
+  if (locator.kind === 'epub') {
+    expect(new EpubCFI(locator.cfi).spinePos).toBe(0);
+  }
 });
