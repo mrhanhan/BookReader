@@ -291,6 +291,13 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | `MINIO_API_CORS_ALLOW_ORIGIN` | 否 | MinIO S3 API 的 CORS 允许源，默认 `*`（浏览器需直接读取预签名书籍文件） |
 | `S3_PUBLIC_ENDPOINT` | 否 | 预签名上传/封面 URL 中供浏览器访问的 MinIO 地址；compose 默认 `http://localhost:9200`，跨机访问时改为公网地址 |
 | `LOG_LEVEL` | 否 | `debug`/`info`/`warn`/`error`，默认 `info` |
+| `AI_CONFIG_SECRET` | 否 | 加密 AI Key 的盐；缺省由 `JWT_SECRET` 派生，至少 32 字符 |
+| `AI_API_KEY` | 否 | 首次启动时加密写入数据库；已有配置不会被覆盖 |
+| `AI_BASE_URL` | 否 | OpenAI 兼容端点，默认 `https://api.deepseek.com/v1` |
+| `AI_CHAT_MODEL` / `AI_REASONER_MODEL` | 否 | 默认 `deepseek-chat` / `deepseek-reasoner` |
+| `AI_CONTEXT_TOKEN_BUDGET` | 否 | 每次请求的上下文 token 预算，默认 8000 |
+| `AI_REQUEST_TIMEOUT_MS` | 否 | 上游请求超时，默认 60000 |
+| `AI_FAKE_PROVIDER` | 否 | `1` 启用本地假提供方；仅限 E2E/演示，生产禁用 |
 
 `DATABASE_URL`、`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`TRUST_PROXY` 由 compose 固定为容器网络内的值，无需在 `.env` 覆盖；`S3_PUBLIC_ENDPOINT` 必须是用户浏览器能解析的地址。
 
@@ -305,6 +312,9 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | 登录提示限流 | `TRUST_PROXY` 必须为 `1`；确认只经 Caddy 访问 |
 | 备份脚本失败 | 手动运行 `bash -x scripts/backup-export.sh`；确认 MinIO 容器运行且 `bookr_default` 网络存在 |
 | 首次构建超时/磁盘不足 | Calibre 安装较大；清理 Docker 空间后重试，或将构建放到有更多磁盘的机器 |
+| AI 面板提示「尚未配置」 | 检查 `GET /api/admin/ai`；设置 `AI_API_KEY` 或通过管理员 API 录入 Key |
+| AI 提示额度用尽 | 检查 `GET /api/ai/usage` 的日/月窗口；管理员可调整该成员额度或等待用户时区跨天 |
+| AI 上游超时/不可用 | 检查 `AI_BASE_URL`、网络与 Key；server 日志只记录 token 计数与错误名，不含正文 |
 
 ## 12. 端到端验收测试（E2E）
 
@@ -321,6 +331,7 @@ pnpm --filter @bookr/web e2e
 
 - 前提：`docker compose up -d` 全部服务 healthy，且已存在管理员；默认使用 `admin`，可通过 `E2E_ADMIN_USERNAME` / `E2E_ADMIN_PASSWORD` 指定。
 - 测试会**创建真实用户与邀请码、上传图书并软删除图书**（结束时留在回收站），还会清理此前 E2E 遗留的在架图书。请只对它使用一次性测试栈。
+- AI 用例（`e2e/ai.spec.ts`）要求 `AI_FAKE_PROVIDER=1`；在 `.env` 设置后 `docker compose up -d server`。未设置时该套件会在 `beforeAll` 明确失败。
 - 默认只允许 `localhost` / `127.0.0.1`；指向其他主机时测试会拒绝启动。仅在目标确实是可丢弃的测试环境时才设置 `E2E_ALLOW_REMOTE=1`。**永远不要对生产环境运行 E2E，也不要为生产设置该变量。**
 - 阅读器与重排用例（`e2e/reader.spec.ts`、`e2e/reflow.spec.ts`）使用
   `apps/web/scripts/make-reader-fixtures.mjs` 在全局 setup 中重新生成的
@@ -409,7 +420,53 @@ PDF 的阅读进度、批注与书签接口同时接受 `pdf` 与 `reflow` 两�
 
 **设置页**：`/settings` 汇总同步状态、待同步变更数、上次同步时间与「立即同步」，展示离线缓存用量及每本书的固定/移出操作，并列出已登录设备（可重命名或撤销）。
 
-## 15. 本地 PDF 预处理工具
+## 15. AI 伴读
+
+阅读器的 AI 伴读提供三种能力：选中段落「解释」、总结当前页/章、在同一线程内追问。
+回答由服务端 AI 网关流式转发（SSE），浏览器只负责采集选中文字与当前页/章的必要片段。
+线程与消息按用户隔离、按书保存，可在 AI 面板的「历史」中回看或删除。
+
+### 15.1 配置服务商
+
+服务端默认使用 OpenAI 兼容协议，默认端点为 `https://api.deepseek.com/v1`，默认模型
+`deepseek-chat`（解释/总结/追问）与 `deepseek-reasoner`（预留给 P6 笔记分析）。API Key
+以 AES-256-GCM 加密存于数据库，永不下发浏览器。两种配置方式：
+
+1. **首次启动引导**：在 `.env` 设置 `AI_API_KEY`（可同时设置 `AI_BASE_URL`、
+   `AI_CHAT_MODEL`、`AI_REASONER_MODEL`），启动后服务端会把它们加密写入 `ai_config`。
+   确认写入后可把 `AI_API_KEY` 从 `.env` 移除，数据库保留密文；已有配置不会被重启覆盖。
+2. **管理员 API**：登录管理员后直接修改（`PUT` 省略 `apiKey` 表示保留旧 Key）：
+
+```bash
+curl -X PUT http://localhost:8180/api/admin/ai   -H "Authorization: Bearer $ADMIN_TOKEN"   -H "Content-Type: application/json"   -d '{"apiKey":"'"$AI_KEY"'","chatModel":"deepseek-chat"}'
+
+curl http://localhost:8180/api/admin/ai -H "Authorization: Bearer $ADMIN_TOKEN"
+curl -X DELETE http://localhost:8180/api/admin/ai -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+`AI_CONFIG_SECRET` 可选；缺省时加密密钥由 `JWT_SECRET` 经 HKDF 派生。轮换
+`JWT_SECRET`（或显式 `AI_CONFIG_SECRET`）后，已存 Key 无法解密，需要重新录入。
+Base URL 仅允许 HTTPS；`localhost`、`127.0.0.1`、`[::1]`、`host.docker.internal`
+允许 HTTP，便于本地模型与测试。
+
+### 15.2 隐私与配额
+
+- 每次请求只发送：书名、作者、位置、选中文字、当前页或本章的文字片段、用户问题。
+  不发送整本书；扫描版 PDF 没有文字层时会明确说明材料不足。
+- 服务端按 8k token 预算裁剪上下文（`AI_CONTEXT_TOKEN_BUDGET`），日志不记录正文、
+  选中文字、问题或回答。
+- 每用户默认每日 100,000、每月 1,000,000 tokens；管理员可通过
+  `PATCH /api/admin/members/:id` 的 `aiDailyTokenLimit` / `aiMonthlyTokenLimit` 调整。
+  窗口按用户时区计算，用户可在设置页关闭 AI。
+- 失败、超时或额度用尽时，问题仍保留在线程或输入框中，可重试。
+
+### 15.3 本地假提供方（仅测试）
+
+E2E 与本地演示可设置 `AI_FAKE_PROVIDER=1`，服务端用确定性的假提供方替代真实网关
+（流式、配额、持久化路径不变）。**生产环境严禁设置该变量**；启动日志会打印警告，
+设置页会显示「当前使用本地假提供方（仅用于测试）」。
+
+## 16. 本地 PDF 预处理工具
 
 源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
 [`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
@@ -446,7 +503,7 @@ bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --repo
 服务端会校验包内 `source.sha256`、schema 版本与大小（≤32 MiB）；每本书最多一个包，
 重排包不计入书籍配额。
 
-## 16. 桌面端（Tauri 2）
+## 17. 桌面端（Tauri 2）
 
 源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
 
@@ -465,7 +522,7 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
-## 17. Android 端（Capacitor 7）
+## 18. Android 端（Capacitor 7）
 
 源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
 `apps/mobile/README.md`。
@@ -484,7 +541,7 @@ WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost`
 `capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
 预签名文件地址都必须是设备可达的 HTTPS 地址。
 
-## 18. 已知范围
+## 19. 已知范围
 
 - 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
   均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
