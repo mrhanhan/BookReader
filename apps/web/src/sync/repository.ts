@@ -64,7 +64,16 @@ export interface LocalRepository {
   settingsFor(userId: string): Promise<LocalSettingsRow | null>;
   saveSettings(userId: string, settings: Record<string, unknown>): Promise<void>;
   pendingCount(userId: string): Promise<number>;
-  applyServerChange(userId: string, change: SyncChangeEnvelope): Promise<'applied' | 'skipped'>;
+  /**
+   * Applies one envelope from the change log. `force` skips the last-write-wins
+   * comparison and is reserved for push echoes: the server may clamp a client
+   * clock that runs ahead, so the echo must overwrite the local row regardless.
+   */
+  applyServerChange(
+    userId: string,
+    change: SyncChangeEnvelope,
+    options?: { force?: boolean },
+  ): Promise<'applied' | 'skipped'>;
   applySnapshot(userId: string, snapshot: SyncSnapshot): Promise<void>;
   getCursor(userId: string): Promise<number>;
   setCursor(userId: string, cursor: number): Promise<void>;
@@ -322,10 +331,11 @@ async function applyProgressChange(
   db: BookrDb,
   userId: string,
   change: SyncChangeEnvelope,
+  force: boolean,
 ): Promise<'applied' | 'skipped'> {
   return db.transaction('rw', db.progress, db.outbox, async () => {
     const local = await db.progress.get([userId, change.entityId]);
-    const pending = await pendingFor(db, userId, 'reading_progress', change.entityId);
+    const pending = force ? [] : await pendingFor(db, userId, 'reading_progress', change.entityId);
     if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
       return 'skipped';
     }
@@ -359,6 +369,7 @@ async function applyAnnotationChange(
   db: BookrDb,
   userId: string,
   change: SyncChangeEnvelope,
+  force: boolean,
 ): Promise<'applied' | 'skipped'> {
   return db.transaction('rw', db.annotations, db.outbox, async () => {
     const local = await db.annotations.get(change.entityId);
@@ -366,7 +377,7 @@ async function applyAnnotationChange(
       return 'skipped';
     }
 
-    const pending = await pendingFor(db, userId, 'annotation', change.entityId);
+    const pending = force ? [] : await pendingFor(db, userId, 'annotation', change.entityId);
     if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
       return 'skipped';
     }
@@ -392,6 +403,7 @@ async function applyBookmarkChange(
   db: BookrDb,
   userId: string,
   change: SyncChangeEnvelope,
+  force: boolean,
 ): Promise<'applied' | 'skipped'> {
   return db.transaction('rw', db.bookmarks, db.outbox, async () => {
     const local = await db.bookmarks.get(change.entityId);
@@ -399,7 +411,7 @@ async function applyBookmarkChange(
       return 'skipped';
     }
 
-    const pending = await pendingFor(db, userId, 'bookmark', change.entityId);
+    const pending = force ? [] : await pendingFor(db, userId, 'bookmark', change.entityId);
     if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
       return 'skipped';
     }
@@ -425,10 +437,11 @@ async function applySettingsChange(
   db: BookrDb,
   userId: string,
   change: SyncChangeEnvelope,
+  force: boolean,
 ): Promise<'applied' | 'skipped'> {
   return db.transaction('rw', db.settings, db.outbox, async () => {
     const local = await db.settings.get(userId);
-    const pending = await pendingFor(db, userId, 'reader_settings', change.entityId);
+    const pending = force ? [] : await pendingFor(db, userId, 'reader_settings', change.entityId);
     if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
       return 'skipped';
     }
@@ -685,16 +698,17 @@ export function createRepository(db: BookrDb): LocalRepository {
       return db.outbox.where('userId').equals(userId).count();
     },
 
-    applyServerChange(userId, change) {
+    applyServerChange(userId, change, options) {
+      const force = options?.force === true;
       switch (change.entityType) {
         case 'reading_progress':
-          return applyProgressChange(db, userId, change);
+          return applyProgressChange(db, userId, change, force);
         case 'annotation':
-          return applyAnnotationChange(db, userId, change);
+          return applyAnnotationChange(db, userId, change, force);
         case 'bookmark':
-          return applyBookmarkChange(db, userId, change);
+          return applyBookmarkChange(db, userId, change, force);
         case 'reader_settings':
-          return applySettingsChange(db, userId, change);
+          return applySettingsChange(db, userId, change, force);
         default: {
           const exhaustive: never = change.entityType;
           return exhaustive;

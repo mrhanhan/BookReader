@@ -177,7 +177,9 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       let rejected = 0;
 
       for (const envelope of result.applied) {
-        const outcome = await repo.applyServerChange(userId, envelope);
+        // The server clamps client clocks that run ahead, so the echo may be
+        // older than the local row; force it in or `dirty` would never clear.
+        const outcome = await repo.applyServerChange(userId, envelope, { force: true });
         for (const row of rowsByKey.get(syncKey(envelope.entityType, envelope.entityId)) ?? []) {
           acknowledged.add(row.id);
         }

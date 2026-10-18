@@ -173,6 +173,43 @@ describe('SyncEngine', () => {  it('pushes queued changes and clears the outbox'
     });
   });
 
+  it('force-applies the pushed echo when the client clock runs ahead', async () => {
+    const api = createFakeApi();
+    const clamped = new Date(NOW).toISOString();
+    api.push = vi.fn(async (changes: SyncPushChange[]) => ({
+      applied: changes.map((change, index) => ({
+        revision: index + 1,
+        entityType: change.entityType,
+        entityId: change.entityId,
+        op: change.op,
+        payload: {
+          bookId: BOOK,
+          locator: laterLocator,
+          percent: laterLocator.percent,
+          updatedAt: clamped,
+          clientUpdatedAt: clamped,
+        },
+        clientUpdatedAt: clamped,
+        serverUpdatedAt: clamped,
+      })),
+      skipped: [],
+      rejected: [],
+      cursor: 1,
+    }));
+    // The client clock is ten minutes ahead, so the server echoes a smaller time.
+    await repo.saveProgress(USER, BOOK, locator, NOW + 10 * 60 * 1000);
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(api.push).toHaveBeenCalledTimes(1);
+    const row = await repo.progressFor(USER, BOOK);
+    expect(row?.locator).toEqual(laterLocator);
+    expect(row?.clientUpdatedAt).toBe(clamped);
+    expect(row?.dirty).toBe(false);
+    expect(await repo.pendingCount(USER)).toBe(0);
+  });
+
   it('pulls to the end and advances the cursor', async () => {
     const api = createFakeApi();
     const first = bookmarkChange(1);
