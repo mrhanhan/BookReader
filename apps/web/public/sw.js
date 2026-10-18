@@ -1,10 +1,13 @@
 // Offline app shell for BookrReader.
 // Hand-written service worker (no build step): Vite copies public/ verbatim to
 // the build root, so this file ships as /sw.js and can be updated on its own.
-const CACHE = 'bookr-shell-v2';
+const CACHE = 'bookr-shell-v3';
 const SHELL_URL = '/';
 // Scripts, styles and modulepreloads emitted by Vite, e.g. /assets/index-abc.js.
 const SHELL_ASSET_PATTERN = /(?:src|href)="(\/assets\/[^"]+)"/g;
+// pdf.js loads its worker lazily, so it never appears in index.html; the path
+// is baked into the main bundle as a string instead.
+const PDF_WORKER_PATTERN = /(\/assets\/pdf\.worker\.min-[A-Za-z0-9_-]+\.mjs)/g;
 
 function extractShellAssets(html) {
   const assets = new Set();
@@ -24,9 +27,27 @@ async function precacheShell() {
   }
   await cache.put(SHELL_URL, response.clone());
   const assets = extractShellAssets(await response.text());
+
+  // Fetch the shell assets, and scan every JS chunk for the pdf.js worker path
+  // so it is available even when no PDF was opened online before going offline.
+  const pdfWorkers = new Set();
+  await Promise.allSettled(
+    assets.map(async (url) => {
+      const assetResponse = await fetch(url);
+      if (!assetResponse.ok) return;
+      if (url.endsWith('.js')) {
+        const source = await assetResponse.clone().text();
+        for (const match of source.matchAll(PDF_WORKER_PATTERN)) {
+          pdfWorkers.add(match[1]);
+        }
+      }
+      await cache.put(url, assetResponse);
+    }),
+  );
+
   // A missing optional asset must not abort the whole installation.
   await Promise.allSettled(
-    assets.map((url) =>
+    [...pdfWorkers].map((url) =>
       fetch(url).then((assetResponse) => {
         if (assetResponse.ok) return cache.put(url, assetResponse);
       }),
