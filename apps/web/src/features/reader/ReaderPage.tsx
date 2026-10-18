@@ -81,13 +81,16 @@ function toggleFullscreen(): void {
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
+  // Duck-typed rather than `instanceof HTMLElement`: same-origin iframe events
+  // come from another realm whose constructors differ from the parent's.
+  if (typeof target !== 'object' || target === null) return false;
+  const element = target as { tagName?: unknown; isContentEditable?: unknown };
+  if (typeof element.tagName !== 'string') return false;
   return (
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    target.isContentEditable
+    element.tagName === 'INPUT' ||
+    element.tagName === 'TEXTAREA' ||
+    element.tagName === 'SELECT' ||
+    element.isContentEditable === true
   );
 }
 
@@ -168,7 +171,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   }, [bookId]);
 
   // Fetch the signed URL and the saved progress in parallel, then compute the
-  // one position the reader should open at.
+  // one position the reader should open at. Only the file request is fatal: a
+  // progress failure must fall back to this device's cache instead of blocking
+  // the book.
   useEffect(() => {
     if (!bookId) return;
     let cancelled = false;
@@ -177,7 +182,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       try {
         const [file, progress] = await Promise.all([
           fetchReaderFile(bookId),
-          fetchProgress(bookId),
+          fetchProgress(bookId).catch(() => null),
         ]);
         if (cancelled) return;
         setSource({
@@ -224,10 +229,11 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     setStatus('loading');
     setEngineFailure(null);
 
-    // Subscribe before opening: a load failure surfaces as a reader error even
-    // if the engine rejects with a different shape.
-    const unsubscribe = engine.on('error', () => {
+    // Subscribe before opening. Only a load failure is fatal here; a render
+    // failure while the book is open must not blank a readable document.
+    const unsubscribe = engine.on('error', (payload) => {
       if (cancelled || readyRef.current) return;
+      if (payload.code !== 'load-failed') return;
       setStatus('error');
       setEngineFailure(OPEN_FAILED_MESSAGE);
     });
@@ -253,6 +259,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         );
         if (cancelled) return;
         readyRef.current = true;
+        setEngineFailure(null);
         setDocumentInfo(info);
         setStatus('ready');
       } catch {
@@ -269,6 +276,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   }, [engine, source]);
 
   const [chromeVisible, setChromeVisible] = useState(true);
+  const chromeVisibleRef = useRef(chromeVisible);
+  chromeVisibleRef.current = chromeVisible;
   const panelRef = useRef<ReaderPanelName | null>(panel);
   panelRef.current = panel;
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -374,9 +383,26 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     engine?.setSettings(merged);
   }, [engine]);
 
+  // Both the parent document and the EPUB iframe call this one implementation.
+  const handleTapAt = useCallback(
+    (ratio: number): void => {
+      if (ratio < 0.25) {
+        if (!chromeVisibleRef.current) goPrevious();
+        return;
+      }
+      if (ratio > 0.75) {
+        if (!chromeVisibleRef.current) goNext();
+        return;
+      }
+      if (chromeVisibleRef.current) hideChrome();
+      else revealChrome();
+    },
+    [goNext, goPrevious, hideChrome, revealChrome],
+  );
+
   // Keyboard shortcuts. Editable fields and browser-level chords are ignored.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent): void => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
 
@@ -416,11 +442,118 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         default:
           break;
       }
+    },
+    [goNext, goPrevious, revealChrome, togglePanel],
+  );
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
+  /**
+   * EPUB renders each section into an iframe, which swallows pointer, click and
+   * keyboard events from the parent. Bridge those events back to the same
+   * handlers the parent document uses. The observer re-binds after flow/spread
+   * re-renders swap the iframe document.
+   */
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+
+    interface IframeBridge {
+      win: Window | null;
+      doc: Document | null;
+      detach: () => void;
+      onLoad: () => void;
+    }
+
+    const bridges = new Map<HTMLIFrameElement, IframeBridge>();
+
+    const bind = (iframe: HTMLIFrameElement, force = false): void => {
+      let win: Window | null = null;
+      let doc: Document | null = null;
+      try {
+        win = iframe.contentWindow;
+        doc = iframe.contentDocument;
+      } catch {
+        // Cross-origin content cannot be instrumented; the engine still works.
+        return;
+      }
+
+      let record = bridges.get(iframe);
+      if (!record) {
+        record = { win: null, doc: null, detach: () => {}, onLoad: () => bind(iframe, true) };
+        bridges.set(iframe, record);
+        iframe.addEventListener('load', record.onLoad);
+      }
+      if (!force && record.win === win && record.doc === doc) return;
+
+      record.detach();
+      record.win = win;
+      record.doc = doc;
+      if (!win) {
+        record.detach = () => {};
+        return;
+      }
+
+      let lastX = 0;
+      let lastY = 0;
+      const onPointerMove = (event: PointerEvent): void => {
+        if (event.clientX === lastX && event.clientY === lastY) return;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        revealChrome();
+      };
+      const onClick = (event: MouseEvent): void => {
+        try {
+          if (win?.getSelection()?.toString()) return;
+        } catch {
+          // Another realm lost access; treat it as a plain tap.
+        }
+        const width = iframe.clientWidth || win?.innerWidth || 0;
+        handleTapAt(width > 0 ? event.clientX / width : 0.5);
+      };
+      const onKeyDown = (event: KeyboardEvent): void => handleKeyDown(event);
+
+      win.addEventListener('pointermove', onPointerMove);
+      win.addEventListener('click', onClick, true);
+      win.addEventListener('keydown', onKeyDown, true);
+      record.detach = () => {
+        win?.removeEventListener('pointermove', onPointerMove);
+        win?.removeEventListener('click', onClick, true);
+        win?.removeEventListener('keydown', onKeyDown, true);
+      };
     };
 
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [goNext, goPrevious, revealChrome, togglePanel]);
+    const scan = (): void => {
+      for (const iframe of content.querySelectorAll('iframe')) bind(iframe);
+      for (const [iframe, record] of bridges) {
+        if (content.contains(iframe)) continue;
+        record.detach();
+        try {
+          iframe.removeEventListener('load', record.onLoad);
+        } catch {
+          // A detached iframe is already gone.
+        }
+        bridges.delete(iframe);
+      }
+    };
+
+    scan();
+    const observer =
+      typeof MutationObserver === 'undefined' ? null : new MutationObserver(scan);
+    observer?.observe(content, { childList: true, subtree: true });
+
+    return () => {
+      observer?.disconnect();
+      for (const [iframe, record] of bridges) {
+        record.detach();
+        iframe.removeEventListener('load', record.onLoad);
+      }
+      bridges.clear();
+    };
+  }, [handleKeyDown, handleTapAt, revealChrome]);
 
   function handleContentTap(event: ReactMouseEvent<HTMLDivElement>): void {
     // A tap that ends a text selection is a selection gesture, not navigation.
@@ -428,18 +561,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
     const rect = event.currentTarget.getBoundingClientRect();
     // jsdom has no layout (width 0); treat that as a center tap.
-    const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
-
-    if (ratio < 0.25) {
-      if (!chromeVisible) goPrevious();
-      return;
-    }
-    if (ratio > 0.75) {
-      if (!chromeVisible) goNext();
-      return;
-    }
-    if (chromeVisible) hideChrome();
-    else revealChrome();
+    handleTapAt(rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5);
   }
 
   const page =

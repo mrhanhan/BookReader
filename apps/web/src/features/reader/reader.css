@@ -423,30 +423,79 @@
   display: block;
 }
 
-/* pdf.js v6 text layer: transparent, absolutely positioned spans. */
+/*
+ * pdf.js 6.4.299 text layer, copied from the viewer stylesheet and renamed.
+ * Do not trim: the font-size/transform rules and `.markedContent` display are
+ * load-bearing for selection geometry, highlights and text-position math.
+ */
 .bookr-text-layer {
+  color-scheme: only light;
   position: absolute;
-  inset: 0;
-  overflow: hidden;
-  line-height: 1;
   text-align: initial;
-  text-size-adjust: none;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
   -webkit-text-size-adjust: none;
+     -moz-text-size-adjust: none;
+          text-size-adjust: none;
   forced-color-adjust: none;
   transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
 }
 
-.bookr-text-layer span,
-.bookr-text-layer br {
+.bookr-text-layer :is(span, br) {
   color: transparent;
   position: absolute;
   white-space: pre;
   cursor: text;
   transform-origin: 0% 0%;
+  -webkit-user-select: text;
+     -moz-user-select: text;
+          user-select: text;
+}
+
+.bookr-text-layer > :not(.markedContent),
+.bookr-text-layer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x))
+    scale(var(--min-font-size-inv));
+}
+
+.bookr-text-layer .markedContent {
+  display: contents;
+}
+
+.bookr-text-layer span[role='img'] {
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  cursor: default;
+}
+
+/* Project selection color; geometry above stays identical to pdf.js. */
+.bookr-text-layer ::-moz-selection {
+  background: color-mix(in srgb, var(--reader-accent) 32%, transparent);
+  color: transparent;
 }
 
 .bookr-text-layer ::selection {
-  background-color: color-mix(in srgb, var(--reader-accent) 32%, transparent);
+  background: color-mix(in srgb, var(--reader-accent) 32%, transparent);
+  color: transparent;
+}
+
+.bookr-text-layer br::selection {
+  background: transparent;
 }
 
 .bookr-highlight-layer {

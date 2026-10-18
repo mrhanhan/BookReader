@@ -67,7 +67,7 @@ export function useReaderProgress({
   }, [bookId, initialLocator]);
 
   useEffect(() => {
-    if (!engine) return;
+    if (!engine || !bookId) return;
     const generation = ++generationRef.current;
 
     const writeLocal = (locator: Locator): void => {
@@ -102,11 +102,11 @@ export function useReaderProgress({
     const flush = async (): Promise<void> => {
       const locator = locatorRef.current;
       if (!locator) return;
-
-      // Capture the position locally even when the network call is skipped.
-      writeLocal(locator);
+      // An idle tick must not renew a stale cache entry; only a changed
+      // position is written locally and pushed to the server.
       if (!dirtyRef.current) return;
 
+      writeLocal(locator);
       dirtyRef.current = false;
       if (generationRef.current === generation) setSaveState('saving');
       try {
