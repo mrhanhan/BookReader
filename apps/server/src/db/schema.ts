@@ -1,6 +1,11 @@
 import {
+  AI_DEFAULT_DAILY_TOKEN_LIMIT,
+  AI_DEFAULT_MONTHLY_TOKEN_LIMIT,
   MEMBER_UPLOAD_QUOTA_BYTES,
   newId,
+  type AiAction,
+  type AiMessageRole,
+  type AiMessageStatus,
   type AnnotationColor,
   type BookConversionStatus,
   type BookFormat,
@@ -51,7 +56,13 @@ export const users = pgTable('users', {
     .notNull()
     .default(MEMBER_UPLOAD_QUOTA_BYTES),
   timezone: text('timezone').notNull().default('Asia/Shanghai'),
-  aiEnabled: boolean('ai_enabled').notNull().default(false),
+  aiEnabled: boolean('ai_enabled').notNull().default(true),
+  aiDailyTokenLimit: bigint('ai_daily_token_limit', { mode: 'number' })
+    .notNull()
+    .default(AI_DEFAULT_DAILY_TOKEN_LIMIT),
+  aiMonthlyTokenLimit: bigint('ai_monthly_token_limit', { mode: 'number' })
+    .notNull()
+    .default(AI_DEFAULT_MONTHLY_TOKEN_LIMIT),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: createdAt(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -364,3 +375,88 @@ export type AnnotationRow = typeof annotations.$inferSelect;
 
 /** A bookmark row as stored in Postgres. */
 export type BookmarkRow = typeof bookmarks.$inferSelect;
+
+
+/** Granularity of one row in `ai_usage`. */
+export type AiUsagePeriod = 'day' | 'month';
+export type AiMessageStatusRow = AiMessageStatus;
+
+/** Server-wide AI provider settings; there is at most one row (`default`). */
+export const aiConfig = pgTable('ai_config', {
+  id: text('id').primaryKey().default('default'),
+  baseUrl: text('base_url').notNull(),
+  chatModel: text('chat_model').notNull(),
+  reasonerModel: text('reasoner_model').notNull(),
+  apiKeyCiphertext: text('api_key_ciphertext').notNull(),
+  apiKeyIv: text('api_key_iv').notNull(),
+  apiKeyTag: text('api_key_tag').notNull(),
+  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A conversation anchored to a book and, optionally, a reading location. */
+export const aiThreads = pgTable(
+  'ai_threads',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bookId: uuid('book_id')
+      .notNull()
+      .references(() => books.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    anchorLocator: jsonb('anchor_locator').$type<Locator>(),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('ai_threads_user_book_updated_idx').on(table.userId, table.bookId, table.updatedAt),
+  ],
+);
+
+/** One message in an AI thread; deleted with its thread. */
+export const aiMessages = pgTable(
+  'ai_messages',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    threadId: uuid('thread_id')
+      .notNull()
+      .references(() => aiThreads.id, { onDelete: 'cascade' }),
+    role: text('role').$type<AiMessageRole>().notNull(),
+    content: text('content').notNull().default(''),
+    status: text('status').$type<AiMessageStatus>().notNull().default('complete'),
+    action: text('action').$type<AiAction>(),
+    selectedText: text('selected_text'),
+    model: text('model'),
+    promptVersion: text('prompt_version'),
+    promptTokens: integer('prompt_tokens').notNull().default(0),
+    completionTokens: integer('completion_tokens').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('ai_messages_thread_created_idx').on(table.threadId, table.createdAt)],
+);
+
+/** Token counters per user, reading period and period start. */
+export const aiUsage = pgTable(
+  'ai_usage',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    period: text('period').$type<AiUsagePeriod>().notNull(),
+    /** `YYYY-MM-DD` or `YYYY-MM` in the user's timezone. */
+    periodStart: text('period_start').notNull(),
+    promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
+    completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
+    reservedTokens: bigint('reserved_tokens', { mode: 'number' }).notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.period, table.periodStart] })],
+);
+
+export type AiThreadRow = typeof aiThreads.$inferSelect;
+export type AiMessageRow = typeof aiMessages.$inferSelect;
+export type AiConfigRow = typeof aiConfig.$inferSelect;
+export type AiUsageRow = typeof aiUsage.$inferSelect;
