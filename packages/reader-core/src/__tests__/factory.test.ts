@@ -13,13 +13,16 @@ vi.mock('../epub/engine', () => ({
 import { createReaderEngine } from '../factory';
 import { PdfReaderEngine } from '../pdf/engine';
 import { EpubReaderEngine } from '../epub/engine';
+import { ReflowReaderEngine } from '../reflow/engine';
 
 it('creates the engine that matches the reader kind', () => {
   expect(createReaderEngine('pdf')).toBeInstanceOf(PdfReaderEngine);
   expect(createReaderEngine('epub')).toBeInstanceOf(EpubReaderEngine);
+  expect(createReaderEngine('reflow')).toBeInstanceOf(ReflowReaderEngine);
 });
 
 it('returns a fresh engine per call', () => {
   expect(createReaderEngine('pdf')).not.toBe(createReaderEngine('pdf'));
   expect(createReaderEngine('epub')).not.toBe(createReaderEngine('epub'));
+  expect(createReaderEngine('reflow')).not.toBe(createReaderEngine('reflow'));
 });

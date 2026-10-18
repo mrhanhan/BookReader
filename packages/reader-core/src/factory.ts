@@ -1,10 +1,15 @@
-import type { ReaderKind } from '@bookr/shared';
-
 import { EpubReaderEngine } from './epub/engine';
 import { PdfReaderEngine } from './pdf/engine';
-import type { ReaderEngine } from './types';
+import { ReflowReaderEngine } from './reflow/engine';
+import type { ReaderEngine, ReaderEngineKind } from './types';
 
 /** Creates the engine that renders the given book kind. */
-export function createReaderEngine(kind: ReaderKind): ReaderEngine {
-  return kind === 'epub' ? new EpubReaderEngine() : new PdfReaderEngine();
+export function createReaderEngine(kind: ReaderEngineKind): ReaderEngine {
+  if (kind === 'epub') {
+    return new EpubReaderEngine();
+  }
+  if (kind === 'reflow') {
+    return new ReflowReaderEngine();
+  }
+  return new PdfReaderEngine();
 }
