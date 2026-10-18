@@ -2,20 +2,20 @@ import { newId } from '@bookr/shared';
 import { buildApp } from './app';
 import { loadConfig } from './config';
 import { closeDb, createDb } from './db/client';
-import { FakeJobQueue } from './jobs/fake';
-import { FakeStorage } from './storage/fake';
+import { PostgresJobQueue } from './jobs/queue';
+import { S3Storage } from './storage/s3';
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
+const clock = { now: () => new Date() };
 
 const app = buildApp({
   config,
   db,
-  // Replaced by the S3 adapter and Postgres queue in the uploads task.
-  storage: new FakeStorage(),
-  clock: { now: () => new Date() },
+  storage: new S3Storage(config.s3),
+  clock,
   ids: { newId },
-  jobs: new FakeJobQueue(),
+  jobs: new PostgresJobQueue(db, clock),
 });
 
 async function shutdown(signal: string): Promise<void> {

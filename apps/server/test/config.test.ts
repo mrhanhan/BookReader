@@ -4,8 +4,19 @@ import { loadConfig } from '../src/config';
 const BASE_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://bookr:bookr@localhost:5432/bookr',
   S3_ENDPOINT: 'http://localhost:9000',
+  S3_ACCESS_KEY: 'bookr',
+  S3_SECRET_KEY: 'bookr-secret-key',
   JWT_SECRET: 's'.repeat(32),
 };
+
+describe('loadConfig S3 credentials', () => {
+  it('requires access and secret keys', () => {
+    const { S3_ACCESS_KEY: _access, ...withoutAccess } = BASE_ENV;
+    expect(() => loadConfig(withoutAccess)).toThrow(/S3_ACCESS_KEY is required/);
+    const { S3_SECRET_KEY: _secret, ...withoutSecret } = BASE_ENV;
+    expect(() => loadConfig(withoutSecret)).toThrow(/S3_SECRET_KEY is required/);
+  });
+});
 
 describe('loadConfig TRUST_PROXY', () => {
   it('defaults to false', () => {

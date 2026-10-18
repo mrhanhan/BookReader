@@ -8,6 +8,7 @@ import type { Database } from './db/client';
 import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
 import type { StorageService } from './storage/types';
+import { registerUploadRoutes } from './uploads/routes';
 
 /** Source of the current time, injected so tests can control it. */
 export interface Clock {
@@ -118,6 +119,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get('/healthz', async () => ({ status: 'ok' }));
 
   registerAuthRoutes(app, deps);
+  registerUploadRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {

@@ -10,6 +10,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -25,6 +26,12 @@ export type UploadSessionStatus = 'created' | 'completed' | 'failed' | 'expired'
 
 /** State of background metadata extraction for a book. */
 export type MetadataStatus = 'pending' | 'done' | 'failed';
+
+/** Kinds of background work stored in the `jobs` table. */
+export type JobType = 'metadata' | 'convert' | 'cleanup';
+
+/** Lifecycle of a background job. */
+export type JobStatus = 'pending' | 'running' | 'done' | 'failed';
 
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
@@ -154,6 +161,23 @@ export const uploadSessions = pgTable('upload_sessions', {
   createdAt: createdAt(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
 });
+
+export const jobs = pgTable(
+  'jobs',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    type: text('type').$type<JobType>().notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    status: text('status').$type<JobStatus>().notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    runAt: timestamp('run_at', { withTimezone: true }).notNull().defaultNow(),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('jobs_status_run_at_idx').on(table.status, table.runAt)],
+);
 
 export const auditLogs = pgTable('audit_logs', {
   id: uuid('id').primaryKey().$defaultFn(newId),

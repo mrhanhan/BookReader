@@ -3,6 +3,9 @@ import {
   MEMBER_UPLOAD_QUOTA_BYTES,
   newId,
   type AuthTokens,
+  type BookConversionStatus,
+  type BookFormat,
+  type BookStatus,
   type Role,
 } from '@bookr/shared';
 import { eq } from 'drizzle-orm';
@@ -14,10 +17,20 @@ import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
 import { assertTestDatabase } from '../src/db/guard';
 import { migrate } from '../src/db/migrate';
-import { invites, users } from '../src/db/schema';
+import {
+  books,
+  invites,
+  libraries,
+  uploadSessions,
+  users,
+  type BookRow,
+  type MetadataStatus,
+} from '../src/db/schema';
 import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
+import { LIBRARY_ID, LIBRARY_NAME } from '../src/library/service';
 import { FakeStorage } from '../src/storage/fake';
+import { cleanupExpiredUploads } from '../src/uploads/service';
 
 const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? 'postgres://bookr:bookr@localhost:5432/bookr_test';
@@ -58,6 +71,8 @@ export async function resetDb(): Promise<void> {
   }
   const tables = rows.map((row) => `"${row.tablename}"`).join(', ');
   await testDb.$client.query(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+  fakeStorage.clear();
+  fakeJobQueue.clear();
 }
 
 /** In-memory storage shared by the test app and background jobs. */
@@ -96,6 +111,100 @@ export function buildTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 /** Jobs recorded by the fake queue since the process started. */
 export function enqueuedJobs(): Job[] {
   return fakeJobQueue.jobs;
+}
+
+/** Fields accepted by `seedBook`; everything has a sensible default. */
+export interface SeedBookInput {
+  uploadedBy: string;
+  libraryId?: string;
+  title?: string;
+  author?: string | null;
+  description?: string | null;
+  format?: BookFormat;
+  originalFilename?: string;
+  size?: number;
+  sha256?: string;
+  fileKey?: string | null;
+  coverKey?: string | null;
+  status?: BookStatus;
+  metadataStatus?: MetadataStatus;
+  conversionStatus?: BookConversionStatus;
+  deletedAt?: Date | null;
+  createdAt?: Date;
+}
+
+function randomSha256(): string {
+  return `${newId().replaceAll('-', '')}${newId().replaceAll('-', '')}`;
+}
+
+/**
+ * Inserts a book directly, creating the shared library first when needed.
+ * Returns the stored row so tests can assert on ids and storage keys.
+ */
+export async function seedBook(input: SeedBookInput): Promise<BookRow> {
+  const libraryId = input.libraryId ?? LIBRARY_ID;
+  await testDb
+    .insert(libraries)
+    .values({ id: libraryId, name: LIBRARY_NAME })
+    .onConflictDoNothing({ target: libraries.id });
+
+  const format = input.format ?? 'pdf';
+  const title = input.title ?? 'Test Book';
+  const [book] = await testDb
+    .insert(books)
+    .values({
+      libraryId,
+      uploadedBy: input.uploadedBy,
+      title,
+      author: input.author ?? null,
+      description: input.description ?? null,
+      format,
+      originalFilename: input.originalFilename ?? `${title}.${format}`,
+      size: input.size ?? 10,
+      sha256: input.sha256 ?? randomSha256(),
+      fileKey:
+        input.fileKey === undefined
+          ? `library/${libraryId}/books/${newId()}/original.${format}`
+          : input.fileKey,
+      coverKey: input.coverKey ?? null,
+      status: input.status ?? 'unread',
+      metadataStatus: input.metadataStatus ?? 'done',
+      conversionStatus: input.conversionStatus ?? 'none',
+      deletedAt: input.deletedAt ?? null,
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    })
+    .returning();
+
+  if (!book) {
+    throw new Error('seedBook could not insert a book');
+  }
+  return book;
+}
+
+/** Reads the storage key of an upload session created through the API. */
+export async function findSessionObjectKey(uploadId: string): Promise<string> {
+  const [session] = await testDb
+    .select({ objectKey: uploadSessions.objectKey })
+    .from(uploadSessions)
+    .where(eq(uploadSessions.id, uploadId))
+    .limit(1);
+  if (!session) {
+    throw new Error(`Upload session ${uploadId} does not exist`);
+  }
+  return session.objectKey;
+}
+
+/** Backdates a session's expiry so cleanup and completion see it as stale. */
+export async function expireSession(uploadId: string, msAgo: number): Promise<void> {
+  await testDb
+    .update(uploadSessions)
+    .set({ expiresAt: new Date(Date.now() - msAgo) })
+    .where(eq(uploadSessions.id, uploadId));
+}
+
+/** Runs the expired-session sweep against the shared test dependencies. */
+export async function cleanupExpiredUploadsForTest(): Promise<number> {
+  return cleanupExpiredUploads(await buildTestDeps());
 }
 
 /** Dependency object shared by the app and background jobs in tests. */
