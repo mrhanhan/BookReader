@@ -3,6 +3,7 @@ import type {
   BookDto,
   CompleteUploadResponse,
   CreateUploadResponse,
+  PresignedUploadTarget,
 } from '@bookr/shared';
 import { ApiError, apiFetch } from '../api/client';
 import { messageForApiError } from './errorMessages';
@@ -45,8 +46,8 @@ export interface CreateUploadInput {
 export interface UploadDeps {
   hash: (file: File, signal?: AbortSignal) => Promise<string>;
   create: (input: CreateUploadInput, signal?: AbortSignal) => Promise<CreateUploadResponse>;
-  put: (
-    url: string,
+  post: (
+    target: PresignedUploadTarget,
     file: File,
     onProgress: (percent: number) => void,
     signal?: AbortSignal,
@@ -77,7 +78,7 @@ function extensionOf(filename: string): string {
 /**
  * Resolves the content type from the extension rather than `File.type`.
  * The server derives the format from the extension and rejects a mismatch,
- * and the presigned PUT signs the content type, so both steps must agree.
+ * and the presigned POST policy signs the content type, so both steps must agree.
  */
 export function contentTypeForFile(file: File): string {
   const contentType = CONTENT_TYPE_BY_EXTENSION[extensionOf(file.name)];
@@ -123,11 +124,12 @@ export function mapUploadError(error: unknown): Error {
 }
 
 /**
- * PUTs the file to a presigned S3 target with upload progress. XHR is used
- * because `fetch` still cannot report request-body progress.
+ * POSTs the file to a presigned S3 target with upload progress. The policy
+ * fixes the byte length, so the browser sends exactly the declared size. XHR is
+ * used because `fetch` still cannot report request-body progress.
  */
-export function putWithProgress(
-  url: string,
+export function postWithProgress(
+  target: PresignedUploadTarget,
   file: File,
   onProgress: (percent: number) => void,
   signal?: AbortSignal,
@@ -139,14 +141,15 @@ export function putWithProgress(
     }
 
     const request = new XMLHttpRequest();
-    request.open('PUT', url);
+    request.open('POST', target.url);
 
-    try {
-      request.setRequestHeader('Content-Type', contentTypeForFile(file));
-    } catch (error) {
-      reject(error);
-      return;
+    // The policy names every field it signs; S3 rejects the request when a
+    // field is missing. The file part must come after all of them.
+    const form = new FormData();
+    for (const [name, value] of Object.entries(target.fields)) {
+      form.append(name, value);
     }
+    form.append('file', file);
 
     const abort = () => request.abort();
     signal?.addEventListener('abort', abort, { once: true });
@@ -173,7 +176,7 @@ export function putWithProgress(
       reject(new DOMException('上传已取消', 'AbortError'));
     };
 
-    request.send(file);
+    request.send(form);
   });
 }
 
@@ -278,7 +281,7 @@ function defaultDeps(): UploadDeps {
         body: JSON.stringify(input),
         signal,
       }),
-    put: putWithProgress,
+    post: postWithProgress,
     complete: async (uploadId, signal) =>
       apiFetch<CompleteUploadResponse>(
         `/api/uploads/${encodeURIComponent(uploadId)}/complete`,
@@ -290,7 +293,7 @@ function defaultDeps(): UploadDeps {
 /**
  * Runs the presigned upload pipeline: size guard, incremental SHA-256,
  * session creation (which also performs the duplicate and quota checks),
- * the direct PUT, then completion. Every failure is normalised to the
+ * the presigned POST, then completion. Every failure is normalised to the
  * upload error classes the dialog understands.
  */
 export async function uploadBook(
@@ -327,9 +330,9 @@ export async function uploadBook(
       deps.onProgress?.(Math.max(0, Math.min(100, Math.round(percent))));
     };
     if (deps.signal) {
-      await deps.put(created.putUrl, file, reportProgress, deps.signal);
+      await deps.post(created.upload, file, reportProgress, deps.signal);
     } else {
-      await deps.put(created.putUrl, file, reportProgress);
+      await deps.post(created.upload, file, reportProgress);
     }
     throwIfAborted(deps.signal);
 

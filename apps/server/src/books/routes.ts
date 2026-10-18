@@ -49,12 +49,12 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { book: await restoreBook(deps, request.user!, id) };
   });
 
-  // Retrying a failed MOBI/AZW3 conversion is limited to the uploader or an
-  // admin; the route only queues work, so 202 is the honest response.
+  // Retrying a conversion is limited to the uploader or an admin; the route
+  // only queues work, so 202 is the honest response.
   app.post('/api/books/:id/convert', { preHandler: requireAuth }, async (request, reply) => {
     const { id } = bookIdParamsSchema.parse(request.params);
     await retryConversion(deps, request.user!, id);
-    return reply.status(202).send();
+    return reply.status(202).send({ queued: true });
   });
 
   app.get('/api/trash', { preHandler: requireAuth }, async () => {

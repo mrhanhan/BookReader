@@ -46,6 +46,8 @@ export interface BookDto {
   categories: CategoryDto[];
   uploadedBy: { id: string; displayName: string };
   conversionStatus: BookConversionStatus;
+  /** Why the last conversion attempt failed; null unless it failed. */
+  conversionError: string | null;
   createdAt: string;
   updatedAt: string;
   /** Set when the book was moved to the trash; null while it is on the shelf. */

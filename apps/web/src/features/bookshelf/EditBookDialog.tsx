@@ -2,10 +2,10 @@ import { useId, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { BookDto, BookStatus, UpdateBookInput } from '@bookr/shared';
 import { Button, Dialog, Input, cn } from '@bookr/ui';
-import { useCategories } from '../../api/categories';
-import { useUpdateBook, useUploadCover } from '../../api/books';
+import { useCategories, useCreateCategory } from '../../api/categories';
+import { useRetryConversion, useUpdateBook, useUploadCover } from '../../api/books';
 import { messageForApiError } from '../../lib/errorMessages';
-import { STATUS_LABELS } from './labels';
+import { CONVERSION_LABELS, STATUS_LABELS, canRetryConversion } from './labels';
 
 export interface EditBookDialogProps {
   book: BookDto;
@@ -30,8 +30,10 @@ function isCoverImage(file: File): boolean {
 /** Metadata and cover editing for a book the current user manages. */
 export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
   const categoriesQuery = useCategories();
+  const createCategory = useCreateCategory();
   const updateBook = useUpdateBook();
   const uploadCover = useUploadCover();
+  const retryConversion = useRetryConversion();
   const statusId = useId();
   const descriptionId = useId();
   const coverId = useId();
@@ -47,6 +49,12 @@ export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
   const [formError, setFormError] = useState<string | null>(null);
   const [coverError, setCoverError] = useState<string | null>(null);
   const [coverPreview, setCoverPreview] = useState(book.coverUrl);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryColor, setNewCategoryColor] = useState('#8C5A3B');
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [conversionStatus, setConversionStatus] = useState(book.conversionStatus);
+  const [conversionError, setConversionError] = useState(book.conversionError);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
 
   const categories = categoriesQuery.data ?? [];
 
@@ -56,6 +64,40 @@ export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
         ? current.filter((id) => id !== categoryId)
         : [...current, categoryId],
     );
+  }
+
+  function handleCreateCategory() {
+    const name = newCategoryName.trim();
+    if (!name) {
+      setCategoryError('分类名称不能为空');
+      return;
+    }
+    setCategoryError(null);
+    createCategory.mutate(
+      { name, color: newCategoryColor },
+      {
+        onSuccess: (category) => {
+          setNewCategoryName('');
+          // Select the new category right away; the list refetches behind it.
+          setCategoryIds((current) =>
+            current.includes(category.id) ? current : [...current, category.id],
+          );
+        },
+        onError: (error) => setCategoryError(messageForApiError(error)),
+      },
+    );
+  }
+
+  function handleRetryConversion() {
+    setConversionError(null);
+    setRetryNotice(null);
+    retryConversion.mutate(book.id, {
+      onSuccess: () => {
+        setConversionStatus('pending');
+        setRetryNotice('已重新提交转换，完成后会自动刷新。');
+      },
+      onError: (error) => setConversionError(messageForApiError(error)),
+    });
   }
 
   function handleCoverChange(event: ChangeEvent<HTMLInputElement>) {
@@ -136,6 +178,36 @@ export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
           </p>
         ) : null}
 
+        {conversionStatus !== 'none' ? (
+          <div className="flex flex-col gap-1.5 rounded-md border border-border px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm text-ink">
+                EPUB 转换：{CONVERSION_LABELS[conversionStatus]}
+              </span>
+              {canRetryConversion(conversionStatus) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  loading={retryConversion.isPending}
+                  onClick={handleRetryConversion}
+                >
+                  重试转换
+                </Button>
+              ) : null}
+            </div>
+            {conversionStatus === 'failed' && conversionError ? (
+              <p role="alert" className="text-xs text-highlight">
+                {conversionError}
+              </p>
+            ) : null}
+            {retryNotice ? (
+              <p role="status" className="text-xs text-accent">
+                {retryNotice}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         <Input
           label="书名"
           value={title}
@@ -187,7 +259,7 @@ export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
           {categoriesQuery.isPending ? (
             <p className="text-xs text-muted">正在加载分类…</p>
           ) : categories.length === 0 ? (
-            <p className="text-xs text-muted">还没有分类，可在管理页创建。</p>
+            <p className="text-xs text-muted">还没有分类，可以在下面新建一个。</p>
           ) : (
             <div className="flex flex-wrap gap-x-5 gap-y-2">
               {categories.map((category) => (
@@ -213,6 +285,40 @@ export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
               ))}
             </div>
           )}
+
+          <div className="flex flex-wrap items-end gap-2 rounded-md border border-dashed border-border px-3 py-2">
+            <div className="min-w-40 flex-1">
+              <Input
+                label="新建分类"
+                value={newCategoryName}
+                maxLength={40}
+                placeholder="例如：历史"
+                error={categoryError ?? undefined}
+                onChange={(event) => setNewCategoryName(event.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor={`${statusId}-category-color`} className="text-sm font-medium text-ink">
+                颜色
+              </label>
+              <input
+                id={`${statusId}-category-color`}
+                type="color"
+                aria-label="分类颜色"
+                value={newCategoryColor}
+                onChange={(event) => setNewCategoryColor(event.target.value)}
+                className="h-9 w-14 rounded-md border border-border bg-surface p-1"
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={createCategory.isPending}
+              onClick={handleCreateCategory}
+            >
+              创建分类
+            </Button>
+          </div>
         </fieldset>
 
         <div className="flex flex-col gap-2 border-t border-border pt-4">

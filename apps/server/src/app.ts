@@ -8,6 +8,7 @@ import { registerAuthRoutes } from './auth/routes';
 import type { Converter } from './books/conversion';
 import { registerBookRoutes } from './books/routes';
 import { COVER_MAX_BYTES } from './books/service';
+import type { MetadataRunner } from './books/metadata-runner';
 import { registerCategoryRoutes } from './categories/routes';
 import type { AppConfig } from './config';
 import type { Database } from './db/client';
@@ -36,6 +37,8 @@ export interface AppDeps {
   jobs: JobQueue;
   /** Turns MOBI/AZW3 originals into EPUBs for the reader. */
   converter: Converter;
+  /** Parses EPUB/PDF metadata, in-process in tests and isolated in production. */
+  metadataRunner: MetadataRunner;
 }
 
 const LOG_REDACT_PATHS = [

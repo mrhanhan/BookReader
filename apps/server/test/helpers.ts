@@ -15,6 +15,7 @@ import { hashPassword } from '../src/auth/password';
 import { signAccessToken } from '../src/auth/tokens';
 import { FakeConverter } from '../src/books/conversion';
 import { runMetadataJob } from '../src/books/metadata';
+import { InProcessMetadataRunner } from '../src/books/metadata-runner';
 import { cleanupTrash } from '../src/books/service';
 import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
@@ -137,6 +138,7 @@ export interface SeedBookInput {
   status?: BookStatus;
   metadataStatus?: MetadataStatus;
   conversionStatus?: BookConversionStatus;
+  conversionError?: string | null;
   deletedAt?: Date | null;
   createdAt?: Date;
 }
@@ -178,6 +180,7 @@ export async function seedBook(input: SeedBookInput): Promise<BookRow> {
       status: input.status ?? 'unread',
       metadataStatus: input.metadataStatus ?? 'done',
       conversionStatus: input.conversionStatus ?? 'none',
+      conversionError: input.conversionError ?? null,
       deletedAt: input.deletedAt ?? null,
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
     })
@@ -242,6 +245,7 @@ export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise
     ids: { newId },
     jobs: fakeJobQueue,
     converter: fakeConverter,
+    metadataRunner: new InProcessMetadataRunner(),
   };
 }
 

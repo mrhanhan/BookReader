@@ -1,9 +1,10 @@
 import type { BookFormat } from '@bookr/shared';
-import AdmZip from 'adm-zip';
 import { and, eq } from 'drizzle-orm';
 import { XMLParser } from 'fast-xml-parser';
 import { posix } from 'node:path';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { fromBufferPromise } from 'yauzl';
+import type { Entry, ZipFile } from 'yauzl';
 import type { AppDeps } from '../app';
 import { books, type NewBook } from '../db/schema';
 import { titleFromFilename } from '../uploads/service';
@@ -56,8 +57,9 @@ export interface SizedEntry {
 
 /**
  * Rejects an archive whose declared uncompressed entry sizes exceed the
- * upload limit. Runs on central-directory headers, before any entry is
- * decompressed, so a small zip bomb is refused without allocating its output.
+ * upload limit. This is only a cheap early check: central-directory sizes are
+ * attacker-controlled, so every entry that is actually read is additionally
+ * capped while it streams (see `readEntryBytes`).
  */
 export function assertZipWithinLimit(
   entries: readonly SizedEntry[],
@@ -77,6 +79,111 @@ export function assertEntryWithinLimit(entry: SizedEntry, maxBytes: number): voi
   if (entry.header.size > maxBytes) {
     throw new EpubSizeLimitError('EPUB entry exceeds the size limit');
   }
+}
+
+/** Decompressed bytes still allowed for one EPUB across all entries read. */
+interface ZipBudget {
+  remaining: number;
+}
+
+/** An open archive and its central directory, with no entries inflated yet. */
+interface EpubArchive {
+  zip: ZipFile;
+  entries: Entry[];
+}
+
+/**
+ * Opens an EPUB and reads its central directory. `yauzl` inflates entries on
+ * demand, so a lying header can never make it allocate the entry's real size
+ * up front.
+ */
+async function openEpubArchive(buffer: Buffer): Promise<EpubArchive> {
+  const zip = await fromBufferPromise(buffer, {
+    lazyEntries: true,
+    // Entries are read after enumeration, so the reader must stay open.
+    autoClose: false,
+  });
+  const entries: Entry[] = [];
+  try {
+    for await (const entry of zip.eachEntry()) {
+      entries.push(entry);
+    }
+  } catch (error) {
+    zip.close();
+    throw error;
+  }
+  return { zip, entries };
+}
+
+/**
+ * Streams one entry, aborting as soon as the declared per-entry cap or the
+ * archive-wide budget would be exceeded. The bytes buffered never exceed the
+ * cap, however much the deflate stream actually contains.
+ */
+async function readEntryBytes(
+  zip: ZipFile,
+  entry: Entry,
+  maxBytes: number,
+  budget: ZipBudget,
+): Promise<Buffer> {
+  assertEntryWithinLimit({ header: { size: entry.uncompressedSize } }, maxBytes);
+
+  const cap = Math.min(maxBytes, budget.remaining);
+  if (cap <= 0) {
+    throw new EpubSizeLimitError('EPUB uncompressed size exceeds the limit');
+  }
+
+  const stream = await zip.openReadStreamPromise(entry);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for await (const chunk of stream) {
+      const bytes = chunk as Buffer;
+      total += bytes.length;
+      budget.remaining -= bytes.length;
+      if (total > cap) {
+        throw new EpubSizeLimitError('EPUB entry exceeds the size limit');
+      }
+      chunks.push(bytes);
+    }
+  } finally {
+    stream.destroy();
+  }
+  return Buffer.concat(chunks, total);
+}
+
+/** Finds an entry by path, tolerating URL encoding and case differences. */
+function findEntry(entries: readonly Entry[], entryPath: string): Entry | undefined {
+  const candidates = [entryPath];
+  try {
+    const decoded = decodeURIComponent(entryPath);
+    if (decoded !== entryPath) {
+      candidates.push(decoded);
+    }
+  } catch {
+    // A malformed escape simply means there is nothing to decode.
+  }
+
+  for (const candidate of candidates) {
+    const match = entries.find((entry) => entry.fileName === candidate);
+    if (match) {
+      return match;
+    }
+  }
+
+  const lowerCandidates = new Set(candidates.map((candidate) => candidate.toLowerCase()));
+  return entries.find((entry) => lowerCandidates.has(entry.fileName.toLowerCase()));
+}
+
+/** Reads one entry within its own cap and the shared archive budget. */
+async function readZipEntry(
+  archive: EpubArchive,
+  entryPath: string,
+  maxBytes: number,
+  budget: ZipBudget,
+): Promise<Buffer | undefined> {
+  const entry = findEntry(archive.entries, entryPath);
+  return entry ? readEntryBytes(archive.zip, entry, maxBytes, budget) : undefined;
 }
 
 /** Preferred render scale for a PDF cover (1.5x). */
@@ -219,41 +326,6 @@ function coverFromData(data: Buffer): ExtractedCover | undefined {
   return undefined;
 }
 
-/** Finds a zip entry, tolerating case and URL-encoding differences in package paths. */
-function readZipEntry(
-  zip: AdmZip,
-  entryPath: string,
-  maxBytes: number,
-): Buffer | undefined {
-  const candidates = [entryPath];
-  try {
-    const decoded = decodeURIComponent(entryPath);
-    if (decoded !== entryPath) {
-      candidates.push(decoded);
-    }
-  } catch {
-    // A malformed escape simply means there is nothing to decode.
-  }
-
-  for (const candidate of candidates) {
-    const entry = zip.getEntry(candidate);
-    if (entry) {
-      assertEntryWithinLimit(entry, maxBytes);
-      return entry.getData();
-    }
-  }
-
-  const lowerCandidates = new Set(candidates.map((candidate) => candidate.toLowerCase()));
-  const match = zip
-    .getEntries()
-    .find((entry) => lowerCandidates.has(entry.entryName.toLowerCase()));
-  if (!match) {
-    return undefined;
-  }
-  assertEntryWithinLimit(match, maxBytes);
-  return match.getData();
-}
-
 function resolvePackagePath(opfPath: string, href: string): string {
   const withoutFragment = href.split('#')[0] ?? href;
   const base = posix.dirname(opfPath);
@@ -275,7 +347,12 @@ function findRoot(parsed: XmlRecord, localName: string): XmlRecord | undefined {
   return undefined;
 }
 
-function findCoverEntry(zip: AdmZip, opfPath: string, opf: XmlRecord): ExtractedCover | undefined {
+async function findCoverEntry(
+  archive: EpubArchive,
+  opfPath: string,
+  opf: XmlRecord,
+  budget: ZipBudget,
+): Promise<ExtractedCover | undefined> {
   const metadata = isRecord(opf.metadata) ? opf.metadata : {};
   const manifest = isRecord(opf.manifest) ? opf.manifest : {};
   const items = asArray(manifest.item).filter(isRecord);
@@ -301,60 +378,77 @@ function findCoverEntry(zip: AdmZip, opfPath: string, opf: XmlRecord): Extracted
     return undefined;
   }
 
-  const data = readZipEntry(zip, resolvePackagePath(opfPath, href), MAX_EPUB_COVER_BYTES);
+  const data = await readZipEntry(
+    archive,
+    resolvePackagePath(opfPath, href),
+    MAX_EPUB_COVER_BYTES,
+    budget,
+  );
   return data ? coverFromData(data) : undefined;
 }
 
-function extractEpub(buffer: Buffer): ExtractedMetadata {
-  const zip = new AdmZip(buffer);
+async function extractEpub(buffer: Buffer): Promise<ExtractedMetadata> {
+  const archive = await openEpubArchive(buffer);
 
-  // Check declared sizes before decompressing anything.
-  assertZipWithinLimit(zip.getEntries());
-
-  const containerXml = readZipEntry(zip, 'META-INF/container.xml', MAX_EPUB_XML_BYTES);
-  if (!containerXml) {
-    throw new Error('EPUB container.xml is missing');
-  }
-
-  const container = findRoot(parseXml(containerXml.toString('utf8')), 'container');
-  const rootfiles = container && isRecord(container.rootfiles) ? container.rootfiles : {};
-  const rootfile = asArray(rootfiles.rootfile).find(isRecord);
-  const opfPath = rootfile ? attribute(rootfile, '@_full-path') : undefined;
-  if (!opfPath) {
-    throw new Error('EPUB container.xml has no rootfile');
-  }
-
-  const opfXml = readZipEntry(zip, opfPath, MAX_EPUB_XML_BYTES);
-  if (!opfXml) {
-    throw new Error('EPUB package document is missing');
-  }
-
-  const opf = findRoot(parseXml(opfXml.toString('utf8')), 'package');
-  if (!opf) {
-    throw new Error('EPUB package document has no package element');
-  }
-
-  const metadata = isRecord(opf.metadata) ? opf.metadata : {};
-  const title = valuesByLocalName(metadata, 'title')[0];
-  const author = joinUnique(valuesByLocalName(metadata, 'creator'));
-  const description = valuesByLocalName(metadata, 'description')[0];
-
-  // A broken or oversized cover must not discard metadata that parsed cleanly.
-  let cover: ExtractedCover | undefined;
-  let coverError: unknown;
   try {
-    cover = findCoverEntry(zip, opfPath, opf);
-  } catch (error) {
-    coverError = error;
-  }
+    // Reject obvious bombs early; actual reads are capped while streaming.
+    assertZipWithinLimit(
+      archive.entries.map((entry) => ({ header: { size: entry.uncompressedSize } })),
+    );
+    const budget: ZipBudget = { remaining: MAX_EPUB_UNCOMPRESSED_BYTES };
 
-  return {
-    ...(title ? { title } : {}),
-    ...(author ? { author } : {}),
-    ...(description ? { description } : {}),
-    ...(cover ? { cover } : {}),
-    ...(coverError !== undefined ? { coverError } : {}),
-  };
+    const containerXml = await readZipEntry(
+      archive,
+      'META-INF/container.xml',
+      MAX_EPUB_XML_BYTES,
+      budget,
+    );
+    if (!containerXml) {
+      throw new Error('EPUB container.xml is missing');
+    }
+
+    const container = findRoot(parseXml(containerXml.toString('utf8')), 'container');
+    const rootfiles = container && isRecord(container.rootfiles) ? container.rootfiles : {};
+    const rootfile = asArray(rootfiles.rootfile).find(isRecord);
+    const opfPath = rootfile ? attribute(rootfile, '@_full-path') : undefined;
+    if (!opfPath) {
+      throw new Error('EPUB container.xml has no rootfile');
+    }
+
+    const opfXml = await readZipEntry(archive, opfPath, MAX_EPUB_XML_BYTES, budget);
+    if (!opfXml) {
+      throw new Error('EPUB package document is missing');
+    }
+
+    const opf = findRoot(parseXml(opfXml.toString('utf8')), 'package');
+    if (!opf) {
+      throw new Error('EPUB package document has no package element');
+    }
+
+    const metadata = isRecord(opf.metadata) ? opf.metadata : {};
+    const title = valuesByLocalName(metadata, 'title')[0];
+    const author = joinUnique(valuesByLocalName(metadata, 'creator'));
+    const description = valuesByLocalName(metadata, 'description')[0];
+
+    // A broken or oversized cover must not discard metadata that parsed cleanly.
+    let cover: ExtractedCover | undefined;
+    let coverError: unknown;
+    try {
+      cover = await findCoverEntry(archive, opfPath, opf, budget);
+    } catch (error) {
+      coverError = error;
+    }
+
+    return {
+      ...(title ? { title } : {}),
+      ...(author ? { author } : {}),
+      ...(description ? { description } : {}),
+      ...(cover ? { cover } : {}),
+      ...(coverError !== undefined ? { coverError } : {}),
+    };
+  } finally {
+    archive.zip.close();
+  }
 }
 
 /** Renders the first page into a PNG cover using the native canvas backend. */
@@ -535,7 +629,9 @@ export async function runMetadataJob(deps: AppDeps, bookId: string): Promise<voi
     const format: BookFormat = book.epubKey ? 'epub' : book.format;
 
     const buffer = await deps.storage.getObject(sourceKey);
-    const extracted = await extractMetadata({ buffer, format });
+    // Production runs this in a separate process with a heap cap; tests inject
+    // the in-process runner so they never pay for a child process.
+    const extracted = await deps.metadataRunner.extract({ buffer, format });
 
     if (extracted.coverError !== undefined) {
       logCoverFailure(bookId, extracted.coverError);

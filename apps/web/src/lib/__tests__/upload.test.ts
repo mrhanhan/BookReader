@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_UPLOAD_BYTES } from '@bookr/shared/constants';
-import type { BookDto } from '@bookr/shared';
+import type { BookDto, PresignedUploadTarget } from '@bookr/shared';
 import {
   DuplicateBookError,
   InvalidFileError,
@@ -15,12 +15,17 @@ const deps = (overrides: Partial<UploadDeps> = {}): UploadDeps => ({
   hash: vi.fn(async () => 'a'.repeat(64)),
   create: vi.fn(async () => ({
     uploadId: 'u1',
-    putUrl: 'http://minio/u1',
+    upload: {
+      url: 'http://minio/u1',
+      fields: { key: 'library/u1/original.pdf', 'Content-Type': 'application/pdf' },
+    },
     expiresAt: new Date().toISOString(),
   })),
-  put: vi.fn(async (_url: string, _file: File, onProgress: (n: number) => void) => {
-    onProgress(100);
-  }),
+  post: vi.fn(
+    async (_target: PresignedUploadTarget, _file: File, onProgress: (n: number) => void) => {
+      onProgress(100);
+    },
+  ),
   complete: vi.fn(async () => ({ book: { id: 'b1', title: 'a' } as BookDto })),
   ...overrides,
 });
@@ -33,7 +38,7 @@ it('hashes, uploads and completes in order', async () => {
   expect(d.create).toHaveBeenCalledWith(
     expect.objectContaining({ filename: 'a.pdf', sha256: 'a'.repeat(64) }),
   );
-  expect(d.put).toHaveBeenCalled();
+  expect(d.post).toHaveBeenCalled();
   expect(d.complete).toHaveBeenCalledWith('u1');
   expect(progress.at(-1)).toBe(100);
 });
@@ -54,7 +59,7 @@ it('surfaces quota errors without calling PUT', async () => {
     }),
   });
   await expect(uploadBook(file, d)).rejects.toBeInstanceOf(QuotaExceededError);
-  expect(d.put).not.toHaveBeenCalled();
+  expect(d.post).not.toHaveBeenCalled();
 });
 
 it('rejects oversized files before hashing', async () => {

@@ -3,7 +3,7 @@ import type { BookDto } from '@bookr/shared';
 import { Button, Dialog, EmptyState } from '@bookr/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
-import { BOOKS_QUERY_KEY, useBooks, useDeleteBook } from '../../api/books';
+import { BOOKS_QUERY_KEY, useBooks, useDeleteBook, useRetryConversion } from '../../api/books';
 import { useCategories } from '../../api/categories';
 import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
@@ -49,6 +49,7 @@ export function BookshelfPage() {
   });
   const categoriesQuery = useCategories();
   const deleteBook = useDeleteBook();
+  const retryConversion = useRetryConversion();
   const dismissToast = useCallback(() => setToast(null), []);
 
   function changeView(next: ShelfView) {
@@ -75,6 +76,13 @@ export function BookshelfPage() {
         setToast('已移入回收站');
       },
       onError: (error) => setDeleteError(messageForApiError(error)),
+    });
+  }
+
+  function retryBookConversion(book: BookDto) {
+    retryConversion.mutate(book.id, {
+      onSuccess: () => setToast(`已重新开始转换《${book.title}》`),
+      onError: (error) => setToast(messageForApiError(error)),
     });
   }
 
@@ -200,6 +208,8 @@ export function BookshelfPage() {
                 setDeleteError(null);
                 setDeletingBook(selected);
               }}
+              onRetryConversion={retryBookConversion}
+              retryPending={retryConversion.isPending}
             />
           ))}
         </div>

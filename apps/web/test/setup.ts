@@ -49,6 +49,7 @@ function book(overrides: Partial<BookDto> & Pick<BookDto, 'id' | 'title'>): Book
     categories: [],
     uploadedBy: { id: 'user-other', displayName: '林舟' },
     conversionStatus: 'none',
+    conversionError: null,
     createdAt: new Date(now - 7 * DAY_MS).toISOString(),
     updatedAt: new Date(now - 2 * DAY_MS).toISOString(),
     deletedAt: null,
@@ -309,6 +310,14 @@ export const handlers = [
     restored.updatedAt = new Date().toISOString();
     fixtures.shelf.unshift(restored);
     return HttpResponse.json({ book: restored });
+  }),
+  http.post('/api/books/:id/convert', ({ params }) => {
+    const found = fixtures.shelf.find((item) => item.id === params.id);
+    if (!found) return error(404, 'NOT_FOUND', 'Book not found');
+    found.conversionStatus = 'pending';
+    found.conversionError = null;
+    found.updatedAt = new Date().toISOString();
+    return HttpResponse.json({ queued: true }, { status: 202 });
   }),
   http.post('/api/books/:id/cover', async ({ params, request }) => {
     const found = fixtures.shelf.find((item) => item.id === params.id);

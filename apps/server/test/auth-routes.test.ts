@@ -9,6 +9,7 @@ import {
   createInvite,
   loginAs,
   resetDb,
+  seedBook,
   seedUser,
   setUserInactive,
   testDb,
@@ -26,6 +27,24 @@ it('registers with a valid invite and returns a usable access token', async () =
   const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { authorization: `Bearer ${tokens.accessToken}` } });
   expect(me.statusCode).toBe(200);
   expect(me.json()).toMatchObject({ username: 'reader', role: 'member' });
+});
+
+it('reports usage that still includes trashed books', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  await seedBook({ uploadedBy: user.id, size: 100 });
+  await seedBook({ uploadedBy: user.id, size: 40, deletedAt: new Date() });
+
+  const tokens = await loginAs(app, user);
+  const me = await app.inject({
+    method: 'GET',
+    url: '/api/auth/me',
+    headers: { authorization: `Bearer ${tokens.accessToken}` },
+  });
+  expect(me.statusCode).toBe(200);
+  // The trashed book's object still occupies disk until the 30-day purge.
+  expect(me.json()).toMatchObject({ uploadUsedBytes: 140, libraryUsedBytes: 140 });
 });
 
 it('rejects used, expired and unknown invite codes', async () => {

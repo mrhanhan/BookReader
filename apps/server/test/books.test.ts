@@ -83,6 +83,29 @@ it('soft-deletes, hides from the shelf, lists in trash and restores', async () =
   expect(logs.every((log) => log.target === book.id)).toBe(true);
 });
 
+it('refuses to restore a book whose content was re-uploaded while trashed', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const sha256 = 'd'.repeat(64);
+  const trashed = await seedBook({ uploadedBy: user.id, title: '旧版本', sha256 });
+  await app.inject({ method: 'DELETE', url: `/api/books/${trashed.id}`, headers: await authHeader(user) });
+
+  // The duplicate check only looks at live books, so this upload succeeds and
+  // now owns the partial unique index on (library, sha256).
+  const replacement = await seedBook({ uploadedBy: user.id, title: '新版本', sha256 });
+
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/books/${trashed.id}/restore`,
+    headers: await authHeader(user),
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().error.code).toBe('DUPLICATE_BOOK');
+  expect(res.json().error.details.existingBookId).toBe(replacement.id);
+  expect((await getBookRow(trashed.id))!.deletedAt).not.toBeNull();
+});
+
 it('lets the uploader replace the cover but forbids other members', async () => {
   await resetDb();
   const app = await buildTestApp();

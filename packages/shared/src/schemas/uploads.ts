@@ -16,10 +16,16 @@ export const createUploadSchema = z.object({
   contentType: z.enum(UPLOAD_CONTENT_TYPES),
 });
 
+/** A presigned S3 POST target: form fields plus the final file part. */
+export interface PresignedUploadTarget {
+  url: string;
+  fields: Record<string, string>;
+}
+
 /** Presigned upload target for a new book file. */
 export interface CreateUploadResponse {
   uploadId: string;
-  putUrl: string;
+  upload: PresignedUploadTarget;
   expiresAt: string;
 }
 

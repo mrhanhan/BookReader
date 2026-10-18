@@ -94,6 +94,7 @@ it('requests the next page and renders its books', async () => {
     categories: [],
     uploadedBy: { id: 'user-other', displayName: '林舟' },
     conversionStatus: 'none',
+    conversionError: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     deletedAt: null,
@@ -127,4 +128,63 @@ it('requests the next page and renders its books', async () => {
   expect(await screen.findByText('第一页的书')).toBeInTheDocument();
   expect(lastUrl).toContain('page=1');
   expect(lastUrl).toContain('format=epub');
+});
+
+it('shows a failed conversion and lets the uploader retry it', async () => {
+  const failed: BookDto = {
+    id: 'book-failed-conversion',
+    title: '转换失败的书',
+    author: null,
+    description: null,
+    format: 'mobi',
+    size: 2048,
+    coverUrl: null,
+    status: 'unread',
+    progressPercent: 0,
+    categories: [],
+    uploadedBy: { id: 'user-reader', displayName: '读者' },
+    conversionStatus: 'failed',
+    conversionError: 'Conversion process exited with code 1',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    deletedAt: null,
+  };
+
+  server.use(
+    http.get('/api/books', () =>
+      HttpResponse.json({ items: [failed], total: 1, page: 1, pageSize: 24 }),
+    ),
+    http.post('/api/books/:id/convert', () =>
+      HttpResponse.json({ queued: true }, { status: 202 }),
+    ),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  const card = (await screen.findByText('转换失败的书')).closest(
+    '[data-testid="book-card"]',
+  ) as HTMLElement;
+  expect(within(card).getByText('转换失败')).toBeInTheDocument();
+  expect(within(card).getByText('Conversion process exited with code 1')).toBeInTheDocument();
+
+  await userEvent.click(
+    within(card).getByRole('button', { name: '重试转换《转换失败的书》' }),
+  );
+  expect(await screen.findByText('已重新开始转换《转换失败的书》')).toBeInTheDocument();
+});
+
+it('lets a member create a category while editing a book', async () => {
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  await userEvent.click(
+    await screen.findByRole('button', { name: '编辑《深入理解计算机系统》' }),
+  );
+  await userEvent.type(await screen.findByLabelText('新建分类'), '历史');
+  await userEvent.click(screen.getByRole('button', { name: '创建分类' }));
+
+  // The new category is selected immediately and appears in the list after the
+  // categories query is invalidated.
+  expect(await screen.findByRole('checkbox', { name: '历史' })).toBeChecked();
 });

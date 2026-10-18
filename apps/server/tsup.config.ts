@@ -4,6 +4,9 @@ export default defineConfig({
   entry: {
     server: 'src/server.ts',
     'cli/create-admin': 'src/cli/create-admin.ts',
+    // Separate executable so metadata parsing runs with its own heap and
+    // lifetime instead of inside the API process.
+    'books/metadata-worker': 'src/books/metadata-worker.ts',
   },
   outDir: 'dist',
   format: ['esm'],

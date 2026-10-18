@@ -209,8 +209,9 @@ export async function runConvertJob(deps: AppDeps, bookId: string): Promise<void
 }
 
 /**
- * Queues a retry for a failed conversion. Only the uploader or an admin may
- * ask; any other state is a conflict because there is nothing to retry.
+ * Queues a conversion retry. Only the uploader or an admin may ask. A `failed`
+ * conversion can be retried, and so can a `pending` one whose queued job was
+ * lost (for example a crash between the book insert and the enqueue).
  */
 export async function retryConversion(
   deps: AppDeps,
@@ -224,7 +225,7 @@ export async function retryConversion(
   if (!canManage(actor, book)) {
     throw new AppError(403, ERROR_CODES.FORBIDDEN);
   }
-  if (book.conversionStatus !== 'failed') {
+  if (book.conversionStatus !== 'failed' && book.conversionStatus !== 'pending') {
     throw new AppError(409, ERROR_CODES.CONFLICT);
   }
   await deps.jobs.enqueue({ type: 'convert', bookId: book.id });

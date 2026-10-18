@@ -39,6 +39,35 @@ export async function enqueuePendingMetadataJobs(deps: AppDeps): Promise<number>
 }
 
 /**
+ * Enqueues conversions for books left `pending` by a crash or a queue outage
+ * (for example between the upload commit and the convert enqueue). A queued or
+ * running job for the same book already covers the work, so restarts never
+ * pile up duplicates.
+ */
+export async function enqueuePendingConversionJobs(deps: AppDeps): Promise<number> {
+  const stuck = await deps.db
+    .select({ id: books.id })
+    .from(books)
+    .where(
+      and(
+        eq(books.conversionStatus, 'pending'),
+        isNull(books.deletedAt),
+        sql`not exists (
+          select 1 from ${jobs}
+          where ${jobs.type} = 'convert'
+            and ${jobs.status} in ('pending', 'running')
+            and ${jobs.payload}->>'bookId' = ${books.id}::text
+        )`,
+      ),
+    );
+
+  for (const book of stuck) {
+    await deps.jobs.enqueue({ type: 'convert', bookId: book.id });
+  }
+  return stuck.length;
+}
+
+/**
  * Runs the retention sweeps once at startup and then daily: abandoned upload
  * sessions are expired (their objects deleted) and books that sat in the trash
  * for the retention window are purged permanently.

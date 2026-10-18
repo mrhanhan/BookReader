@@ -18,9 +18,24 @@ export class StorageObjectNotFoundError extends Error {
   }
 }
 
+/** A presigned POST form: fields must be sent before the file part. */
+export interface PresignedPost {
+  url: string;
+  fields: Record<string, string>;
+}
+
 /** Object storage used for book files and generated artifacts. */
 export interface StorageService {
-  presignPut(key: string, contentType: string, expiresInSeconds: number): Promise<string>;
+  /**
+   * Signs a browser POST whose policy pins the content type and the exact byte
+   * length, so a client cannot upload more than the declared size.
+   */
+  presignPost(
+    key: string,
+    contentType: string,
+    size: number,
+    expiresInSeconds: number,
+  ): Promise<PresignedPost>;
   presignGet(key: string, expiresInSeconds: number): Promise<string>;
   head(key: string): Promise<StoredObjectInfo | null>;
   readFirstBytes(key: string, length: number): Promise<Buffer>;

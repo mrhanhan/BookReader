@@ -2,7 +2,12 @@ import type { BookDto } from '@bookr/shared';
 import { Button, cn } from '@bookr/ui';
 import { formatDate } from '../../lib/format';
 import type { ShelfView } from './FilterBar';
-import { FORMAT_LABELS, STATUS_LABELS } from './labels';
+import {
+  CONVERSION_LABELS,
+  FORMAT_LABELS,
+  STATUS_LABELS,
+  canRetryConversion,
+} from './labels';
 
 export interface BookCardProps {
   book: BookDto;
@@ -10,10 +15,21 @@ export interface BookCardProps {
   canManage: boolean;
   onEdit: (book: BookDto) => void;
   onDelete: (book: BookDto) => void;
+  /** Queues another conversion attempt; only managers see the action. */
+  onRetryConversion?: (book: BookDto) => void;
+  retryPending?: boolean;
 }
 
 /** One shelf entry: cover or paper placeholder, metadata, progress and actions. */
-export function BookCard({ book, view, canManage, onEdit, onDelete }: BookCardProps) {
+export function BookCard({
+  book,
+  view,
+  canManage,
+  onEdit,
+  onDelete,
+  onRetryConversion,
+  retryPending = false,
+}: BookCardProps) {
   const progress = Math.max(0, Math.min(100, Math.round(book.progressPercent)));
   const isGrid = view === 'grid';
 
@@ -86,6 +102,39 @@ export function BookCard({ book, view, canManage, onEdit, onDelete }: BookCardPr
               </li>
             ))}
           </ul>
+        ) : null}
+
+        {book.conversionStatus !== 'none' ? (
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span
+              className={cn(
+                'rounded-sm border px-1.5 py-0.5',
+                book.conversionStatus === 'failed'
+                  ? 'border-highlight/40 text-highlight'
+                  : 'border-border text-muted',
+              )}
+            >
+              {CONVERSION_LABELS[book.conversionStatus]}
+            </span>
+            {book.conversionStatus === 'failed' && book.conversionError ? (
+              <span className="min-w-0 truncate text-muted" title={book.conversionError}>
+                {book.conversionError}
+              </span>
+            ) : null}
+            {canManage &&
+            canRetryConversion(book.conversionStatus) &&
+            onRetryConversion ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`重试转换《${book.title}》`}
+                disabled={retryPending}
+                onClick={() => onRetryConversion(book)}
+              >
+                重试转换
+              </Button>
+            ) : null}
+          </div>
         ) : null}
 
         <div className="mt-auto flex items-center gap-2 pt-1">

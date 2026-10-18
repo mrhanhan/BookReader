@@ -1,4 +1,6 @@
+import { eq } from 'drizzle-orm';
 import { expect, it } from 'vitest';
+import { users } from '../src/db/schema';
 import {
   authHeader,
   buildTestApp,
@@ -6,6 +8,7 @@ import {
   resetDb,
   seedBook,
   seedUser,
+  testDb,
 } from './helpers';
 
 it('rejects every admin route for members', async () => {
@@ -81,6 +84,36 @@ it('refuses to let an administrator deactivate their own account', async () => {
   const stored = members.json().items.find((item: { id: string }) => item.id === admin.id);
   expect(stored.isActive).toBe(true);
 });
+it('serialises concurrent admin deactivations so one administrator remains', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const first = await seedUser('admin', 'admin_first');
+  const second = await seedUser('admin', 'admin_second');
+
+  // Each administrator deactivates the other. Only one may win.
+  const [a, b] = await Promise.all([
+    app.inject({
+      method: 'PATCH',
+      url: `/api/admin/members/${second.id}`,
+      headers: await authHeader(first),
+      payload: { isActive: false },
+    }),
+    app.inject({
+      method: 'PATCH',
+      url: `/api/admin/members/${first.id}`,
+      headers: await authHeader(second),
+      payload: { isActive: false },
+    }),
+  ]);
+
+  expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+  const admins = await testDb
+    .select({ isActive: users.isActive })
+    .from(users)
+    .where(eq(users.role, 'admin'));
+  expect(admins.filter((row) => row.isActive)).toHaveLength(1);
+});
+
 it('refuses to deactivate the last active administrator', async () => {
   await resetDb();
   const app = await buildTestApp();
@@ -118,4 +151,21 @@ it('reports total and per-member storage usage', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/admin/storage', headers: await authHeader(admin) });
   expect(res.json()).toMatchObject({ usedBytes: 500 });
   expect(res.json().perMember).toEqual(expect.arrayContaining([expect.objectContaining({ userId: member.id, usedBytes: 300 })]));
+});
+
+it('keeps trashed books in the reported storage usage until the purge', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  const member = await seedUser('member');
+  await seedBook({ uploadedBy: member.id, size: 300 });
+  await seedBook({ uploadedBy: member.id, size: 120, deletedAt: new Date() });
+
+  const storage = await app.inject({ method: 'GET', url: '/api/admin/storage', headers: await authHeader(admin) });
+  expect(storage.json()).toMatchObject({ usedBytes: 420 });
+
+  const members = await app.inject({ method: 'GET', url: '/api/admin/members', headers: await authHeader(admin) });
+  expect(members.json().items).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: member.id, usedBytes: 420 })]),
+  );
 });

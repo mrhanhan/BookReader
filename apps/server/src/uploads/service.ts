@@ -18,7 +18,7 @@ import { magicBytesNeeded, sniffMagic } from './magic';
 
 export type CreateUploadInput = z.infer<typeof createUploadSchema>;
 
-/** Presigned PUT URLs are valid for 15 minutes. */
+/** Presigned upload URLs are valid for 15 minutes. */
 export const UPLOAD_URL_EXPIRES_SECONDS = 900;
 
 /** Unfinished upload sessions expire after one day. */
@@ -101,7 +101,7 @@ async function failSession(
   await deps.storage.delete(session.objectKey).catch(() => undefined);
 }
 
-/** Inserts an upload session and returns a presigned PUT target. */
+/** Inserts an upload session and returns a presigned POST target. */
 export async function createUpload(
   deps: AppDeps,
   userId: string,
@@ -133,13 +133,16 @@ export async function createUpload(
       throw new AppError(409, ERROR_CODES.DUPLICATE_BOOK, { existingBookId: duplicate.id });
     }
 
+    // Trashed books still occupy their stored objects until the 30-day purge,
+    // so they count against both quotas; otherwise deleting and re-uploading
+    // could use twice the configured disk.
     const [bookUsage] = await tx
       .select({
         libraryUsed: sql<string>`coalesce(sum(${books.size}), 0)`,
         memberUsed: sql<string>`coalesce(sum(case when ${books.uploadedBy} = ${userId} then ${books.size} else 0 end), 0)`,
       })
       .from(books)
-      .where(and(eq(books.libraryId, library.id), isNull(books.deletedAt)));
+      .where(eq(books.libraryId, library.id));
 
     const [sessionUsage] = await tx
       .select({
@@ -191,13 +194,14 @@ export async function createUpload(
     });
   });
 
-  const putUrl = await deps.storage.presignPut(
+  const upload = await deps.storage.presignPost(
     objectKey,
     input.contentType,
+    input.size,
     UPLOAD_URL_EXPIRES_SECONDS,
   );
 
-  return { uploadId, putUrl, expiresAt: expiresAt.toISOString() };
+  return { uploadId, upload, expiresAt: expiresAt.toISOString() };
 }
 
 /** A session row loaded from Postgres. */

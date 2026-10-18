@@ -1,6 +1,7 @@
 import { newId } from '@bookr/shared';
 import type { AppDeps } from './app';
 import { CalibreConverter } from './books/conversion';
+import { ProcessMetadataRunner } from './books/metadata-runner';
 import type { AppConfig } from './config';
 import { createDb, type Database } from './db/client';
 import { PostgresJobQueue } from './jobs/queue';
@@ -23,5 +24,6 @@ export function createDeps(
     ids: { newId },
     jobs: new PostgresJobQueue(db, clock),
     converter: new CalibreConverter(),
+    metadataRunner: new ProcessMetadataRunner(),
   };
 }

@@ -7,8 +7,14 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import type { AppConfig } from '../config';
-import { StorageObjectNotFoundError, type StorageService, type StoredObjectInfo } from './types';
+import {
+  StorageObjectNotFoundError,
+  type PresignedPost,
+  type StorageService,
+  type StoredObjectInfo,
+} from './types';
 
 function isNotFound(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
@@ -87,12 +93,26 @@ export class S3Storage implements StorageService {
         : createClient(config, config.publicEndpoint);
   }
 
-  async presignPut(key: string, contentType: string, expiresInSeconds: number): Promise<string> {
-    return getSignedUrl(
-      this.presignClient,
-      new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: contentType }),
-      { expiresIn: expiresInSeconds },
-    );
+  async presignPost(
+    key: string,
+    contentType: string,
+    size: number,
+    expiresInSeconds: number,
+  ): Promise<PresignedPost> {
+    // The policy pins both the exact byte range and the content type. The
+    // server checks HeadObject again before completing, but the policy is what
+    // stops a client from parking an oversized object in the bucket.
+    const post = await createPresignedPost(this.presignClient, {
+      Bucket: this.bucket,
+      Key: key,
+      Expires: expiresInSeconds,
+      Fields: { 'Content-Type': contentType },
+      Conditions: [
+        { 'Content-Type': contentType },
+        ['content-length-range', size, size],
+      ],
+    });
+    return { url: post.url, fields: post.fields };
   }
 
   async presignGet(key: string, expiresInSeconds: number): Promise<string> {

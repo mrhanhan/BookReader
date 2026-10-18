@@ -1,4 +1,4 @@
-import type { BookFormat, BookStatus } from '@bookr/shared';
+import type { BookConversionStatus, BookFormat, BookStatus } from '@bookr/shared';
 import type { BookSort } from '../../api/books';
 
 export const FORMAT_LABELS: Record<BookFormat, string> = {
@@ -19,3 +19,15 @@ export const SORT_LABELS: Record<BookSort, string> = {
   added: '最近添加',
   title: '按书名',
 };
+
+export const CONVERSION_LABELS: Record<BookConversionStatus, string> = {
+  none: '无需转换',
+  pending: '正在转换为 EPUB',
+  done: '已转换为 EPUB',
+  failed: '转换失败',
+};
+
+/** States the uploader or an admin may retry (a pending job may be stranded). */
+export function canRetryConversion(status: BookConversionStatus): boolean {
+  return status === 'pending' || status === 'failed';
+}

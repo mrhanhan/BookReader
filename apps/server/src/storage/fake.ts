@@ -1,13 +1,30 @@
-import { StorageObjectNotFoundError, type StorageService, type StoredObjectInfo } from './types';
+import {
+  StorageObjectNotFoundError,
+  type PresignedPost,
+  type StorageService,
+  type StoredObjectInfo,
+} from './types';
 
 /** In-memory storage used by tests and the initial server skeleton. */
 export class FakeStorage implements StorageService {
   readonly objects = new Map<string, Buffer>();
   readonly contentTypes = new Map<string, string>();
 
-  async presignPut(key: string, contentType: string, expiresInSeconds: number): Promise<string> {
-    const type = encodeURIComponent(contentType);
-    return `https://fake-s3.local/bookr/${key}?X-Amz-Expires=${expiresInSeconds}&X-Amz-Content-Type=${type}`;
+  async presignPost(
+    key: string,
+    contentType: string,
+    size: number,
+    expiresInSeconds: number,
+  ): Promise<PresignedPost> {
+    return {
+      url: `https://fake-s3.local/bookr/${key}`,
+      fields: {
+        key,
+        'Content-Type': contentType,
+        'X-Amz-Expires': String(expiresInSeconds),
+        'X-Amz-Content-Length-Range': `${size}-${size}`,
+      },
+    };
   }
 
   async presignGet(key: string, expiresInSeconds: number): Promise<string> {

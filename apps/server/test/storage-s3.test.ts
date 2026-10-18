@@ -70,10 +70,20 @@ describe('S3Storage endpoints', () => {
   });
 
   it('signs upload and cover URLs against the public endpoint', async () => {
-    const put = new URL(await storage.presignPut('library/book.pdf', 'application/pdf', 60));
-    expect(put.origin).toBe('http://public.invalid:9200');
-    expect(put.pathname).toBe('/bookr/library/book.pdf');
-    expect(put.searchParams.get('X-Amz-Signature')).toBeTruthy();
+    const post = await storage.presignPost('library/book.pdf', 'application/pdf', 1024, 60);
+    const url = new URL(post.url);
+    expect(url.origin).toBe('http://public.invalid:9200');
+    expect(url.pathname).toBe('/bookr');
+    expect(post.fields.key).toBe('library/book.pdf');
+    expect(post.fields['Content-Type']).toBe('application/pdf');
+
+    // The signed policy must pin the declared size and content type.
+    const policy = JSON.parse(Buffer.from(post.fields.Policy!, 'base64').toString('utf8')) as {
+      conditions: unknown[];
+    };
+    expect(policy.conditions).toContainEqual(['content-length-range', 1024, 1024]);
+    expect(policy.conditions).toContainEqual({ 'Content-Type': 'application/pdf' });
+    expect(post.fields['X-Amz-Signature']).toBeTruthy();
 
     const get = new URL(await storage.presignGet('library/book.pdf', 60));
     expect(get.origin).toBe('http://public.invalid:9200');

@@ -46,6 +46,7 @@ export async function toBookDto(
     categories,
     uploadedBy: { id: book.uploadedBy, displayName },
     conversionStatus: book.conversionStatus,
+    conversionError: book.conversionError,
     createdAt: book.createdAt.toISOString(),
     updatedAt: book.updatedAt.toISOString(),
     deletedAt: book.deletedAt ? book.deletedAt.toISOString() : null,

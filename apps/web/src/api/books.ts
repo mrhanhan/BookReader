@@ -134,3 +134,13 @@ export function useUploadCover() {
     onSuccess: (_coverUrl, { id }) => invalidateBookQueries(queryClient, id),
   });
 }
+
+/** Queues another MOBI/AZW3 conversion attempt for a pending or failed book. */
+export function useRetryConversion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ queued: boolean }>(`/api/books/${id}/convert`, { method: 'POST' }),
+    onSuccess: (_result, id) => invalidateBookQueries(queryClient, id),
+  });
+}

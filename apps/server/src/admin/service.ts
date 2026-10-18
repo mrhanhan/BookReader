@@ -100,8 +100,9 @@ function newInviteCode(): string {
 }
 
 /**
- * Bytes consumed by each user: non-deleted books they uploaded plus upload
- * sessions that are still in progress (completed sessions became books).
+ * Bytes consumed by each user: every book they uploaded, including ones in the
+ * trash (their objects remain until the 30-day purge), plus upload sessions
+ * that are still in progress (completed sessions became books).
  */
 async function usageByUser(deps: AppDeps): Promise<Map<string, number>> {
   const now = deps.clock.now();
@@ -112,7 +113,6 @@ async function usageByUser(deps: AppDeps): Promise<Map<string, number>> {
         used: sql<string>`coalesce(sum(${books.size}), 0)`,
       })
       .from(books)
-      .where(isNull(books.deletedAt))
       .groupBy(books.uploadedBy),
     deps.db
       .select({
@@ -138,7 +138,7 @@ async function usedBytesForUser(deps: AppDeps, userId: string): Promise<number> 
     deps.db
       .select({ used: sql<string>`coalesce(sum(${books.size}), 0)` })
       .from(books)
-      .where(and(eq(books.uploadedBy, userId), isNull(books.deletedAt))),
+      .where(eq(books.uploadedBy, userId)),
     deps.db
       .select({ used: sql<string>`coalesce(sum(${uploadSessions.size}), 0)` })
       .from(uploadSessions)
@@ -197,6 +197,11 @@ export async function updateMember(
     // checked too: it is the only way to reach the last-admin branch, because
     // any other caller is itself an active administrator.
     if (input.isActive === false) {
+      // Two administrators can deactivate each other at the same time; without
+      // a lock both count the other as active and the shelf loses every admin.
+      // The transaction-scoped advisory lock serialises the count and update.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('admin_deactivation'))`);
+
       const [target] = await tx
         .select({ role: users.role, isActive: users.isActive })
         .from(users)

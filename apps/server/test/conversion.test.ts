@@ -2,9 +2,10 @@ import { eq } from 'drizzle-orm';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { runConvertJob } from '../src/books/conversion';
-import { auditLogs } from '../src/db/schema';
+import { auditLogs, jobs } from '../src/db/schema';
 import type { JobQueue } from '../src/jobs/types';
 import { runNextJob } from '../src/jobs/worker';
+import { enqueuePendingConversionJobs } from '../src/startup';
 import {
   authHeader,
   buildTestApp,
@@ -172,7 +173,7 @@ describe('MOBI/AZW3 conversion', () => {
     await app.close();
   });
 
-  it('rejects a retry while the conversion is not failed', async () => {
+  it('queues another attempt for a pending conversion whose job was lost', async () => {
     await resetDb();
     const app = await buildTestApp();
     const owner = await seedUser('member', 'owner');
@@ -187,10 +188,73 @@ describe('MOBI/AZW3 conversion', () => {
       url: `/api/books/${book.id}/convert`,
       headers: await authHeader(owner),
     });
+    expect(response.statusCode).toBe(202);
+    expect(enqueuedJobs()).toContainEqual({ type: 'convert', bookId: book.id });
+
+    await app.close();
+  });
+
+  it('rejects a retry while there is nothing to retry', async () => {
+    await resetDb();
+    const app = await buildTestApp();
+    const owner = await seedUser('member', 'owner');
+    const book = await seedBook({
+      uploadedBy: owner.id,
+      format: 'mobi',
+      conversionStatus: 'done',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/books/${book.id}/convert`,
+      headers: await authHeader(owner),
+    });
     expect(response.statusCode).toBe(409);
     expect(enqueuedJobs()).toHaveLength(0);
 
     await app.close();
+  });
+
+  it('exposes the conversion error on the book DTO', async () => {
+    await resetDb();
+    const app = await buildTestApp();
+    const owner = await seedUser('member', 'owner');
+    const book = await seedBook({
+      uploadedBy: owner.id,
+      format: 'mobi',
+      conversionStatus: 'failed',
+      conversionError: 'Conversion process exited with code 1',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/books/${book.id}`,
+      headers: await authHeader(owner),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().book.conversionError).toBe('Conversion process exited with code 1');
+
+    await app.close();
+  });
+
+  it('recovers stranded pending conversions at startup without duplicating jobs', async () => {
+    await resetDb();
+    const deps = await buildTestDeps();
+    const user = await seedUser('member');
+    const stranded = await seedBook({
+      uploadedBy: user.id,
+      format: 'mobi',
+      conversionStatus: 'pending',
+    });
+    const covered = await seedBook({
+      uploadedBy: user.id,
+      format: 'azw3',
+      conversionStatus: 'pending',
+    });
+    await testDb.insert(jobs).values({ type: 'convert', payload: { bookId: covered.id } });
+
+    expect(await enqueuePendingConversionJobs(deps)).toBe(1);
+    expect(enqueuedJobs()).toEqual([{ type: 'convert', bookId: stranded.id }]);
   });
 
   it('extracts metadata and a cover from the converted EPUB of a MOBI book', async () => {

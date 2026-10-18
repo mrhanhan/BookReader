@@ -5,6 +5,7 @@ import {
   authHeader,
   buildTestApp,
   cleanupExpiredUploadsForTest,
+  cleanupTrashForTest,
   enqueuedJobs,
   expireSession,
   fakeStorage,
@@ -34,8 +35,11 @@ it('creates a presigned upload session for an authenticated member', async () =>
     },
   });
   expect(res.statusCode).toBe(201);
-  expect(res.json().putUrl).toContain('original.pdf');
-  expect(res.json().putUrl).toContain('X-Amz-Expires=900');
+  const body = res.json();
+  expect(body.upload.url).toContain('original.pdf');
+  expect(body.upload.fields['X-Amz-Expires']).toBe('900');
+  // The POST policy pins the exact length so the client cannot overshoot.
+  expect(body.upload.fields['X-Amz-Content-Length-Range']).toBe('1024-1024');
 });
 
 it('returns 409 with the existing book id for a duplicate sha256', async () => {
@@ -67,6 +71,49 @@ it('rejects uploads that would exceed the member quota', async () => {
   });
   expect(res.statusCode).toBe(409);
   expect(res.json().error.code).toBe('QUOTA_EXCEEDED');
+});
+
+it('counts trashed books against the quota until the purge frees them', async () => {
+  await resetDb();
+  const app = await buildTestApp({ memberUploadQuotaBytes: 100 });
+  const user = await seedUser('member');
+  const trashed = await seedBook({
+    uploadedBy: user.id,
+    sha256: sha('5'),
+    size: 80,
+    deletedAt: new Date(),
+  });
+
+  const payload = {
+    filename: 'after-trash.pdf',
+    size: 30,
+    sha256: sha('4'),
+    contentType: 'application/pdf',
+  };
+  // The row is hidden from the shelf but its object still occupies disk for
+  // the 30-day retention window, so the quota must still count it.
+  const blocked = await app.inject({
+    method: 'POST',
+    url: '/api/uploads',
+    headers: await authHeader(user),
+    payload,
+  });
+  expect(blocked.statusCode).toBe(409);
+  expect(blocked.json().error.code).toBe('QUOTA_EXCEEDED');
+
+  await testDb
+    .update(books)
+    .set({ deletedAt: new Date(Date.now() - 31 * 86_400_000) })
+    .where(eq(books.id, trashed.id));
+  expect(await cleanupTrashForTest()).toBe(1);
+
+  const allowed = await app.inject({
+    method: 'POST',
+    url: '/api/uploads',
+    headers: await authHeader(user),
+    payload,
+  });
+  expect(allowed.statusCode).toBe(201);
 });
 
 it('does not oversell the quota under concurrent uploads', async () => {

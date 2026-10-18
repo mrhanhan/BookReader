@@ -6,7 +6,7 @@ import {
   type Role,
   type UpdateBookInput,
 } from '@bookr/shared';
-import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import type { AppDeps } from '../app';
 import { auditLogs, books, bookCategories, categories, type BookRow, type NewBook } from '../db/schema';
 import { AppError } from '../errors';
@@ -39,6 +39,18 @@ function isForeignKeyViolation(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
     if ((current as { code?: unknown }).code === '23503') {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** True when the error (or a wrapped cause) is a Postgres unique violation. */
+function isUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
+    if ((current as { code?: unknown }).code === '23505') {
       return true;
     }
     current = (current as { cause?: unknown }).cause;
@@ -257,7 +269,11 @@ export async function softDeleteBook(
   });
 }
 
-/** Restores a trashed book; restoring an active book is a no-op. */
+/**
+ * Restores a trashed book; restoring an active book is a no-op. A re-upload of
+ * the same content may have claimed the partial unique index while the book sat
+ * in the trash, in which case restoring would duplicate the shelf entry.
+ */
 export async function restoreBook(
   deps: AppDeps,
   actor: BookActor,
@@ -266,26 +282,52 @@ export async function restoreBook(
   const book = await requireManageableBook(deps, actor, bookId, true);
   const now = deps.clock.now();
 
-  const restored = await deps.db.transaction(async (tx): Promise<BookRow | undefined> => {
-    const [row] = await tx
-      .update(books)
-      .set({ deletedAt: null, updatedAt: now })
-      .where(and(eq(books.id, book.id), isNotNull(books.deletedAt)))
-      .returning();
+  let restored: BookRow | undefined;
+  try {
+    restored = await deps.db.transaction(async (tx): Promise<BookRow | undefined> => {
+      const [row] = await tx
+        .update(books)
+        .set({ deletedAt: null, updatedAt: now })
+        .where(and(eq(books.id, book.id), isNotNull(books.deletedAt)))
+        .returning();
 
-    if (row) {
-      await tx.insert(auditLogs).values({
-        userId: actor.id,
-        action: 'book.restore',
-        target: book.id,
-      });
-      return row;
+      if (row) {
+        await tx.insert(auditLogs).values({
+          userId: actor.id,
+          action: 'book.restore',
+          target: book.id,
+        });
+        return row;
+      }
+
+      // Another request restored it first; return the current row.
+      const [current] = await tx.select().from(books).where(eq(books.id, book.id)).limit(1);
+      return current;
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      const [existing] = await deps.db
+        .select({ id: books.id })
+        .from(books)
+        .where(
+          and(
+            eq(books.libraryId, book.libraryId),
+            eq(books.sha256, book.sha256),
+            isNull(books.deletedAt),
+            ne(books.id, book.id),
+          ),
+        )
+        .limit(1);
+
+      throw new AppError(
+        409,
+        ERROR_CODES.DUPLICATE_BOOK,
+        existing ? { existingBookId: existing.id } : undefined,
+        'A live book with the same content already exists',
+      );
     }
-
-    // Another request restored it first; return the current row.
-    const [current] = await tx.select().from(books).where(eq(books.id, book.id)).limit(1);
-    return current;
-  });
+    throw error;
+  }
 
   if (!restored) {
     throw new AppError(404, ERROR_CODES.NOT_FOUND);

@@ -5,7 +5,11 @@ import { closeDb } from './db/client';
 import { migrate } from './db/migrate';
 import { startWorker } from './jobs/worker';
 import { createDeps } from './runtime';
-import { enqueuePendingMetadataJobs, startDailyCleanup } from './startup';
+import {
+  enqueuePendingConversionJobs,
+  enqueuePendingMetadataJobs,
+  startDailyCleanup,
+} from './startup';
 import { ensureBucket } from './storage/s3';
 
 /** Startup dependencies may come up slightly after their health checks pass. */
@@ -51,6 +55,19 @@ async function main(): Promise<void> {
   } catch (error) {
     // Metadata can still be retried by hand; refusing to serve books is worse.
     app.log.error({ errorName: errorName(error) }, 'failed to queue metadata jobs for pending books');
+  }
+
+  try {
+    const requeued = await enqueuePendingConversionJobs(deps);
+    if (requeued > 0) {
+      app.log.info({ requeued }, 'queued conversion jobs for pending books');
+    }
+  } catch (error) {
+    // The uploader can retry the conversion from the book card.
+    app.log.error(
+      { errorName: errorName(error) },
+      'failed to queue conversion jobs for pending books',
+    );
   }
 
   const stopWorker = startWorker(deps);

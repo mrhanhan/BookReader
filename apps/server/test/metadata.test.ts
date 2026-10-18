@@ -13,6 +13,7 @@ import {
   extractMetadata,
   planCoverRender,
 } from '../src/books/metadata';
+import { ProcessMetadataRunner } from '../src/books/metadata-runner';
 import { books, type JobType } from '../src/db/schema';
 import type { JobQueue } from '../src/jobs/types';
 import { runNextJob } from '../src/jobs/worker';
@@ -54,6 +55,22 @@ function epubWithOversizedCover(): Buffer {
   return zip.toBuffer();
 }
 
+/**
+ * Builds an EPUB whose container.xml declares 64 uncompressed bytes but
+ * actually inflates to 24 MiB. Central-directory sizes cannot be trusted, so
+ * the reader must cap the byte stream rather than the header.
+ */
+function epubWithLyingContainer(): Buffer {
+  const zip = new AdmZip({ noSort: true });
+  zip.addFile('mimetype', Buffer.from('application/epub+zip'));
+  const container = zip.addFile(
+    'META-INF/container.xml',
+    Buffer.alloc(24 * 1024 * 1024, 0x78),
+  );
+  container.header.size = 64;
+  return zip.toBuffer();
+}
+
 it('extracts title, author and cover from an EPUB', async () => {
   const result = await extractMetadata({
     buffer: readFileSync('test/fixtures/sample.epub'),
@@ -74,6 +91,33 @@ it('extracts metadata and renders a cover from a PDF', async () => {
   expect(result.cover?.contentType).toBe('image/png');
   expect(result.cover!.data.length).toBeGreaterThan(1000);
 });
+
+it('rejects an EPUB entry that inflates past its declared size', async () => {
+  // The header claims 64 bytes, so the central-directory pre-check passes; the
+  // streaming reader must stop as soon as the actual output exceeds that.
+  await expect(
+    extractMetadata({ buffer: epubWithLyingContainer(), format: 'epub' }),
+  ).rejects.toThrow(/too many bytes|size limit/i);
+});
+
+it('runs EPUB parsing in an isolated process', async () => {
+  const runner = new ProcessMetadataRunner({ timeoutMs: 60_000 });
+  const result = await runner.extract({
+    buffer: readFileSync('test/fixtures/sample.epub'),
+    format: 'epub',
+  });
+  expect(result.title).toBe('测试之书');
+  expect(result.author).toBe('张三');
+  expect(result.cover?.contentType).toBe('image/png');
+  expect(result.cover!.data.length).toBeGreaterThan(100);
+}, 60_000);
+
+it('fails the isolated process instead of buffering an over-limit entry', async () => {
+  const runner = new ProcessMetadataRunner({ timeoutMs: 60_000 });
+  await expect(
+    runner.extract({ buffer: epubWithLyingContainer(), format: 'epub' }),
+  ).rejects.toMatchObject({ name: 'MetadataProcessError' });
+}, 60_000);
 
 it('marks the metadata job failed without losing the book', async () => {
   await resetDb();

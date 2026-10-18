@@ -1,5 +1,5 @@
 import { ERROR_CODES, loginSchema, refreshSchema, registerSchema, type MeDto } from '@bookr/shared';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AppDeps, Clock } from '../app';
 import { books, uploadSessions, users } from '../db/schema';
@@ -184,13 +184,14 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
 
     const now = deps.clock.now();
+    // Soft-deleted books keep their objects until the trash purge, so their
+    // bytes still count against both quotas.
     const [bookUsage] = await deps.db
       .select({
         libraryUsed: sql<string>`coalesce(sum(${books.size}), 0)`,
         uploadUsed: sql<string>`coalesce(sum(case when ${books.uploadedBy} = ${userId} then ${books.size} else 0 end), 0)`,
       })
-      .from(books)
-      .where(isNull(books.deletedAt));
+      .from(books);
 
     const [sessionUsage] = await deps.db
       .select({
