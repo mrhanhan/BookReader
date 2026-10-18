@@ -354,7 +354,7 @@ pnpm --filter @bookr/web e2e
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/books/:id/reflow/uploads` | 创建直传会话；请求体为 `size` 与 `source.sha256`，返回预签名上传目标 |
+| `POST` | `/api/books/:id/reflow/uploads` | 创建直传会话；请求体为 `{ size, sha256 }`（`sha256` 取自包内 `source.sha256`），返回预签名上传目标 |
 | `POST` | `/api/books/:id/reflow/uploads/:uploadId/complete` | 校验上传的包并挂到图书，返回图书 DTO 与包摘要 |
 | `GET` | `/api/books/:id/reflow` | 返回重排包的预签名下载地址、schema 版本与页数 |
 | `DELETE` | `/api/books/:id/reflow` | 移除当前重排包 |
@@ -366,8 +366,9 @@ PDF 的阅读进度、批注与书签接口同时接受 `pdf` 与 `reflow` 两�
 
 源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
 [`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
-的电脑上运行，**不部署到服务器**；服务器不做 OCR 或版面分析，除显式启用 AI 纠错外
-工具不联网。
+的电脑上运行，**不部署到服务器**；服务器不做 OCR 或版面分析。工具本身除显式启用 AI
+纠错外不发起网络请求，但 PaddleOCR 首次使用 OCR 时可能下载模型权重（2.x 到
+`~/.paddleocr`，3.x 到 `~/.paddlex`）；离线环境请提前准备好模型。
 
 需要 Python 3.10+：
 
@@ -385,7 +386,8 @@ bookr-preprocess scan.pdf --out scan.bookr.json --ocr auto --text-pdf scan-searc
 bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --report scan.report.json
 ```
 
-- `--out` 必填；源 PDF、输出包、报告和文字层 PDF 不能使用同一路径。
+- `--out` 必填；源 PDF、输出包、报告和文字层 PDF 不能使用同一路径。`--force` 只控制
+  `--out` 重排包是否覆盖；`--report` 与 `--text-pdf` 指向的已有文件会被直接覆盖。
 - 退出码：`0` 成功，`2` 参数/输入/输出错误，`3` 缺少运行依赖。
 - `--report` 写出质量报告，重点检查 `quality.fallbackPages`（整页回退）与
   `quality.warnings`；上传前建议在源 PDF 中逐页核对回退页。`--verbose` 打印全部警告。

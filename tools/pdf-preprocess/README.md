@@ -30,6 +30,9 @@ pip install -e '.[ocr]'
   PaddlePaddle 官方说明选择与 CUDA 匹配的版本；只装 `[ocr]` 而不装 `paddle` 时，
   `--ocr always` 会以退出码 3 报错。缺少 OCR 依赖时 `--ocr auto` 不会中断整本书，
   只是把这些页降级为整页裁绘。
+- 工具本身不下载 OCR 模型，但 PaddleOCR 首次识别时可能会自动下载模型权重：
+  2.x 默认放在 `~/.paddleocr`，3.x 默认放在 `~/.paddlex`。离线环境请先联网运行一次
+  或用 PaddleOCR 官方方式预置模型。
 
 ## 命令
 
@@ -58,10 +61,12 @@ AI 纠错需要先设置 `DEEPSEEK_API_KEY`，且必须显式加 `--ai-correct`�
 | `--dpi` | OCR 渲染 DPI，默认 `300` |
 | `--ai-correct` | 用 DeepSeek 纠正 OCR/正文文本 |
 | `--max-pages` | 仅调试用：只处理前 N 页 |
-| `--force` | 覆盖已存在的输出文件 |
+| `--force` | 覆盖已存在的 `--out` 包文件；不影响 `--report`/`--text-pdf` |
 | `--verbose` | 打印全部警告（默认只显示条数） |
 
-源 PDF、输出包、报告和文字层 PDF 不能使用同一路径；输出已存在时必须加 `--force`。
+源 PDF、输出包、报告和文字层 PDF 不能使用同一路径。`--force` 只影响 `--out`：包文件
+已存在时必须加 `--force` 才会覆盖；`--report` 与 `--text-pdf` 指向的已有文件会被直接
+覆盖，不受 `--force` 保护。
 
 ### 批量处理
 
@@ -88,7 +93,7 @@ Get-ChildItem books\*.pdf | ForEach-Object {
 | 退出码 | 含义 |
 | --- | --- |
 | `0` | 成功，重排包已写出并通过 schema 校验 |
-| `2` | 参数、输入或输出错误：缺少文件/`--out`、路径冲突、输出已存在且未加 `--force`、PDF 无法打开、包校验失败、写文件失败；也包括 `--ai-correct` 未设置 `DEEPSEEK_API_KEY` |
+| `2` | 参数、输入或输出错误：缺少文件/`--out`、路径冲突、`--out` 输出已存在且未加 `--force`、PDF 无法打开、包校验失败、写文件失败；也包括 `--ai-correct` 未设置 `DEEPSEEK_API_KEY` |
 | `3` | 缺少运行依赖：PyMuPDF、PaddleOCR/`paddle`（仅 `--ocr always`），或 AI 纠错模块无法加载 |
 
 ## 重排包里有什么
@@ -121,7 +126,7 @@ Get-ChildItem books\*.pdf | ForEach-Object {
 - 每个块有页内唯一的 `id`（`p<页>-b<序号>`）和归一化到 `0..1` 的 `rect`（原点在左上）。
 - `heading`/`paragraph` 带 `text`，`heading` 另带 `level`（1–6）；有源文本时还会带
   `sourceCharStart`/`sourceCharEnd`（相对该页过滤后文本的 UTF-16 偏移）。
-- 全包上限：5000 页、200000 个块、单块文本 20000 个 UTF-16 单元；服务端拒收超过
+- 全包上限：5000 页、200000 个块、单块文本 20000 个 Unicode 码点；服务端拒收超过
   32 MiB 的包。
 
 ### 块类型
@@ -138,8 +143,10 @@ Get-ChildItem books\*.pdf | ForEach-Object {
 **图片不会嵌进重排包**：包只记录位置，阅读器需要原始 PDF 才能绘制图片、表格、公式和
 回退页。因此重排包是纯文本 JSON，通常很小；但阅读重排模式仍要求书籍原文件可访问。
 
-整页回退出现在整页无法产生任何文本块时，例如扫描页缺少 OCR 后端、OCR 失败、空页或
-提取失败。这类页在重排模式里只能看到原页图像，不能选择文字。
+只有整页最终没有得到任何块时，才会写入一个覆盖整页的 `fallback` 块，例如在 `auto`/
+`always` 下需要 OCR 但没有可用后端、OCR 抛错、空页或提取失败。**`--ocr never` 下的
+纯图片页会生成 `image` 块，不是 `fallback`。** 整页回退在重排模式里只能看到原页图像，
+不能选择文字。
 
 ## 质量报告
 
@@ -189,8 +196,8 @@ bookr-preprocess scan.pdf --out scan.bookr.json --report scan.report.json --verb
 1. 在网页进入 **书架**，找到对应的 PDF 图书。
 2. 点击 **编辑**（仅上传者或管理员可以管理重排包）。
 3. 在 **重排包** 区块选择生成的 `.bookr.json`（不超过 32 MiB）。
-4. 客户端读取包内 `source.sha256` 作为声明哈希，创建上传会话，把文件直传到 MinIO，
-   然后调用完成接口。
+4. 客户端读取包内 `source.sha256`，以请求体的 `sha256` 字段连同 `size` 创建上传会话，
+   把文件直传到 MinIO，然后调用完成接口。
 5. 服务端校验 schema 版本、完整包结构、大小（与声明一致且 ≤32 MiB），以及
    `source.sha256` 是否等于图书原始文件的哈希；同一本书同时只允许一个未完成的上传
    会话。校验通过后新包替换旧包。
@@ -202,7 +209,8 @@ bookr-preprocess scan.pdf --out scan.bookr.json --report scan.report.json --verb
 
 ## 隐私
 
-- 工具在本机运行，除 `--ai-correct` 外不发起任何网络请求；PDF 和生成的包都留在本地。
+- 工具本身在本机运行，除 `--ai-correct` 外不发起任何网络请求（PaddleOCR 首次使用时
+  可能自行下载模型，见「安装」一节）；PDF 和生成的包都留在本地。
 - 重排包包含书籍全文和目录，请像对待原始书籍一样保管，不要提交到公开仓库或随手分享。
 - 启用 `--ai-correct` 后，**只把当前文本块的文字**（每块最多 4000 个 UTF-16 单元）
   发送到 DeepSeek API，不发送页面图像或整本书。超过 4000 字符的块会保持原样。
