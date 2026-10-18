@@ -179,3 +179,25 @@ it('omits pdf.js resources when opening an EPUB', async () => {
   expect('cMapUrl' in options).toBe(false);
   expect('standardFontDataUrl' in options).toBe(false);
 });
+
+it('shows the file error and does not open the engine when the file request fails', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  server.use(
+    http.get('/api/books/book-csapp/file', () =>
+      HttpResponse.json(
+        { error: { code: 'FILE_MISSING', message: 'file is missing' } },
+        { status: 404 },
+      ),
+    ),
+  );
+  const engine = fakeEngine();
+  const factory = vi.fn(() => engine as unknown as ReaderEngine);
+  const router = createMemoryRouter(
+    [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
+    { initialEntries: ['/books/book-csapp/read'] },
+  );
+  renderWithProviders(<RouterProvider router={router} />);
+
+  expect(await screen.findByText('找不到这本书的文件')).toBeInTheDocument();
+  expect(engine.open).not.toHaveBeenCalled();
+});

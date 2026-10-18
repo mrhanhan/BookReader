@@ -18,6 +18,7 @@ import { fetchProgress, fetchReaderFile } from '../../api/reading';
 import type { ReaderFileInfo } from '../../api/reading';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
 import { readLocalProgress, resolveInitialLocator } from './progressStore';
+import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
 import { ReaderContent } from './ReaderContent';
 import { ReaderChrome } from './ReaderChrome';
@@ -492,7 +493,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       record.detach();
       record.win = win;
       record.doc = doc;
-      if (!win) {
+      // A cross-origin frame exposes a window but no document; attaching a
+      // listener there would throw a SecurityError.
+      if (!win || !doc) {
         record.detach = () => {};
         return;
       }
@@ -506,13 +509,26 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         revealChrome();
       };
       const onClick = (event: MouseEvent): void => {
+        // EPUB links and form controls keep their own behavior.
+        if (isInteractiveTarget(event.target)) return;
         try {
           if (win?.getSelection()?.toString()) return;
         } catch {
           // Another realm lost access; treat it as a plain tap.
         }
-        const width = iframe.clientWidth || win?.innerWidth || 0;
-        handleTapAt(width > 0 ? event.clientX / width : 0.5);
+        // Spreads render two iframes; map the tap against the whole content
+        // box so the left/right zones stay monotonic across the screen.
+        const contentRect = content.getBoundingClientRect();
+        const iframeRect = iframe.getBoundingClientRect();
+        let ratio: number;
+        if (contentRect.width > 0) {
+          ratio =
+            (iframeRect.left - contentRect.left + event.clientX) / contentRect.width;
+        } else {
+          const width = iframe.clientWidth || win?.innerWidth || 0;
+          ratio = width > 0 ? event.clientX / width : 0.5;
+        }
+        handleTapAt(ratio);
       };
       const onKeyDown = (event: KeyboardEvent): void => handleKeyDown(event);
 
@@ -556,7 +572,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   }, [handleKeyDown, handleTapAt, revealChrome]);
 
   function handleContentTap(event: ReactMouseEvent<HTMLDivElement>): void {
-    // A tap that ends a text selection is a selection gesture, not navigation.
+    // A tap that ends a text selection is a selection gesture, not navigation;
+    // taps on links and controls belong to those elements as well.
+    if (isInteractiveTarget(event.target)) return;
     if (typeof window !== 'undefined' && window.getSelection()?.toString()) return;
 
     const rect = event.currentTarget.getBoundingClientRect();

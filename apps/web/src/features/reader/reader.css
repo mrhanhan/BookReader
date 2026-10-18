@@ -494,6 +494,10 @@
   color: transparent;
 }
 
+.bookr-text-layer br::-moz-selection {
+  background: transparent;
+}
+
 .bookr-text-layer br::selection {
   background: transparent;
 }
