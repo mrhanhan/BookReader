@@ -5,6 +5,7 @@ import { LoginPage } from '../features/auth/LoginPage';
 import { RegisterPage } from '../features/auth/RegisterPage';
 import { MembersPage } from '../features/admin/MembersPage';
 import { BookshelfPage } from '../features/bookshelf/BookshelfPage';
+import { BookPlaceholderPage } from '../features/bookshelf/BookPlaceholderPage';
 import { TrashPage } from '../features/bookshelf/TrashPage';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './auth';
@@ -62,6 +63,7 @@ export const routes: RouteObject[] = [
         element: <AppLayout />,
         children: [
           { index: true, element: <BookshelfPage /> },
+          { path: 'books/:id', element: <BookPlaceholderPage /> },
           { path: 'trash', element: <TrashPage /> },
           { path: 'admin', element: <Navigate to="/admin/members" replace /> },
           {

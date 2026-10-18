@@ -61,6 +61,25 @@ it('shows the remaining retention days from the deletion time', async () => {
   expect(await screen.findByText('设计数据密集型应用')).toBeInTheDocument();
   expect(screen.getByText('剩余 20 天')).toBeInTheDocument();
 });
+it('opens the upload dialog from the empty shelf state', async () => {
+  server.use(
+    http.get('/api/books', () =>
+      HttpResponse.json({ items: [], total: 0, page: 1, pageSize: 24 }),
+    ),
+  );
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  expect(await screen.findByRole('button', { name: '上传图书' })).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole('button', { name: '上传第一本书' }));
+
+  expect(await screen.findByText('把图书文件拖到这里')).toBeInTheDocument();
+  expect(screen.getByLabelText('选择文件')).toHaveAttribute(
+    'accept',
+    '.pdf,.epub,.mobi,.azw3',
+  );
+});
+
 it('requests the next page and renders its books', async () => {
   const pageBook = (page: number): BookDto => ({
     id: `page-book-${page}`,

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { BookDto } from '@bookr/shared';
 import { Button, Dialog, EmptyState } from '@bookr/ui';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
-import { useBooks, useDeleteBook } from '../../api/books';
+import { BOOKS_QUERY_KEY, useBooks, useDeleteBook } from '../../api/books';
 import { useCategories } from '../../api/categories';
 import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
@@ -12,6 +13,7 @@ import { EditBookDialog } from './EditBookDialog';
 import { DEFAULT_FILTERS, FilterBar } from './FilterBar';
 import type { ShelfFilters, ShelfView } from './FilterBar';
 import { Toast } from './Toast';
+import { UploadDialog } from './UploadDialog';
 
 const SHELF_VIEW_KEY = 'bookr.shelf.view';
 
@@ -33,6 +35,8 @@ export function BookshelfPage() {
   const [deletingBook, setDeletingBook] = useState<BookDto | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const queryClient = useQueryClient();
 
   const booksQuery = useBooks({
     query: filters.query,
@@ -105,9 +109,12 @@ export function BookshelfPage() {
           <h1 className="font-serif text-2xl text-ink">书架</h1>
           <p className="mt-1 text-sm text-muted">和家人共享的藏书都在这里。</p>
         </div>
-        {booksQuery.data ? (
-          <p className="text-xs tracking-widest text-muted">共 {booksQuery.data.total} 本</p>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {booksQuery.data ? (
+            <p className="text-xs tracking-widest text-muted">共 {booksQuery.data.total} 本</p>
+          ) : null}
+          <Button onClick={() => setUploadOpen(true)}>上传图书</Button>
+        </div>
       </div>
 
       {nearingQuota && user ? (
@@ -171,8 +178,7 @@ export function BookshelfPage() {
           <EmptyState
             title="书架还是空的"
             description="上传第一本书，和家里人一起读。"
-            // Task 14 replaces this action with the upload dialog.
-            action={<Button>上传图书</Button>}
+            action={<Button onClick={() => setUploadOpen(true)}>上传第一本书</Button>}
           />
         )
       ) : (
@@ -260,6 +266,16 @@ export function BookshelfPage() {
           ) : null}
         </div>
       </Dialog>
+
+      {uploadOpen ? (
+        <UploadDialog
+          onClose={() => setUploadOpen(false)}
+          onUploaded={() => {
+            void queryClient.invalidateQueries({ queryKey: BOOKS_QUERY_KEY });
+            setToast('上传完成');
+          }}
+        />
+      ) : null}
 
       {toast ? <Toast message={toast} onDismiss={dismissToast} /> : null}
     </section>
