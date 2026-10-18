@@ -30,7 +30,7 @@ export type ReflowBlockType = (typeof REFLOW_BLOCK_TYPES)[number];
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-const reflowBlockSchema = z
+export const reflowBlockSchema = z
   .object({
     /** Stable within its page; locators refer to blocks by this id. */
     id: z.string().min(1).max(64),
@@ -103,8 +103,8 @@ const reflowSourceSchema = z.object({
 });
 
 const reflowToolSchema = z.object({
-  name: z.string().min(1).max(100),
-  version: z.string().min(1).max(50),
+  name: z.string().min(1),
+  version: z.string().min(1),
 });
 
 const reflowQualitySchema = z.object({
@@ -114,11 +114,11 @@ const reflowQualitySchema = z.object({
   fallbackPages: z.array(z.number().int().min(1)).max(MAX_REFLOW_PAGES),
   ocrPages: z.array(z.number().int().min(1)).max(MAX_REFLOW_PAGES),
   avgConfidence: z.number().min(0).max(1).nullable(),
-  warnings: z.array(z.string().max(2000)).max(500),
+  warnings: z.array(z.string()),
 });
 
 const reflowTocEntrySchema = z.object({
-  label: z.string().min(1).max(500),
+  label: z.string().min(1),
   page: z.number().int().min(1),
   level: z.number().int().min(1).max(6),
 });
@@ -137,7 +137,7 @@ export const reflowPackSchema = z
     generatedAt: z.iso.datetime(),
     tool: reflowToolSchema,
     quality: reflowQualitySchema,
-    toc: z.array(reflowTocEntrySchema).max(MAX_REFLOW_PAGES),
+    toc: z.array(reflowTocEntrySchema),
     pages: z.array(reflowPageSchema).min(1).max(MAX_REFLOW_PAGES),
   })
   .superRefine((pack, ctx) => {

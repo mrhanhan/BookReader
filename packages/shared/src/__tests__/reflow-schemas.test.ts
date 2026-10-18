@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_REFLOW_BLOCKS,
   MAX_REFLOW_BLOCKS_PER_PAGE,
+  MAX_REFLOW_PAGES,
+  MAX_REFLOW_TEXT_LENGTH,
   REFLOW_PACK_SCHEMA_VERSION,
   reflowPackSchema,
 } from '../schemas/reflow';
@@ -60,12 +63,59 @@ describe('reflowPackSchema', () => {
     expect(reflowPackSchema.safeParse(unknown).success).toBe(false);
   });
 
-  it('caps blocks per page and requires schemaVersion 1', () => {
-    const over = pack();
-    over.pages[0]!.blocks = Array.from({ length: MAX_REFLOW_BLOCKS_PER_PAGE + 1 }, () => ({
-      id: 'x', type: 'paragraph', text: 'x', rect: { x: 0, y: 0, w: 1, h: 1 },
+  it('accepts exactly the per-page block cap and rejects one more', () => {
+    const atLimit = pack();
+    atLimit.pages[0]!.blocks = Array.from({ length: MAX_REFLOW_BLOCKS_PER_PAGE }, (_, index) => ({
+      id: `b${index}`, type: 'paragraph', text: 'x', rect: { x: 0, y: 0, w: 1, h: 1 },
     }));
-    expect(reflowPackSchema.safeParse(over).success).toBe(false);
+    expect(reflowPackSchema.safeParse(atLimit).success).toBe(true);
+
+    const overLimit = pack();
+    overLimit.pages[0]!.blocks = Array.from({ length: MAX_REFLOW_BLOCKS_PER_PAGE + 1 }, (_, index) => ({
+      id: `b${index}`, type: 'paragraph', text: 'x', rect: { x: 0, y: 0, w: 1, h: 1 },
+    }));
+    expect(reflowPackSchema.safeParse(overLimit).success).toBe(false);
+
     expect(reflowPackSchema.safeParse(pack({ schemaVersion: 2 })).success).toBe(false);
+  });
+
+  it('rejects a heading without a level, inverted source offsets and oversized text', () => {
+    const noLevel = pack();
+    // @ts-expect-error deliberately invalid: heading blocks require a level
+    noLevel.pages[0]!.blocks[0]!.level = undefined;
+    expect(reflowPackSchema.safeParse(noLevel).success).toBe(false);
+
+    const invertedOffsets = pack();
+    (invertedOffsets.pages[0]!.blocks[1] as { sourceCharEnd: number }).sourceCharEnd = 1;
+    expect(reflowPackSchema.safeParse(invertedOffsets).success).toBe(false);
+
+    const oversized = pack();
+    (oversized.pages[0]!.blocks[1] as { text?: string }).text = 'x'.repeat(
+      MAX_REFLOW_TEXT_LENGTH + 1,
+    );
+    expect(reflowPackSchema.safeParse(oversized).success).toBe(false);
+  });
+
+  it('caps total blocks and only accepts UTC timestamps', () => {
+    expect(41 * MAX_REFLOW_PAGES).toBeGreaterThan(MAX_REFLOW_BLOCKS);
+
+    const tooMany = pack({
+      source: { sha256: 'a'.repeat(64), pageCount: MAX_REFLOW_PAGES },
+      pages: Array.from({ length: MAX_REFLOW_PAGES }, (_, pageIndex) => ({
+        page: pageIndex + 1,
+        width: 612,
+        height: 792,
+        blocks: Array.from({ length: 41 }, (_, blockIndex) => ({
+          id: `p${pageIndex}-b${blockIndex}`,
+          type: 'paragraph',
+          text: 'x',
+          rect: { x: 0, y: 0, w: 1, h: 1 },
+        })),
+      })),
+    });
+    expect(reflowPackSchema.safeParse(tooMany).success).toBe(false);
+
+    const offsetTimestamp = pack({ generatedAt: '2026-10-18T08:00:00.000+00:00' });
+    expect(reflowPackSchema.safeParse(offsetTimestamp).success).toBe(false);
   });
 });
