@@ -12,6 +12,7 @@ import type { MetadataRunner } from './books/metadata-runner';
 import { registerCategoryRoutes } from './categories/routes';
 import type { AppConfig } from './config';
 import type { Database } from './db/client';
+import { registerDeviceRoutes } from './devices/routes';
 import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
 import { registerReadingRoutes } from './reading/routes';
@@ -144,6 +145,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerBookRoutes(app, deps);
   registerReadingRoutes(app, deps);
   registerSyncRoutes(app, deps);
+  registerDeviceRoutes(app, deps);
   registerCategoryRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {

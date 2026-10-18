@@ -1,4 +1,5 @@
 import {
+  SYNC_RETENTION_DAYS,
   syncKey,
   type AnnotationDto,
   type BookmarkDto,
@@ -12,17 +13,25 @@ import {
   type SyncRejectReason,
   type SyncSnapshot,
 } from '@bookr/shared';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import type { AppDeps } from '../app';
 import type { Transaction } from '../db/client';
-import { annotations, bookmarks, readingProgress } from '../db/schema';
+import {
+  annotations,
+  bookmarks,
+  readingProgress,
+  syncChanges,
+  syncMeta,
+} from '../db/schema';
 import { toAnnotationDto, toBookmarkDto, toProgressDto } from '../reading/dto';
 import type { ReadingActor } from '../reading/guards';
 import { applyChange } from './apply';
 import {
   appendChange,
   listChanges,
+  markPrunedThrough,
   maxRevision,
+  PRUNED_THROUGH_KEY,
   prunedThrough,
   readUserSettings,
 } from './repo';
@@ -226,4 +235,78 @@ export async function applyPush(
   // An acknowledgement marker, not a pull cursor: 0 means nothing was applied.
   const cursor = appliedChanges.at(-1)?.revision ?? 0;
   return { applied: appliedChanges, skipped, rejected, cursor };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Deletes log entries older than the retention window and advances the
+ * pruned-through watermark to the newest revision in the deleted batch. The
+ * watermark only ever moves forward, so a client that already passed it is
+ * never told to reset again.
+ */
+export async function pruneSyncLog(
+  deps: AppDeps,
+): Promise<{ pruned: number; through: number }> {
+  const cutoff = new Date(deps.clock.now().getTime() - SYNC_RETENTION_DAYS * DAY_MS);
+  const expired = lt(syncChanges.createdAt, cutoff);
+
+  return deps.db.transaction(async (tx) => {
+    const [stats] = await tx
+      .select({
+        pruned: sql<number>`count(*)::int`,
+        through: sql<string>`coalesce(max(${syncChanges.revision}), 0)`,
+      })
+      .from(syncChanges)
+      .where(expired);
+
+    const pruned = Number(stats?.pruned ?? 0);
+    const batchThrough = Number(stats?.through ?? 0);
+
+    if (pruned > 0) {
+      await tx.delete(syncChanges).where(expired);
+      await markPrunedThrough(tx, batchThrough);
+    }
+
+    const [meta] = await tx
+      .select()
+      .from(syncMeta)
+      .where(eq(syncMeta.key, PRUNED_THROUGH_KEY))
+      .limit(1);
+    return { pruned, through: meta?.value ?? 0 };
+  });
+}
+
+/**
+ * Permanently removes tombstones older than the retention window. Annotation
+ * history rows disappear with their annotation through the foreign key.
+ */
+export async function purgeDeletedEntities(
+  deps: AppDeps,
+): Promise<{ annotations: number; bookmarks: number }> {
+  const cutoff = new Date(deps.clock.now().getTime() - SYNC_RETENTION_DAYS * DAY_MS);
+
+  return deps.db.transaction(async (tx) => {
+    const expiredAnnotations = lt(annotations.deletedAt, cutoff);
+    const [annotationStats] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(annotations)
+      .where(expiredAnnotations);
+    const annotationCount = Number(annotationStats?.count ?? 0);
+    if (annotationCount > 0) {
+      await tx.delete(annotations).where(expiredAnnotations);
+    }
+
+    const expiredBookmarks = lt(bookmarks.deletedAt, cutoff);
+    const [bookmarkStats] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(bookmarks)
+      .where(expiredBookmarks);
+    const bookmarkCount = Number(bookmarkStats?.count ?? 0);
+    if (bookmarkCount > 0) {
+      await tx.delete(bookmarks).where(expiredBookmarks);
+    }
+
+    return { annotations: annotationCount, bookmarks: bookmarkCount };
+  });
 }
