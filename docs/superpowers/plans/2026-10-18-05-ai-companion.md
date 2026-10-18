@@ -3021,7 +3021,8 @@ git commit -m "docs: document the AI companion deployment and privacy model"
 ## 交付记录
 
 - 分支：`feature/p5-ai-companion`，基线 `39fc029`（main）。
-- 最终验证：`pnpm exec turbo run typecheck test --force` 12/12 通过；Server 270、Web 325、Reader-core 149、Shared 44；Python 工具测试沿用 P3。
+- 最终验证：`pnpm exec turbo run typecheck test --force` 12/12 通过；Server 271、Web 326、Reader-core 149、Shared 44；Python 工具测试沿用 P3。
 - E2E：13/13 通过（原有 9 + AI 4），无重试；覆盖解释+追问线程、总结本页、离线提示、设置开关。
+- 最终跨切面审查发现的「长章节上下文 20,001 字符超过 20,000 schema 上限」已在 `734996d` 修复（客户端按共享上限裁剪），并补上陈旧配额预占回收。
 - 关键实现：服务端 AES-256-GCM 加密 Key、管理员配置 API、OpenAI 兼容 SSE 网关、8k token 上下文预算、按用户时区日/月配额预占与结算、线程/消息持久化与中断状态；Web 端选中菜单、AI 面板、流式渲染、乐观开关、断线恢复。
 - 已知边界：EPUB 的「本页」按当前章节处理；扫描版无文字层时解释明确说明材料不足；AI 线程/消息不进入 P4 同步日志；用户主动停止按已发生的提示词 token 计费；多 iframe EPUB 的当前 section 选择按第一个已渲染 contents。
