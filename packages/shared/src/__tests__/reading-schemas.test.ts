@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_TAGS,
+  MAX_TAG_LENGTH,
   createAnnotationSchema, createBookmarkSchema, normalizeTags, updateAnnotationSchema,
   updateBookmarkSchema, updateProgressSchema,
 } from '../schemas/reading';
@@ -44,10 +46,10 @@ describe('reading input schemas', () => {
       selectedText: '一段原文', type: 'highlight',
     };
     expect(createAnnotationSchema.safeParse({
-      ...base, tags: Array.from({ length: 21 }, (_, index) => `tag-${index}`),
+      ...base, tags: Array.from({ length: MAX_TAGS + 1 }, (_, index) => `tag-${index}`),
     }).success).toBe(false);
     expect(createAnnotationSchema.safeParse({
-      ...base, tags: ['x'.repeat(31)],
+      ...base, tags: ['x'.repeat(MAX_TAG_LENGTH + 1)],
     }).success).toBe(false);
   });
 

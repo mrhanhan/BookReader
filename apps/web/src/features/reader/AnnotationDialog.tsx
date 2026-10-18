@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { HIGHLIGHT_HEX } from '@bookr/reader-core';
-import { normalizeTags } from '@bookr/shared';
+import { MAX_TAGS, MAX_TAG_LENGTH, normalizeTags } from '@bookr/shared';
 import type { AnnotationColor, AnnotationDto, Locator } from '@bookr/shared';
 import { Button, Dialog, Input } from '@bookr/ui';
 import {
@@ -33,9 +33,7 @@ export interface AnnotationDialogProps {
 }
 
 const CONFLICT_MESSAGE = '已在其他设备更新，旧版本已保留';
-const TAG_LIMIT_MESSAGE = '标签最多 20 个，每个不超过 30 字';
-const MAX_TAGS = 20;
-const MAX_TAG_LENGTH = 30;
+const TAG_LIMIT_MESSAGE = `标签最多 ${MAX_TAGS} 个，每个不超过 ${MAX_TAG_LENGTH} 字`;
 
 const textareaClass =
   'w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink ' +
@@ -74,8 +72,8 @@ export function AnnotationDialog({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const trimmed = noteText.trim();
-  // Notes always need text. A plain highlight has no note to clear, so its
-  // color and tags stay editable while the textarea is empty.
+  // Notes always need text. Highlights may save with an empty textarea so the
+  // user can clear their note while still editing the color and tags.
   const isEditableHighlight = mode === 'edit' && initial?.type === 'highlight';
   const canSave = !busy && (trimmed.length > 0 || isEditableHighlight);
 
@@ -89,7 +87,12 @@ export function AnnotationDialog({
     setNotice(null);
 
     const rawTags = splitTags(tagsText);
-    if (rawTags.length > MAX_TAGS || rawTags.some((tag) => tag.length > MAX_TAG_LENGTH)) {
+    // Dedupe before enforcing the cap so repeated entries do not count twice.
+    const dedupedTags = Array.from(new Set(rawTags));
+    if (
+      dedupedTags.length > MAX_TAGS ||
+      dedupedTags.some((tag) => tag.length > MAX_TAG_LENGTH)
+    ) {
       notify(TAG_LIMIT_MESSAGE);
       return;
     }
@@ -103,9 +106,10 @@ export function AnnotationDialog({
           color,
           tags,
         };
-        // Omitting noteText keeps a highlight's null note intact; an existing
-        // note is always non-empty here because its Save button requires text.
-        if (trimmed.length > 0) patch.noteText = trimmed;
+        // Highlights may clear their note by emptying the textarea; an existing
+        // note always has text here because its Save button requires it.
+        patch.noteText =
+          initial.type === 'highlight' ? (trimmed.length > 0 ? trimmed : null) : trimmed;
         const result = await updateAnnotation(bookId, initial.id, patch);
         // A stale edit still lands, so the returned annotation is authoritative.
         onSaved(result.annotation);

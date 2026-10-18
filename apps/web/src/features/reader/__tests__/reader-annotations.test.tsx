@@ -226,12 +226,56 @@ it('recolors a pure highlight without sending a blank note', async () => {
   await userEvent.click(screen.getByRole('button', { name: '保存批注' }));
 
   await waitFor(() =>
-    expect(patched).toMatchObject({ color: 'green', revision: 2, tags: ['重点'] }),
+    expect(patched).toMatchObject({
+      color: 'green',
+      revision: 2,
+      tags: ['重点'],
+      noteText: null,
+    }),
   );
-  expect(patched).not.toHaveProperty('noteText');
   await waitFor(() =>
     expect(engine.setHighlights).toHaveBeenLastCalledWith([
       expect.objectContaining({ id: 'h1', color: 'green', hasNote: false }),
+    ]),
+  );
+});
+
+it('clears a highlight note when the text is emptied', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  let patched: Record<string, unknown> | null = null;
+  const items: Array<Record<string, unknown>> = [{ ...seededHighlight, noteText: '旧批注' }];
+  server.use(
+    http.get(`/api/books/${BOOK_ID}/file`, pdfFile),
+    http.get(`/api/books/${BOOK_ID}/annotations`, () => HttpResponse.json({ items })),
+    http.patch(`/api/books/${BOOK_ID}/annotations/:annotationId`, async ({ request }) => {
+      patched = (await request.json()) as Record<string, unknown>;
+      const updated = {
+        ...seededHighlight,
+        noteText: patched.noteText as string | null,
+        revision: seededHighlight.revision + 1,
+      };
+      items[0] = updated;
+      return HttpResponse.json({ annotation: updated, conflict: false });
+    }),
+  );
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(engine.setHighlights).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'h1', hasNote: true }),
+    ]),
+  );
+
+  engine.emit('highlightClick', { id: 'h1' });
+  const textarea = await screen.findByLabelText('批注内容');
+  expect(textarea).toHaveValue('旧批注');
+  await userEvent.clear(textarea);
+  await userEvent.click(screen.getByRole('button', { name: '保存批注' }));
+
+  await waitFor(() => expect(patched).toMatchObject({ noteText: null, revision: 2 }));
+  await waitFor(() =>
+    expect(engine.setHighlights).toHaveBeenLastCalledWith([
+      expect.objectContaining({ id: 'h1', hasNote: false }),
     ]),
   );
 });
@@ -360,6 +404,40 @@ it('dismisses the selection menu on outside input, Escape or a cleared selection
   expect(await screen.findByRole('button', { name: '用黄色划线' })).toBeInTheDocument();
   engine.emit('selection', null);
   await waitFor(() => expect(yellow()).not.toBeInTheDocument());
+});
+
+it('keeps the open dialog and panel stable while reader shortcuts fire', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  const items = [{ ...seededNote }];
+  server.use(
+    http.get(`/api/books/${BOOK_ID}/file`, pdfFile),
+    http.get(`/api/books/${BOOK_ID}/annotations`, () => HttpResponse.json({ items })),
+  );
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  await userEvent.click(await screen.findByRole('button', { name: '笔记' }));
+  await screen.findByText('我的批注');
+  engine.emit('highlightClick', { id: 'n1' });
+  expect(await screen.findByLabelText('批注内容')).toBeInTheDocument();
+
+  // Selections made under a modal are ignored.
+  engine.emit('selection', {
+    text: '对话框下的选中文本',
+    locator: { kind: 'pdf', page: 4, percent: 0.3 },
+    rect: { left: 30, top: 200, width: 120, height: 20 },
+  });
+  expect(screen.queryByRole('button', { name: '用黄色划线' })).not.toBeInTheDocument();
+
+  // `b` must not queue a bookmark dialog over the in-progress edit.
+  await userEvent.keyboard('b');
+  expect(screen.queryByLabelText('书签备注')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('批注内容')).toBeInTheDocument();
+
+  // Escape belongs to the dialog, so the notes panel behind it stays open.
+  await userEvent.keyboard('{Escape}');
+  expect(screen.getByRole('heading', { name: '笔记' })).toBeInTheDocument();
+  expect(screen.getByLabelText('批注内容')).toBeInTheDocument();
 });
 
 it('shows an API error toast when a highlight cannot be saved', async () => {

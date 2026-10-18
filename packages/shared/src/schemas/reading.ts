@@ -11,8 +11,10 @@ const annotationColorSchema = z.enum(ANNOTATION_COLORS);
 
 const MAX_SELECTED_TEXT_LENGTH = 10_000;
 const MAX_NOTE_TEXT_LENGTH = 10_000;
-const MAX_TAGS = 20;
-const MAX_TAG_LENGTH = 30;
+/** Maximum number of tags on one annotation; shared with the reader UI. */
+export const MAX_TAGS = 20;
+/** Maximum length of a single tag; shared with the reader UI. */
+export const MAX_TAG_LENGTH = 30;
 const MAX_BOOKMARK_LABEL_LENGTH = 200;
 
 /** Trims tags, drops empty ones, dedupes case-sensitively and caps the list at 20. */
