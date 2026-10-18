@@ -123,11 +123,14 @@ export interface BuildAppOptions {
 }
 
 /**
- * Removes the sync stream token from a URL before it is logged. EventSource
- * cannot send headers, so the token travels in the query string.
+ * Removes every `token` query parameter from a URL before it is logged.
+ * Parsing rather than pattern matching handles percent-encoded names such as
+ * `%74oken=` and duplicate occurrences.
  */
 export function redactRequestUrl(url: string): string {
-  return url.replace(/([?&]token=)[^&]*/i, '$1[redacted]');
+  const parsed = new URL(url, 'http://localhost');
+  parsed.searchParams.delete('token');
+  return `${parsed.pathname}${parsed.search}`;
 }
 
 /** Builds the Fastify application with all cross-cutting concerns configured. */
@@ -147,14 +150,14 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
         req: (request: FastifyRequest) => ({
           method: request.method,
           url: redactRequestUrl(request.url),
-          hostname: request.hostname,
+          version: request.raw.httpVersion,
+          host: request.host,
           remoteAddress: request.ip,
+          remotePort: request.raw.socket.remotePort,
         }),
       },
       ...(options.logStream !== undefined ? { stream: options.logStream } : {}),
     },
-    // SSE responses stay open; without this, closing the server waits for them.
-    forceCloseConnections: true,
     trustProxy: trustProxyOption(deps.config.trustProxy),
     genReqId: () => deps.ids.newId(),
   });

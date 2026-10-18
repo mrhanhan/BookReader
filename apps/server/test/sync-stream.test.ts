@@ -24,8 +24,12 @@ async function startServer(
   return { app, deps, url };
 }
 
-/** Closes the listener; `forceCloseConnections` also ends open streams. */
+/**
+ * Closes the listener after dropping undici's pooled sockets; the test client
+ * would otherwise keep `app.close()` waiting out its keep-alive timeout.
+ */
 async function stopServer(app: FastifyInstance): Promise<void> {
+  app.server.closeAllConnections();
   await app.close();
 }
 
@@ -177,7 +181,8 @@ it('delivers a change to an open stream within two seconds', async () => {
   const token = await fetchStreamToken(app, headers);
 
   const stream = await openStream(url, token, 0);
-  // Subscribe happens after the backlog replay, so wait for it before pushing.
+  // The subscription is registered before the backlog replay, so a push now
+  // cannot fall into a gap; wait until it exists to keep the assertion stable.
   await waitForSubscribers(deps, user.id, 1);
 
   const started = Date.now();
@@ -329,27 +334,81 @@ it('issues a stream token that carries the caller identity', async () => {
   await stopServer(app);
 });
 
-it('redacts the stream token from request logs', async () => {
-  await resetDb();
+/** Captures JSON log lines so tests can inspect what the server logs. */
+function logSink(): { stream: Writable; text: () => string } {
   const chunks: string[] = [];
-  const sink = new Writable({
+  const stream = new Writable({
     write(chunk, _encoding, callback) {
       chunks.push(String(chunk));
       callback();
     },
   });
-  const { app, deps, url } = await startServer({ logStream: sink });
+  return { stream, text: () => chunks.join('') };
+}
+
+it('redacts the stream token from request logs', async () => {
+  await resetDb();
+  const sink = logSink();
+  const { app, deps, url } = await startServer({ logStream: sink.stream });
   const user = await seedUser('member');
   const token = await fetchStreamToken(app, await authHeader(user));
 
   const stream = await openStream(url, token, 0);
   await waitForSubscribers(deps, user.id, 1);
 
-  const logs = chunks.join('');
-  expect(logs).toContain('token=[redacted]');
+  const logs = sink.text();
+  expect(logs).toContain('"url":"/api/sync/stream?since=0"');
   expect(logs).not.toContain(token);
+  expect(logs).not.toContain('token=');
+  // The default request fields survive the custom serializer.
+  expect(logs).toContain('"version"');
+  expect(logs).toContain('"host"');
+  expect(logs).toContain('"remotePort"');
 
   stream.controller.abort();
+  await stopServer(app);
+});
+
+it('redacts a percent-encoded token parameter name', async () => {
+  await resetDb();
+  const sink = logSink();
+  const { app, deps, url } = await startServer({ logStream: sink.stream });
+  const user = await seedUser('member');
+  const token = await fetchStreamToken(app, await authHeader(user));
+
+  const controller = new AbortController();
+  const response = await fetch(
+    `${url}/api/sync/stream?%74oken=${encodeURIComponent(token)}&since=0`,
+    { signal: controller.signal },
+  );
+  expect(response.status).toBe(200);
+  await waitForSubscribers(deps, user.id, 1);
+
+  const logs = sink.text();
+  expect(logs).not.toContain(token);
+  expect(logs).not.toContain('%74oken');
+
+  controller.abort();
+  await waitForSubscribers(deps, user.id, 0);
+  await stopServer(app);
+});
+
+it('redacts every duplicate token parameter', async () => {
+  await resetDb();
+  const sink = logSink();
+  const { app, url } = await startServer({ logStream: sink.stream });
+  await seedUser('member');
+
+  const response = await fetch(
+    `${url}/api/sync/stream?token=first-secret-value&token=second-secret-value`,
+  );
+  expect(response.status).toBe(401);
+  await response.text();
+
+  const logs = sink.text();
+  expect(logs).not.toContain('first-secret-value');
+  expect(logs).not.toContain('second-secret-value');
+
   await stopServer(app);
 });
 

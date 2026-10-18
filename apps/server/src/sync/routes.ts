@@ -55,6 +55,7 @@ async function openStream(
   reply: FastifyReply,
   userId: string,
   since: number,
+  activeStreams: Set<() => void>,
 ): Promise<void> {
   reply.hijack();
   const raw = reply.raw;
@@ -73,6 +74,7 @@ async function openStream(
       return;
     }
     closed = true;
+    activeStreams.delete(cleanup);
     if (ping !== undefined) {
       clearInterval(ping);
     }
@@ -84,6 +86,7 @@ async function openStream(
       raw.end();
     }
   };
+  activeStreams.add(cleanup);
 
   /** Clears the backpressure warning once the socket accepts writes again. */
   const onDrain = (): void => {
@@ -185,6 +188,17 @@ async function openStream(
 /** Registers the per-user sync endpoints. */
 export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
   const requireAuth = makeRequireAuth(deps);
+  // Open SSE responses keep the server from closing; preClose ends them first
+  // and waits for their handlers so no transaction outlives the app. Ordinary
+  // in-flight requests then finish under the default close policy.
+  const activeStreams = new Set<() => void>();
+  const runningStreams = new Set<Promise<void>>();
+  app.addHook('preClose', async () => {
+    for (const cleanup of [...activeStreams]) {
+      cleanup();
+    }
+    await Promise.allSettled([...runningStreams]);
+  });
 
   app.get('/api/sync/pull', { preHandler: requireAuth }, async (request) => {
     const { since, limit } = syncPullQuerySchema.parse(request.query);
@@ -232,6 +246,12 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
       throw unauthorized();
     }
 
-    await openStream(deps, reply, userId, parsed.data.since);
+    const stream = openStream(deps, reply, userId, parsed.data.since, activeStreams);
+    runningStreams.add(stream);
+    try {
+      await stream;
+    } finally {
+      runningStreams.delete(stream);
+    }
   });
 }
