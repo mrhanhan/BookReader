@@ -7,6 +7,7 @@ import {
 import type { z } from 'zod';
 import type { AppDeps } from '../app';
 import { AppError } from '../errors';
+import { lockUserChanges } from '../sync/repo';
 import { bookmarkChangePayload, recordChange } from '../sync/service';
 import { toBookmarkDto } from './dto';
 import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
@@ -43,6 +44,7 @@ export async function createBookmark(
   const now = deps.clock.now();
 
   const row = await deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const inserted = await insertBookmark(tx, {
       userId: actor.id,
       bookId,
@@ -79,6 +81,7 @@ export async function updateBookmark(
   const now = deps.clock.now();
 
   return deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const row = await updateBookmarkRow(tx, bookmarkId, bookId, actor.id, input.label, now, now);
     if (!row) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND);
@@ -109,6 +112,7 @@ export async function deleteBookmark(
   const now = deps.clock.now();
 
   await deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const deleted = await softDeleteBookmark(tx, bookmarkId, bookId, actor.id, now);
     if (!deleted) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND);

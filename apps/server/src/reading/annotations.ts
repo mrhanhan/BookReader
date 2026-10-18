@@ -8,6 +8,7 @@ import {
 import type { z } from 'zod';
 import type { AppDeps } from '../app';
 import { AppError } from '../errors';
+import { lockUserChanges } from '../sync/repo';
 import { annotationChangePayload, recordChange } from '../sync/service';
 import { toAnnotationDto } from './dto';
 import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
@@ -46,6 +47,7 @@ export async function createAnnotation(
   const now = deps.clock.now();
 
   const row = await deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const inserted = await insertAnnotation(tx, {
       userId: actor.id,
       bookId,
@@ -90,6 +92,7 @@ export async function updateAnnotation(
   const now = deps.clock.now();
 
   return deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const row = await findOwnedAnnotationForUpdate(tx, annotationId, bookId, actor.id);
     // Missing, deleted and another member's row are all 404 so ownership is
     // never revealed through the status code.
@@ -149,6 +152,7 @@ export async function deleteAnnotation(
   const now = deps.clock.now();
 
   await deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const deleted = await softDeleteAnnotation(tx, annotationId, bookId, actor.id, now);
     if (!deleted) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND);

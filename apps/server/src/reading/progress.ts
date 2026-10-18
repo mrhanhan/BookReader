@@ -1,5 +1,6 @@
 import type { Locator, ReadingProgressDto } from '@bookr/shared';
 import type { AppDeps } from '../app';
+import { lockUserChanges } from '../sync/repo';
 import { progressChangePayload, recordChange } from '../sync/service';
 import { toProgressDto } from './dto';
 import { assertLocatorKind, requireLiveBook, type ReadingActor } from './guards';
@@ -32,6 +33,7 @@ export async function saveProgress(
   const now = deps.clock.now();
 
   const row = await deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
     const stored = await upsertProgress(tx, {
       userId: actor.id,
       bookId,
