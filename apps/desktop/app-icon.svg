@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect width="1024" height="1024" rx="224" fill="#F6F1E7"/>
+  <!-- Paper-colored square with an ink book mark: two leaves meeting at the spine. -->
+  <path d="M232 268h206c72 0 130 58 130 130v382c-31-33-74-52-119-52H232z" fill="#2B2620"/>
+  <path d="M792 268H586c-72 0-130 58-130 130v382c31-33 74-52 119-52h217z" fill="#8C5A3B"/>
+  <path d="M456 398v382" stroke="#F6F1E7" stroke-width="18" stroke-linecap="round" opacity="0.55"/>
+</svg>
