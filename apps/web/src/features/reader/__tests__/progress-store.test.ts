@@ -3,7 +3,6 @@ import {
   PROGRESS_KEY_PREFIX,
   clearReaderProgressCache,
   readLocalProgress,
-  resolveInitialLocator,
   writeLocalProgress,
 } from '../progressStore';
 import { createMemoryRepository } from '../../../../test/memory-repository';
@@ -49,16 +48,22 @@ it('migrates a legacy localStorage position once without queueing a sync', async
 });
 
 it('writes locally and queues the change for sync', async () => {
-  writeLocalProgress(repo, 'user-a', 'b', pdf, Date.now());
-  await Promise.resolve();
+  expect(await writeLocalProgress(repo, 'user-a', 'b', pdf, Date.now())).toBe(true);
 
   expect((await repo.progressFor('user-a', 'b'))?.locator).toEqual(pdf);
   expect(await repo.pendingCount('user-a')).toBe(1);
 });
 
+it('reports a failed local write without throwing', async () => {
+  repo.saveProgress = async () => {
+    throw new Error('quota exceeded');
+  };
+
+  expect(await writeLocalProgress(repo, 'user-a', 'b', pdf, Date.now())).toBe(false);
+});
+
 it('keeps one cached position per account for the same book', async () => {
-  writeLocalProgress(repo, 'user-a', 'b', { ...pdf, page: 7 }, Date.now());
-  await Promise.resolve();
+  expect(await writeLocalProgress(repo, 'user-a', 'b', { ...pdf, page: 7 }, Date.now())).toBe(true);
 
   expect((await readLocalProgress(repo, 'user-a', 'b'))?.locator).toMatchObject({ page: 7 });
   // A second account on the same browser must not inherit A's position.
@@ -74,25 +79,4 @@ it('clears every account and book while keeping unrelated storage', () => {
 
   expect(localStorage.length).toBe(1);
   expect(localStorage.getItem('bookr.reader.settings')).toBe('{"theme":"paper"}');
-});
-
-it('prefers the newer of local and server progress', () => {
-  const server = {
-    bookId: 'b',
-    locator: pdf,
-    percent: 0.3,
-    updatedAt: '2026-03-01T00:00:00.000Z',
-  };
-  const older = {
-    locator: { ...pdf, page: 7, percent: 0.6 },
-    savedAt: new Date('2026-02-01T00:00:00Z').getTime(),
-  };
-  const newer = {
-    locator: { ...pdf, page: 7, percent: 0.6 },
-    savedAt: new Date('2026-04-01T00:00:00Z').getTime(),
-  };
-
-  expect(resolveInitialLocator(server, older)).toEqual(pdf);
-  expect(resolveInitialLocator(server, newer)).toEqual({ ...pdf, page: 7, percent: 0.6 });
-  expect(resolveInitialLocator(null, newer)).toEqual({ ...pdf, page: 7, percent: 0.6 });
 });

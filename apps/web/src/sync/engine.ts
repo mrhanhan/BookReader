@@ -21,6 +21,14 @@ export interface AppliedChange {
   source: AppliedSource;
 }
 
+/** The latest server-vs-local conflict the engine resolved. */
+export interface ConflictNotice {
+  entityType: SyncEntityType;
+  entityId: string;
+  /** Engine clock at resolution time; only meaningful as an ordering marker. */
+  at: number;
+}
+
 export interface SyncState {
   status: SyncStatus;
   pending: number;
@@ -31,6 +39,8 @@ export interface SyncState {
    * (the reader's progress) compare this to what they already followed.
    */
   lastApplied?: AppliedChange;
+  /** Set when the engine resolves a conflict, so views can describe it. */
+  lastConflict?: ConflictNotice;
 }
 
 export interface EventSourceLike {
@@ -88,6 +98,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   let lastError = false;
   let conflicts = 0;
   let lastApplied: AppliedChange | undefined;
+  let lastConflict: ConflictNotice | undefined;
   /** Bumped whenever pending/lastSyncedAt are written, so a stale refresh cannot win. */
   let stateEpoch = 0;
 
@@ -118,7 +129,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     } else {
       status = 'synced';
     }
-    return { status, pending, lastSyncedAt, conflicts, lastApplied };
+    return { status, pending, lastSyncedAt, conflicts, lastApplied, lastConflict };
   }
 
   let state = computeState();
@@ -131,6 +142,8 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         at: now(),
         source: event.source ?? 'pull',
       };
+    } else if (event?.type === 'conflict') {
+      lastConflict = { entityType: event.entityType, entityId: event.entityId, at: now() };
     }
 
     const next = computeState();
@@ -139,7 +152,8 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       next.pending !== state.pending ||
       next.lastSyncedAt !== state.lastSyncedAt ||
       next.conflicts !== state.conflicts ||
-      next.lastApplied !== state.lastApplied;
+      next.lastApplied !== state.lastApplied ||
+      next.lastConflict !== state.lastConflict;
     state = next;
     if (!changed && event === undefined) {
       return;

@@ -1,5 +1,5 @@
 import { locatorSchema } from '@bookr/shared';
-import type { Locator, ReadingProgressDto } from '@bookr/shared';
+import type { Locator } from '@bookr/shared';
 import type { LocalRepository } from '../../sync/repository';
 
 /**
@@ -104,22 +104,31 @@ export async function readLocalProgress(
   return legacy;
 }
 
-/** Saves locally and queues the change for sync; failures never block reading. */
-export function writeLocalProgress(
+/**
+ * Saves locally and queues the change for sync. Resolves to whether the write
+ * landed: the caller keeps the position dirty on failure so the next cycle
+ * retries, and reading continues regardless.
+ */
+export async function writeLocalProgress(
   repo: LocalRepository,
   userId: string,
   bookId: string,
   locator: Locator,
   savedAt: number,
-): void {
-  void repo.saveProgress(userId, bookId, locator, savedAt).catch(() => {
-    // The next throttled write retries; reading continues regardless.
-  });
+): Promise<boolean> {
+  try {
+    await repo.saveProgress(userId, bookId, locator, savedAt);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Drops every user's legacy cached position. The auth provider runs this when
- * a session starts or ends so one account's position cannot leak into the next.
+ * Drops every user's legacy localStorage position cache. Dexie rows are
+ * namespaced by userId and are intentionally left in place (they may still
+ * hold unsynced writes). The auth provider runs this when a session starts or
+ * ends so a previous account's legacy entry cannot leak into the next.
  * A blocked storage must never break sign-in or sign-out.
  */
 export function clearReaderProgressCache(): void {
@@ -139,21 +148,4 @@ export function clearReaderProgressCache(): void {
   } catch {
     // Blocked storage is already as private as it can get.
   }
-}
-
-/**
- * Picks where the reader should open when both a server position and a legacy
- * cache entry exist. Kept for the upgrade path and unit tests.
- */
-export function resolveInitialLocator(
-  server: ReadingProgressDto | null,
-  local: LocalProgress | null,
-): Locator | undefined {
-  if (server && local) {
-    const serverSavedAt = Date.parse(server.updatedAt);
-    return local.savedAt > serverSavedAt ? local.locator : server.locator;
-  }
-  if (server) return server.locator;
-  if (local) return local.locator;
-  return undefined;
 }

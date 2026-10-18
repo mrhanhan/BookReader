@@ -26,8 +26,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // A refresh failure ends the session inside the API client; route that
     // cleanup through this provider's query client rather than a second cache.
-    // Reader positions are account-scoped, so they are dropped here too: a
-    // failed refresh must not leave the previous account's cache behind.
+    // Only the legacy localStorage position cache is cleared here: Dexie data
+    // is namespaced by userId and kept, since it may hold unsynced writes.
     setSessionEndedHandler(() => {
       queryClient.clear();
       clearReaderProgressCache();
@@ -66,8 +66,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (input: LoginInput) => {
       const me = await loginRequest(input);
-      // A different account may be signing in on a shared browser; neither the
-      // query cache nor the reading-position cache may cross that boundary.
+      // A different account may be signing in on a shared browser; the query
+      // cache and the legacy localStorage position cache must not cross that
+      // boundary. Dexie rows are namespaced by userId, so they stay.
       queryClient.clear();
       clearReaderProgressCache();
       setUser(me);

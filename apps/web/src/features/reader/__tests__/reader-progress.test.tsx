@@ -231,3 +231,41 @@ it('keeps reading when the local progress write fails', async () => {
   expect(await screen.findByRole('button', { name: '目录' })).toBeInTheDocument();
   failing.mockRestore();
 });
+
+it('retries a failed local write on the next hand-off', async () => {
+  const engine = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  const save = vi.spyOn(repo, 'saveProgress').mockRejectedValue(new Error('quota exceeded'));
+  const moved: Locator = { kind: 'pdf', page: 5, percent: 0.5 };
+  act(() => engine.emit('relocated', { locator: moved, percent: moved.percent }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+
+  save.mockResolvedValue({
+    userId: USER,
+    bookId: BOOK_ID,
+    locator: moved,
+    percent: moved.percent,
+    updatedAt: new Date().toISOString(),
+    clientUpdatedAt: new Date().toISOString(),
+    dirty: true,
+  });
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(3));
+
+  // A successful hand-off clears the dirty flag, so another hide writes nothing.
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(save).toHaveBeenCalledTimes(3);
+
+  save.mockRestore();
+});

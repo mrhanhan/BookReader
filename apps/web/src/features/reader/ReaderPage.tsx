@@ -10,6 +10,7 @@ import type {
   Locator,
   ReaderKind,
   ReflowFileInfo,
+  SyncEntityType,
 } from '@bookr/shared';
 import {
   createReaderEngine,
@@ -69,7 +70,12 @@ const OPEN_FAILED_MESSAGE = '无法打开这本书，请确认文件完整';
 const REFLOW_MISSING_MESSAGE = '无法加载重排包，请切回原版';
 const REFLOW_REFRESH_FAILED_MESSAGE = '无法获取重排包，请稍后重试';
 const REFLOW_FALLBACK_MESSAGE = '无法加载重排包，已切回原版';
-const SYNC_CONFLICT_MESSAGE = '此批注已在另一台设备更新，旧版本已保留在历史中';
+const SYNC_CONFLICT_MESSAGES: Record<SyncEntityType, string> = {
+  annotation: '此批注已在另一台设备更新，旧版本已保留在历史中',
+  bookmark: '此书签已在另一台设备更新，已同步为最新版本',
+  reading_progress: '阅读进度已在另一台设备更新，已同步到最新位置',
+  reader_settings: '阅读设置已在另一台设备更新，已同步为最新设置',
+};
 /** Chrome hides after this much inactivity while no panel is open. */
 const CHROME_HIDE_DELAY_MS = 2_500;
 
@@ -835,19 +841,17 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     if (bookmarksError) showToast(messageForApiError(bookmarksError));
   }, [bookmarksError, showToast]);
 
-  // The sync provider exposes conflicts as a counter; an increase while the
-  // book is open maps to a conflict toast. Conflicts counted while the reader
-  // is still loading (including before mount) are only a baseline, so they do
-  // not pop up on entry.
-  const conflictsRef = useRef(syncState.conflicts);
+  // A conflict resolved while the book is open maps to an entity-specific
+  // toast. Conflicts resolved while the reader is still loading (including
+  // before mount) are only a baseline, so they do not pop up on entry.
+  const handledConflictRef = useRef<SyncState['lastConflict']>(undefined);
   useEffect(() => {
-    const previous = conflictsRef.current;
-    conflictsRef.current = syncState.conflicts;
+    const conflict = syncState.lastConflict;
+    if (conflict === undefined || conflict === handledConflictRef.current) return;
+    handledConflictRef.current = conflict;
     if (status !== 'ready') return;
-    if (syncState.conflicts > previous) {
-      showToast(SYNC_CONFLICT_MESSAGE);
-    }
-  }, [showToast, status, syncState.conflicts]);
+    showToast(SYNC_CONFLICT_MESSAGES[conflict.entityType]);
+  }, [showToast, status, syncState.lastConflict]);
 
   /** Applies an annotation change to the cache and mirrors it into the engine. */
   const applyAnnotations = useCallback(

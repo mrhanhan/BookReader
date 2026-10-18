@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -244,7 +244,13 @@ it('shows a conflict toast when the sync engine reports one', async () => {
   const { engine } = renderReader();
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
 
-  syncEngine.setState({ status: 'synced', pending: 0, lastSyncedAt: null, conflicts: 1 });
+  syncEngine.setState({
+    status: 'synced',
+    pending: 0,
+    lastSyncedAt: null,
+    conflicts: 1,
+    lastConflict: { entityType: 'annotation', entityId: 'h1', at: 1 },
+  });
 
   expect(
     await screen.findByText('此批注已在另一台设备更新，旧版本已保留在历史中'),
@@ -355,11 +361,37 @@ it('creates a highlight while offline and queues it for sync', async () => {
 
 it('does not toast for conflicts counted before the reader mounted', async () => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
-  syncEngine = createFakeSyncEngine({ conflicts: 2 });
+  syncEngine = createFakeSyncEngine({
+    conflicts: 2,
+    lastConflict: { entityType: 'annotation', entityId: 'h1', at: 1 },
+  });
   const { engine } = renderReader();
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
   await screen.findByRole('button', { name: '目录' });
 
+  expect(
+    screen.queryByText('此批注已在另一台设备更新，旧版本已保留在历史中'),
+  ).not.toBeInTheDocument();
+});
+
+it('shows conflict copy for the entity that conflicted', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  const { engine } = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  act(() => {
+    syncEngine.setState({
+      status: 'synced',
+      pending: 0,
+      lastSyncedAt: null,
+      conflicts: 1,
+      lastConflict: { entityType: 'bookmark', entityId: 'bm1', at: 1 },
+    });
+  });
+
+  expect(
+    await screen.findByText('此书签已在另一台设备更新，已同步为最新版本'),
+  ).toBeInTheDocument();
   expect(
     screen.queryByText('此批注已在另一台设备更新，旧版本已保留在历史中'),
   ).not.toBeInTheDocument();

@@ -108,10 +108,15 @@ export function useReaderProgress({
     if (!engine || !bookId || !userId) return;
     awaitingInitialRef.current = true;
 
-    const write = (locator: Locator): void => {
+    const write = (locator: Locator): Promise<boolean> => {
       const now = Date.now();
-      lastLocalWriteRef.current = now;
-      writeLocalProgress(repo, userId, bookId, locator, now);
+      return writeLocalProgress(repo, userId, bookId, locator, now).then((saved) => {
+        // A failed write leaves the throttle open so the next event retries.
+        if (saved) {
+          lastLocalWriteRef.current = now;
+        }
+        return saved;
+      });
     };
 
     const record = (locator: Locator): void => {
@@ -165,9 +170,20 @@ export function useReaderProgress({
       const locator = locatorRef.current;
       if (!locator || !dirtyRef.current) return;
 
-      write(locator);
-      dirtyRef.current = false;
-      requestSync('progress');
+      void write(locator).then((saved) => {
+        if (!saved) {
+          // Keep the position dirty so the next tick, page hide or unmount
+          // retries the local write.
+          return;
+        }
+        // A newer position may have arrived while the write was in flight;
+        // keep the flag so the next cycle hands that one off too.
+        const latest = locatorRef.current;
+        if (latest === null || locatorsEqual(latest, locator)) {
+          dirtyRef.current = false;
+        }
+        requestSync('progress');
+      });
     };
 
     const interval = setInterval(handOff, SYNC_REQUEST_INTERVAL_MS);
