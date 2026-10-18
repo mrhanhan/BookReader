@@ -1553,7 +1553,7 @@ Expected: FAIL — modules missing.
 
 - [ ] **Step 4: Implement `extract_text.py`**
 
-`PyMuPdfExtractor` imports `pymupdf` lazily; on ImportError raises `RuntimeError('PyMuPDF is required: pip install pymupdf')`. `extract_page` uses `page.get_text('dict')`; for every line, join span texts, bbox from the line (or union of spans), `font_size = max(span['size'])`, `bold = any('Bold' in span['font'] or span['flags'] & 16 for span in spans)`. Set `text_chars = len(page.get_text('text').strip())`. `image_rects` uses `page.get_images(full=True)` then `page.get_image_rects(xref)`; keep unique rects with area ≥1% of the page. `outline()` uses `doc.get_toc(simple=True)` and maps `[level, title, page]` with `page >= 1`. `render_page_png` uses `page.get_pixmap(dpi=dpi, alpha=False).tobytes('png')`.
+`PyMuPdfExtractor` imports `pymupdf` lazily; on ImportError raises `RuntimeError('PyMuPDF is required: pip install pymupdf')`. `extract_page` uses `page.get_text('dict')`; for every line, join spans with a single space when the horizontal gap between consecutive spans is at least `1.5 * min span size` (so table columns remain detectable), otherwise concatenate without a space; bbox from the line (or union of spans), `font_size = max(span['size'])`, `bold = any('Bold' in span['font'] or span['flags'] & 16 for span in spans)`. Set `text_chars = len(page.get_text('text').strip())`. `image_rects` uses `page.get_images(full=True)` then `page.get_image_rects(xref)`; keep unique rects with area ≥1% of the page. `outline()` uses `doc.get_toc(simple=True)` and maps `[level, title, page]` with `page >= 1`. `render_page_png` uses `page.get_pixmap(dpi=dpi, alpha=False).tobytes('png')`.
 
 - [ ] **Step 5: Implement `build.py`**
 
