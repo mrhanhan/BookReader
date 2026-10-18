@@ -88,6 +88,11 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
             db: deps.db,
             repo: deps.repo,
             api: createSyncApi(),
+            // jsdom does not always provide EventSource; the browser build does.
+            eventSourceFactory:
+              typeof EventSource === 'undefined'
+                ? undefined
+                : (url: string) => new EventSource(url),
             onChange: handleEngineEvent,
           })
         : factory(userId, deps.repo);

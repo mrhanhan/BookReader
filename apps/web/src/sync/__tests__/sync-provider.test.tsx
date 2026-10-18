@@ -38,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await db.delete();
 });
 
@@ -236,5 +237,43 @@ describe('SyncProvider', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['bookmarks'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['progress'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['books'] });
+  });
+
+  it('opens the event stream through the browser EventSource', async () => {
+    setTokens(tokens);
+    const urls: string[] = [];
+
+    class TestEventSource {
+      constructor(url: string) {
+        urls.push(url);
+      }
+      addEventListener(): void {}
+      close(): void {}
+    }
+
+    vi.stubGlobal('EventSource', TestEventSource);
+    server.use(
+      http.post('/api/sync/stream-token', () =>
+        HttpResponse.json({ token: 'stream-token', expiresIn: 60 }),
+      ),
+      http.get('/api/sync/pull', ({ request }) => {
+        const since = Number(new URL(request.url).searchParams.get('since') ?? '0');
+        return HttpResponse.json({
+          changes: [],
+          cursor: Number.isFinite(since) ? since : 0,
+          hasMore: false,
+          reset: false,
+        });
+      }),
+    );
+
+    renderWithProviders(
+      <SyncProvider>
+        <SyncStatusBadge />
+      </SyncProvider>,
+    );
+
+    await waitFor(() => expect(urls).toHaveLength(1));
+    expect(urls[0]).toContain('/api/sync/stream?token=stream-token');
   });
 });
