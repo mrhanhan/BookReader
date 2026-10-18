@@ -87,7 +87,7 @@ export const books = pgTable(
     author: text('author'),
     description: text('description'),
     format: text('format').$type<BookFormat>().notNull(),
-    originalFilename: text('original_filename').notNull().default(''),
+    originalFilename: text('original_filename').notNull(),
     size: bigint('original_size', { mode: 'number' }).notNull(),
     sha256: text('sha256').notNull(),
     fileKey: text('file_key'),

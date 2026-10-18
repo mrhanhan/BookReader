@@ -21,7 +21,7 @@ CREATE TABLE "books" (
 	"author" text,
 	"description" text,
 	"format" text NOT NULL,
-	"original_filename" text DEFAULT '' NOT NULL,
+	"original_filename" text NOT NULL,
 	"original_size" bigint NOT NULL,
 	"sha256" text NOT NULL,
 	"file_key" text,
