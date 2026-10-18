@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:test:reset": "tsx src/db/migrate.ts --test"
+    "db:test:reset": "tsx src/db/migrate.ts --test",
+    "admin:create": "tsx src/cli/create-admin.ts"
   },
   "dependencies": {
     "@bookr/shared": "workspace:*",

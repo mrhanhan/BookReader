@@ -2,6 +2,7 @@ import cors from '@fastify/cors';
 import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
+import { registerAuthRoutes } from './auth/routes';
 import type { AppConfig } from './config';
 import type { Database } from './db/client';
 import { AppError, defaultMessageFor } from './errors';
@@ -39,6 +40,7 @@ const LOG_REDACT_PATHS = [
   '*.password',
   '*.token',
   '*.refreshToken',
+  '*.authorization',
   '*.*.password',
   '*.*.token',
   '*.*.refreshToken',
@@ -100,6 +102,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(cors, { origin: deps.config.corsOrigin });
 
   app.get('/healthz', async () => ({ status: 'ok' }));
+
+  registerAuthRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {

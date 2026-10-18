@@ -1,4 +1,11 @@
-import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES, newId, type Role } from '@bookr/shared';
+import {
+  LIBRARY_QUOTA_BYTES,
+  MEMBER_UPLOAD_QUOTA_BYTES,
+  newId,
+  type AuthTokens,
+  type Role,
+} from '@bookr/shared';
+import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
@@ -7,7 +14,7 @@ import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
 import { assertTestDatabase } from '../src/db/guard';
 import { migrate } from '../src/db/migrate';
-import { users } from '../src/db/schema';
+import { invites, users } from '../src/db/schema';
 import { FakeJobQueue } from '../src/jobs/fake';
 import type { Job } from '../src/jobs/types';
 import { FakeStorage } from '../src/storage/fake';
@@ -147,4 +154,49 @@ export async function authHeader(
 /** Builds the app with fake dependencies, without touching Postgres or S3. */
 export async function buildTestApp(overrides: Partial<AppConfig> = {}): Promise<FastifyInstance> {
   return buildApp(await buildTestDeps(overrides));
+}
+
+/** Options for `createInvite`, used to exercise invalid invite states. */
+export interface CreateInviteOptions {
+  expiresAt?: Date;
+  revokedAt?: Date;
+  usedBy?: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Inserts an unused invite directly, keeping auth tests independent of the
+ * admin invite routes that will consume `POST /api/admin/invites`.
+ */
+export async function createInvite(
+  _app: FastifyInstance,
+  options: CreateInviteOptions = {},
+): Promise<string> {
+  const code = `INV${newId().replaceAll('-', '').slice(0, 16)}`;
+  await testDb.insert(invites).values({
+    code,
+    expiresAt: options.expiresAt ?? new Date(Date.now() + DAY_MS),
+    revokedAt: options.revokedAt ?? null,
+    usedBy: options.usedBy ?? null,
+  });
+  return code;
+}
+
+/** Marks a user account as disabled so login and refresh must reject it. */
+export async function setUserInactive(_app: FastifyInstance, username: string): Promise<void> {
+  await testDb.update(users).set({ isActive: false }).where(eq(users.username, username));
+}
+
+/** Logs a seeded user in and returns the issued tokens. */
+export async function loginAs(app: FastifyInstance, user: SeededUser): Promise<AuthTokens> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: { username: user.username, password: user.password },
+  });
+  if (response.statusCode !== 200) {
+    throw new Error(`loginAs(${user.username}) failed with status ${response.statusCode}`);
+  }
+  return response.json<AuthTokens>();
 }
