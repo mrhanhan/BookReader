@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Dialog, EmptyState, Input, cn } from '@bookr/ui';
 import { useInvites, useMembers, useRevokeInvite, useStorageOverview, useUpdateMember } from '../../api/admin';
 import type { AdminInvite, AdminMember } from '../../api/admin';
+import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
 import { formatBytes, formatDateTime } from '../../lib/format';
 import { Toast } from '../bookshelf/Toast';
@@ -96,13 +97,22 @@ function StorageOverviewSection() {
 interface MemberRowProps {
   member: AdminMember;
   busy: boolean;
+  /** The signed-in administrator cannot deactivate their own account. */
+  isCurrentUser: boolean;
   onToggle: (member: AdminMember, isActive: boolean) => void;
   onSaveQuota: (member: AdminMember, bytes: number) => void;
   onResetPassword: (member: AdminMember) => void;
 }
 
 /** One member row; the quota field keeps its own draft and saves on blur. */
-function MemberRow({ member, busy, onToggle, onSaveQuota, onResetPassword }: MemberRowProps) {
+function MemberRow({
+  member,
+  busy,
+  isCurrentUser,
+  onToggle,
+  onSaveQuota,
+  onResetPassword,
+}: MemberRowProps) {
   const [quota, setQuota] = useState(() => String(member.uploadQuotaBytes));
   const [quotaError, setQuotaError] = useState<string | null>(null);
 
@@ -143,33 +153,37 @@ function MemberRow({ member, busy, onToggle, onSaveQuota, onResetPassword }: Mem
         </span>
       </td>
       <td className={cellClass}>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={member.isActive}
-            aria-label={`${member.displayName} 账号状态`}
-            disabled={busy}
-            onClick={() => onToggle(member, !member.isActive)}
-            className={cn(
-              'relative h-5 w-9 shrink-0 rounded-full transition',
-              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-              'disabled:cursor-not-allowed disabled:opacity-60',
-              member.isActive ? 'bg-accent' : 'bg-border',
-            )}
-          >
-            <span
-              aria-hidden="true"
+        {isCurrentUser ? (
+          <span className="text-xs text-muted">当前账号</span>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={member.isActive}
+              aria-label={`${member.displayName} 账号状态`}
+              disabled={busy}
+              onClick={() => onToggle(member, !member.isActive)}
               className={cn(
-                'absolute top-0.5 size-4 rounded-full bg-paper shadow-sm transition',
-                member.isActive ? 'left-[1.125rem]' : 'left-0.5',
+                'relative h-5 w-9 shrink-0 rounded-full transition',
+                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                'disabled:cursor-not-allowed disabled:opacity-60',
+                member.isActive ? 'bg-accent' : 'bg-border',
               )}
-            />
-          </button>
-          <span className={member.isActive ? 'text-xs text-ink' : 'text-xs text-highlight'}>
-            {member.isActive ? '启用' : '停用'}
-          </span>
-        </div>
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'absolute top-0.5 size-4 rounded-full bg-paper shadow-sm transition',
+                  member.isActive ? 'left-[1.125rem]' : 'left-0.5',
+                )}
+              />
+            </button>
+            <span className={member.isActive ? 'text-xs text-ink' : 'text-xs text-highlight'}>
+              {member.isActive ? '启用' : '停用'}
+            </span>
+          </div>
+        )}
       </td>
       <td className={cn(cellClass, 'text-xs tabular-nums text-muted')}>
         {formatBytes(member.usedBytes)}
@@ -296,6 +310,7 @@ function ResetPasswordDialog({ member, onClose, onReset }: ResetPasswordDialogPr
 
 /** Administration for members, invites and the shared storage pool. */
 export function MembersPage() {
+  const { user } = useAuth();
   const membersQuery = useMembers();
   const invitesQuery = useInvites();
   const updateMember = useUpdateMember();
@@ -410,6 +425,7 @@ export function MembersPage() {
                     key={member.id}
                     member={member}
                     busy={updateMember.isPending && updateMember.variables?.id === member.id}
+                    isCurrentUser={user?.id === member.id}
                     onToggle={toggleActive}
                     onSaveQuota={saveQuota}
                     onResetPassword={setResetting}

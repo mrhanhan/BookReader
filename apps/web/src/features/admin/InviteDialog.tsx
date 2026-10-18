@@ -21,6 +21,7 @@ export function InviteDialog({ onClose }: InviteDialogProps) {
   const createInvite = useCreateInvite();
   const [created, setCreated] = useState<CreatedInvite | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // StrictMode replays effects; the ref keeps the POST from running twice and
   // minting two codes.
@@ -41,11 +42,14 @@ export function InviteDialog({ onClose }: InviteDialogProps) {
 
   async function copyCode() {
     if (!created) return;
+    setCopyError(null);
     try {
       await navigator.clipboard.writeText(created.code);
       setCopied(true);
     } catch {
-      setError('无法自动复制，请手动选中邀请码。');
+      // Copying is a convenience; the code block stays visible for manual
+      // selection, so this must never replace it.
+      setCopyError('无法自动复制，请手动选中邀请码。');
     }
   }
 
@@ -60,14 +64,7 @@ export function InviteDialog({ onClose }: InviteDialogProps) {
         </Button>
       }
     >
-      {error ? (
-        <p
-          role="alert"
-          className="rounded-md border border-highlight/30 bg-highlight/10 px-3 py-2 text-sm text-highlight"
-        >
-          {error}
-        </p>
-      ) : created ? (
+      {created ? (
         <div className="flex flex-col gap-4">
           <p className="text-sm leading-6 text-ink">
             把邀请码转给家人。{DEFAULT_INVITE_HOURS} 小时内有效，启用后仅可使用一次。
@@ -80,8 +77,20 @@ export function InviteDialog({ onClose }: InviteDialogProps) {
               {copied ? '已复制' : '复制'}
             </Button>
           </div>
+          {copyError ? (
+            <p role="status" className="text-xs text-highlight">
+              {copyError}
+            </p>
+          ) : null}
           <p className="text-xs text-muted">到期时间：{formatDateTime(created.expiresAt)}</p>
         </div>
+      ) : error ? (
+        <p
+          role="alert"
+          className="rounded-md border border-highlight/30 bg-highlight/10 px-3 py-2 text-sm text-highlight"
+        >
+          {error}
+        </p>
       ) : (
         <p role="status" className="text-sm tracking-widest text-muted">
           正在生成邀请码…

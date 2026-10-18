@@ -116,3 +116,44 @@ it('tells members to contact an admin when the shared shelf nears capacity', asy
   // Members must not be sent to a route that would bounce them home.
   expect(screen.queryByRole('link', { name: '查看存储用量' })).toBeNull();
 });
+
+it('does not offer the current administrator a self-deactivation toggle', async () => {
+  signInAsAdmin();
+  server.use(
+    http.get('/api/admin/members', () =>
+      HttpResponse.json({
+        items: [
+          {
+            id: 'user-admin',
+            username: 'admin',
+            displayName: '掌灯人',
+            role: 'admin',
+            isActive: true,
+            uploadQuotaBytes: 1000,
+            usedBytes: 0,
+            createdAt: new Date().toISOString(),
+          },
+          {
+            id: 'u1',
+            username: 'alice',
+            displayName: 'Alice',
+            role: 'member',
+            isActive: true,
+            uploadQuotaBytes: 1000,
+            usedBytes: 300,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    ),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/admin/members'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  expect(await screen.findByText('当前账号')).toBeInTheDocument();
+  // The signed-in admin cannot lock themselves out of the shelf.
+  expect(screen.queryByRole('switch', { name: '掌灯人 账号状态' })).toBeNull();
+  // Other members keep their toggle, so the rule is not "hide every switch".
+  expect(screen.getByRole('switch', { name: 'Alice 账号状态' })).toBeInTheDocument();
+});

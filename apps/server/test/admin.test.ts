@@ -53,6 +53,61 @@ it('resets a member password and revokes their sessions', async () => {
   expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: member.username, password: 'valid-password-1' } })).statusCode).toBe(401);
   expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: member.username, password: 'brand-new-password' } })).statusCode).toBe(200);
 });
+it('refuses to let an administrator deactivate their own account', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  // A second administrator exists, so the last-admin rule is not what rejects
+  // this request; the self-deactivation rule is.
+  const backupAdmin = await seedUser('admin');
+
+  const res = await app.inject({
+    method: 'PATCH',
+    url: `/api/admin/members/${admin.id}`,
+    headers: await authHeader(admin),
+    payload: { isActive: false },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().error).toMatchObject({
+    code: 'CONFLICT',
+    message: 'You cannot deactivate your own account',
+  });
+
+  const members = await app.inject({
+    method: 'GET',
+    url: '/api/admin/members',
+    headers: await authHeader(backupAdmin),
+  });
+  const stored = members.json().items.find((item: { id: string }) => item.id === admin.id);
+  expect(stored.isActive).toBe(true);
+});
+it('refuses to deactivate the last active administrator', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+
+  // Deactivating the only remaining administrator is attempted against the
+  // caller themselves: any other caller would itself be an active admin.
+  const res = await app.inject({
+    method: 'PATCH',
+    url: `/api/admin/members/${admin.id}`,
+    headers: await authHeader(admin),
+    payload: { isActive: false },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().error).toMatchObject({
+    code: 'CONFLICT',
+    message: 'The last active administrator cannot be deactivated',
+  });
+
+  const members = await app.inject({
+    method: 'GET',
+    url: '/api/admin/members',
+    headers: await authHeader(admin),
+  });
+  const stored = members.json().items.find((item: { id: string }) => item.id === admin.id);
+  expect(stored.isActive).toBe(true);
+});
 it('reports total and per-member storage usage', async () => {
   await resetDb();
   const app = await buildTestApp();

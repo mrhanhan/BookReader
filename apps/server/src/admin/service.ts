@@ -1,5 +1,5 @@
 import { ERROR_CODES, type Role } from '@bookr/shared';
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, ne, sql } from 'drizzle-orm';
 import { randomInt } from 'node:crypto';
 import type { AppDeps } from '../app';
 import { hashPassword } from '../auth/password';
@@ -192,6 +192,44 @@ export async function updateMember(
   const revokeDevices = input.isActive === false || input.password !== undefined;
 
   const updated = await deps.db.transaction(async (tx) => {
+    // Administrators are the only accounts that can restore access, so the
+    // shelf must never be left without an active one. Self-deactivation is
+    // checked too: it is the only way to reach the last-admin branch, because
+    // any other caller is itself an active administrator.
+    if (input.isActive === false) {
+      const [target] = await tx
+        .select({ role: users.role, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, memberId))
+        .limit(1);
+
+      if (target?.isActive && target.role === 'admin') {
+        const [others] = await tx
+          .select({ count: sql<string>`count(*)` })
+          .from(users)
+          .where(
+            and(eq(users.role, 'admin'), eq(users.isActive, true), ne(users.id, memberId)),
+          );
+        if (numberOf(others?.count) === 0) {
+          throw new AppError(
+            409,
+            ERROR_CODES.CONFLICT,
+            undefined,
+            'The last active administrator cannot be deactivated',
+          );
+        }
+      }
+
+      if (memberId === actorId) {
+        throw new AppError(
+          409,
+          ERROR_CODES.CONFLICT,
+          undefined,
+          'You cannot deactivate your own account',
+        );
+      }
+    }
+
     const [row] = await tx
       .update(users)
       .set(patch)
