@@ -79,10 +79,16 @@ export function registerAiRoutes(app: FastifyInstance, deps: AppDeps): void {
       });
 
       try {
-        await executeChat(deps, prepared, createReplySink(raw), controller.signal);
+        await executeChat(
+          deps,
+          prepared,
+          createReplySink(raw, () => controller.abort()),
+          controller.signal,
+          request.log,
+        );
       } finally {
         finished = true;
-        if (!raw.writableEnded) raw.end();
+        if (!raw.writableEnded && !raw.destroyed) raw.end();
       }
       return reply;
     },

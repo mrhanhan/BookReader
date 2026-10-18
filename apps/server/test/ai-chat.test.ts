@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { expect, it } from 'vitest';
 import { FakeAiClient } from '../src/ai/fake';
-import { aiMessages, aiThreads, aiUsage, users } from '../src/db/schema';
+import { aiMessages, aiThreads, aiUsage, books, users } from '../src/db/schema';
 import {
   authHeader,
   buildTestConfig,
@@ -172,6 +172,26 @@ it('rejects disabled accounts, missing configuration, exhausted quotas and forei
   expect(foreign.status).toBe(404);
   await foreign.text();
 
+  const otherBook = await seedBook({ uploadedBy: user.id, format: 'pdf' });
+  await testDb.insert(aiThreads).values({
+    userId: user.id,
+    bookId: otherBook.id,
+    title: '另一本书的线程',
+  });
+  const wrongBookThread = await testDb.select().from(aiThreads).where(eq(aiThreads.bookId, otherBook.id));
+  const crossBook = await chat(url, headers, book.id, {
+    ...explainBody,
+    threadId: wrongBookThread[0]!.id,
+  });
+  expect(crossBook.status).toBe(404);
+  await crossBook.text();
+
+  await testDb.update(books).set({ deletedAt: new Date() }).where(eq(books.id, book.id));
+  const missingBook = await chat(url, headers, book.id, explainBody);
+  expect(missingBook.status).toBe(404);
+  await missingBook.text();
+  expect(fake.lastRequest).toBeNull();
+
   await stopApp(app);
 });
 
@@ -256,7 +276,9 @@ it('reports an upstream failure and keeps the partial answer', async () => {
   expect(events.at(-1)!.data).toMatchObject({
     code: 'AI_UPSTREAM_FAILED',
     retryable: true,
+    message: 'AI 服务暂时不可用，请稍后重试',
   });
+  expect(JSON.stringify(events)).not.toContain('Fake AI failure');
 
   const assistant = (await testDb.select().from(aiMessages)).find(
     (message) => message.role === 'assistant',

@@ -10,8 +10,7 @@ import {
   type AiStreamMeta,
 } from '@bookr/shared';
 import { and, eq, isNull } from 'drizzle-orm';
-import { once } from 'node:events';
-import { setTimeout as delay } from 'node:timers/promises';
+import type { ServerResponse } from 'node:http';
 import type { AppDeps } from '../app';
 import { aiThreads, books, users } from '../db/schema';
 import { AppError } from '../errors';
@@ -31,6 +30,7 @@ import {
   settleQuota,
   type QuotaLimits,
   type QuotaReservation,
+  type QuotaSnapshot,
 } from './quota';
 import type { AiChatMessage, AiClient, AiTokenUsage } from './types';
 
@@ -41,6 +41,7 @@ const MAX_HISTORY_MESSAGES = 200;
 
 /** Everything resolved before the response switches to SSE. */
 export interface PreparedChat {
+  userId: string;
   threadId: string;
   userMessageId: string;
   assistantMessageId: string;
@@ -53,6 +54,12 @@ export interface PreparedChat {
   reservation: QuotaReservation;
   timezone: string;
   limits: QuotaLimits;
+}
+
+/** Structured logger; only token counts and error names are ever logged. */
+export interface ChatLogger {
+  info(fields: Record<string, unknown>, message: string): void;
+  error(fields: Record<string, unknown>, message: string): void;
 }
 
 /** SSE writer used by the route; methods resolve once the frame is flushed. */
@@ -75,7 +82,8 @@ function threadTitle(body: AiChatRequest): string {
   }
   const prefix = body.action === 'explain' ? '解释：' : '提问：';
   const source = body.action === 'explain' ? (body.selectedText ?? '') : (body.question ?? '');
-  return `${prefix}${source}`.slice(0, AI_THREAD_TITLE_MAX_LENGTH);
+  // Keep the excerpt short before adding the prefix so the title stays readable.
+  return `${prefix}${source.slice(0, 40)}`.slice(0, AI_THREAD_TITLE_MAX_LENGTH);
 }
 
 function abortError(): DOMException {
@@ -116,7 +124,7 @@ export async function prepareChat(
 
   const aiConfig = await readAiConfig(deps);
   if (!aiConfig) {
-    throw new AppError(503, ERROR_CODES.AI_NOT_CONFIGURED);
+    throw new AppError(503, ERROR_CODES.AI_NOT_CONFIGURED, { reason: 'missing_config' });
   }
 
   const [book] = await deps.db
@@ -129,7 +137,7 @@ export async function prepareChat(
   }
 
   let thread = body.threadId ? await findThreadRow(deps.db, userId, body.threadId) : undefined;
-  if (body.threadId && (!thread || thread.bookId !== bookId)) {
+  if (body.threadId && (!thread || thread.bookId !== book.id)) {
     throw new AppError(404, ERROR_CODES.NOT_FOUND);
   }
 
@@ -197,6 +205,7 @@ export async function prepareChat(
         content: '',
         status: 'streaming',
         action: body.action,
+        selectedText: body.selectedText ?? null,
         model: aiConfig.chatModel,
         promptVersion: PROMPT_VERSION,
         now,
@@ -209,6 +218,7 @@ export async function prepareChat(
     });
 
     return {
+      userId,
       threadId: written.threadId,
       userMessageId: written.userMessageId,
       assistantMessageId: written.assistantMessageId,
@@ -251,6 +261,7 @@ export async function executeChat(
   prepared: PreparedChat,
   sink: ChatSink,
   signal: AbortSignal,
+  logger?: ChatLogger,
 ): Promise<void> {
   const meta: AiStreamMeta = {
     threadId: prepared.threadId,
@@ -263,27 +274,49 @@ export async function executeChat(
 
   let answer = '';
   let usage: AiTokenUsage | null = null;
-  let settled = false;
+  let quotaDone = false;
+  let messageDone = false;
+  let quotaSnapshot: QuotaSnapshot | null = null;
+  let aborted = false;
+  let errorName: string | null = null;
 
+  const actualUsage = (): AiTokenUsage =>
+    usage ?? {
+      promptTokens: prepared.promptTokens,
+      completionTokens: estimateTokens(answer),
+    };
+
+  // Settlement is split into two independently retryable halves: a failed
+  // message update must not charge the provider usage a second time.
   const settle = async (
     status: AiMessageStatus,
     actual: AiTokenUsage,
   ): Promise<AiStreamDone | null> => {
-    if (settled) return null;
-    settled = true;
-    const quota = await settleQuota(deps.db, prepared.reservation, actual, deps.clock.now());
-    await deps.db.transaction(async (tx) => {
-      await updateMessage(tx, prepared.assistantMessageId, {
-        content: answer,
-        status,
-        promptTokens: actual.promptTokens,
-        completionTokens: actual.completionTokens,
-      }, deps.clock.now());
-    });
+    if (!quotaDone) {
+      quotaSnapshot = await settleQuota(
+        deps.db,
+        prepared.reservation,
+        actual,
+        deps.clock.now(),
+      );
+      quotaDone = true;
+    }
+    if (!messageDone) {
+      await deps.db.transaction(async (tx) => {
+        await updateMessage(tx, prepared.assistantMessageId, {
+          content: answer,
+          status,
+          promptTokens: actual.promptTokens,
+          completionTokens: actual.completionTokens,
+        }, deps.clock.now());
+      });
+      messageDone = true;
+    }
+    if (!quotaSnapshot) return null;
     return {
       assistantMessageId: prepared.assistantMessageId,
       usage: actual,
-      quota: { daily: quota.daily, monthly: quota.monthly },
+      quota: { daily: quotaSnapshot.daily, monthly: quotaSnapshot.monthly },
     };
   };
 
@@ -304,54 +337,86 @@ export async function executeChat(
       await sink.delta(event.text);
     }
 
-    const actual = usage ?? {
-      promptTokens: prepared.promptTokens,
-      completionTokens: estimateTokens(answer),
-    };
-    const done = await settle('complete', actual);
+    const done = await settle('complete', actualUsage());
     if (done) await sink.done(done);
   } catch (error) {
-    const aborted = signal.aborted || isAbort(error);
-    const actual = usage ?? {
-      promptTokens: prepared.promptTokens,
-      completionTokens: estimateTokens(answer),
-    };
-    const done = await settle(aborted ? 'interrupted' : 'failed', actual);
-    if (!aborted && done) {
-      try {
-        await sink.error(failurePayload(error));
-      } catch {
-        // The connection died while reporting the failure; persistence is done.
+    aborted = signal.aborted || isAbort(error);
+    errorName = error instanceof Error ? error.name : typeof error;
+    const actual = actualUsage();
+    try {
+      const done = await settle(aborted ? 'interrupted' : 'failed', actual);
+      if (!aborted && done) {
+        await sink.error(failurePayload(error)).catch(() => undefined);
       }
+    } catch (settleError) {
+      errorName = settleError instanceof Error ? settleError.name : errorName;
+      logger?.error(
+        {
+          userId: prepared.userId,
+          threadId: prepared.threadId,
+          action: prepared.action,
+          errorName,
+        },
+        'AI chat settlement failed',
+      );
     }
+  } finally {
+    const finalUsage = actualUsage();
+    logger?.info(
+      {
+        userId: prepared.userId,
+        threadId: prepared.threadId,
+        action: prepared.action,
+        promptTokens: finalUsage.promptTokens,
+        completionTokens: finalUsage.completionTokens,
+        aborted,
+        errorName,
+      },
+      'AI chat finished',
+    );
   }
 }
 
 /** Writes one SSE frame, waiting for drain when the socket applies backpressure. */
 async function writeFrame(
-  raw: NodeJS.WritableStream & { writableEnded?: boolean; destroyed?: boolean },
+  raw: ServerResponse,
   event: string,
   data: unknown,
+  onBackpressure?: () => void,
 ): Promise<void> {
   if (raw.writableEnded || raw.destroyed) {
     throw abortError();
   }
-  const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const frame = `event: ${event}
+data: ${JSON.stringify(data)}
+
+`;
   if (raw.write(frame)) return;
-  await Promise.race([
-    once(raw, 'drain'),
-    delay(5_000).then(() => {
-      throw new Error('AI stream backpressure timed out');
-    }),
-  ]);
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      onBackpressure?.();
+      reject(new Error('AI stream backpressure timed out'));
+    }, 5_000);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      raw.removeListener('drain', onDrain);
+    };
+    const onDrain = (): void => {
+      cleanup();
+      resolve();
+    };
+    raw.once('drain', onDrain);
+  });
 }
 
-/** Builds the SSE sink for a hijacked Fastify response. */
-export function createReplySink(raw: NodeJS.WritableStream): ChatSink {
+/** Builds the SSE sink for a hijacked response; backpressure aborts upstream. */
+export function createReplySink(raw: ServerResponse, onBackpressure?: () => void): ChatSink {
   return {
-    meta: (meta) => writeFrame(raw, 'meta', meta),
-    delta: (text) => writeFrame(raw, 'delta', { text }),
-    done: (done) => writeFrame(raw, 'done', done),
-    error: (payload) => writeFrame(raw, 'error', payload),
+    meta: (meta) => writeFrame(raw, 'meta', meta, onBackpressure),
+    delta: (text) => writeFrame(raw, 'delta', { text }, onBackpressure),
+    done: (done) => writeFrame(raw, 'done', done, onBackpressure),
+    error: (payload) => writeFrame(raw, 'error', payload, onBackpressure),
   };
 }
