@@ -303,3 +303,19 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | 登录提示限流 | `TRUST_PROXY` 必须为 `1`；确认只经 Caddy 访问 |
 | 备份脚本失败 | 手动运行 `bash -x scripts/backup-export.sh`；确认 MinIO 容器运行且 `bookr_default` 网络存在 |
 | 首次构建超时/磁盘不足 | Calibre 安装较大；清理 Docker 空间后重试，或将构建放到有更多磁盘的机器 |
+
+## 12. 端到端验收测试（E2E）
+
+E2E 使用 Playwright 驱动真实浏览器验证邀请注册、上传、编辑、筛选、删除与恢复。
+
+```bash
+# 首次运行安装 Chromium
+pnpm --filter @bookr/web exec playwright install chromium
+
+# 针对本机 Compose 栈运行（可用 E2E_BASE_URL 覆盖本地端口）
+pnpm --filter @bookr/web e2e
+```
+
+- 前提：`docker compose up -d` 全部服务 healthy，且已存在管理员；默认使用 `admin`，可通过 `E2E_ADMIN_USERNAME` / `E2E_ADMIN_PASSWORD` 指定。
+- 测试会**创建真实用户与邀请码、上传图书并软删除图书**（结束时留在回收站），还会清理此前 E2E 遗留的在架图书。请只对它使用一次性测试栈。
+- 默认只允许 `localhost` / `127.0.0.1`；指向其他主机时测试会拒绝启动。仅在目标确实是可丢弃的测试环境时才设置 `E2E_ALLOW_REMOTE=1`。**永远不要对生产环境运行 E2E，也不要为生产设置该变量。**
