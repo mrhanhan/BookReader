@@ -7,10 +7,13 @@ import {
   type BookStatus,
   type Locator,
   type Role,
+  type SyncEntityType,
+  type SyncOp,
 } from '@bookr/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  bigserial,
   boolean,
   doublePrecision,
   index,
@@ -242,6 +245,7 @@ export const readingProgress = pgTable(
     percent: doublePrecision('percent').notNull(),
     deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    clientUpdatedAt: timestamp('client_updated_at', { withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.bookId] }),
@@ -269,6 +273,7 @@ export const annotations = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    clientUpdatedAt: timestamp('client_updated_at', { withTimezone: true }),
   },
   (table) => [
     index('annotations_user_book_updated_idx').on(table.userId, table.bookId, table.updatedAt),
@@ -300,11 +305,56 @@ export const bookmarks = pgTable(
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    clientUpdatedAt: timestamp('client_updated_at', { withTimezone: true }),
   },
   (table) => [
     index('bookmarks_user_book_created_idx').on(table.userId, table.bookId, table.createdAt),
   ],
 );
+
+/**
+ * Append-only log of per-user entity changes. Clients pull by revision and
+ * push through a server transaction; `revision` is the pull cursor.
+ */
+export const syncChanges = pgTable(
+  'sync_changes',
+  {
+    revision: bigserial('revision', { mode: 'number' }).primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    entityType: text('entity_type').$type<SyncEntityType>().notNull(),
+    entityId: text('entity_id').notNull(),
+    op: text('op').$type<SyncOp>().notNull(),
+    payload: jsonb('payload').$type<unknown>(),
+    clientUpdatedAt: timestamp('client_updated_at', { withTimezone: true }).notNull(),
+    serverUpdatedAt: timestamp('server_updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    index('sync_changes_user_revision_idx').on(table.userId, table.revision),
+    index('sync_changes_created_idx').on(table.createdAt),
+  ],
+);
+
+/** Small key/value store for server-wide sync bookkeeping. */
+export const syncMeta = pgTable('sync_meta', {
+  key: text('key').primaryKey(),
+  value: bigint('value', { mode: 'number' }).notNull(),
+});
+
+/** One row per user holding the reader settings the sync protocol mirrors. */
+export const userSettings = pgTable('user_settings', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+  clientUpdatedAt: timestamp('client_updated_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /** A reading progress row as stored in Postgres. */
 export type ReadingProgressRow = typeof readingProgress.$inferSelect;

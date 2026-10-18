@@ -1,9 +1,6 @@
 import type { AnnotationColor, Locator } from '@bookr/shared';
-import type { ExtractTablesWithRelations } from 'drizzle-orm';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
-import type { NodePgQueryResultHKT } from 'drizzle-orm/node-postgres';
-import type { PgTransaction } from 'drizzle-orm/pg-core';
-import type { Database } from '../db/client';
+import type { Database, Transaction as ReadingTransaction } from '../db/client';
 import {
   annotationHistory,
   annotations,
@@ -15,14 +12,10 @@ import {
 } from '../db/schema';
 
 /**
- * A Drizzle transaction over the application database. Repo functions that
- * participate in an annotation edit take this instead of `Database`.
+ * Repository's name for the shared transaction type. Callers that only edit
+ * reading data can keep importing `ReadingTransaction` from here.
  */
-export type ReadingTransaction = PgTransaction<
-  NodePgQueryResultHKT,
-  Record<string, never>,
-  ExtractTablesWithRelations<Record<string, never>>
->;
+export type { ReadingTransaction };
 
 /** Fields written by a progress upsert. */
 export interface UpsertProgressInput {
