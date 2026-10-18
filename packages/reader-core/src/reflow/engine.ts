@@ -123,8 +123,9 @@ function buildToc(pack: ReflowPack): TocItem[] {
  * locator into the pack, keeps the current position in sync with the scroll
  * offset, and reports `relocated` events. Typography is applied through CSS
  * custom properties, so settings changes never rebuild the document or reset
- * the reader's place. Visual-block painting and highlights belong to later
- * tasks; this engine only reserves their DOM.
+ * the reader's place. Text selection is reported as reflow locators,
+ * highlights are painted as inline marks, and visual blocks are filled from
+ * the original PDF page when `open` receives a `sourcePdfUrl`.
  */
 export class ReflowReaderEngine implements ReaderEngine {
   readonly kind = 'reflow' as const;
@@ -328,7 +329,12 @@ export class ReflowReaderEngine implements ReaderEngine {
       if (!blockId) {
         continue;
       }
-      const marks = marksByBlock.get(blockId) ?? [];
+      // Block ids repeat across pages; only marks anchored on this block's
+      // source page may paint here. Cross-page ranges stay page-approximate.
+      const sourcePage = Number(element.dataset.sourcePage);
+      const marks = (marksByBlock.get(blockId) ?? []).filter(
+        (mark) => mark.sourcePage === sourcePage,
+      );
       const signature = marksSignature(marks);
       if (this.markSignatures.get(element) === signature) {
         continue;
@@ -514,10 +520,22 @@ export class ReflowReaderEngine implements ReaderEngine {
     if (!mark || !article?.contains(mark)) {
       return;
     }
-    const id = mark.getAttribute('data-highlight-id');
-    if (id) {
-      this.emitter.emit('highlightClick', { id });
+
+    const selection = this.container?.ownerDocument?.getSelection();
+    if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+      // A drag that ends inside a highlight is a text selection, not a mark
+      // click; opening the annotation editor here would interrupt selecting.
+      return;
     }
+
+    const id = mark.getAttribute('data-highlight-id');
+    if (!id) {
+      return;
+    }
+    // The host's tap/click handling must not also fire for annotation clicks.
+    event.stopPropagation();
+    event.preventDefault();
+    this.emitter.emit('highlightClick', { id });
   };
 
   private readonly handleSelectionChange = (): void => {
@@ -611,7 +629,9 @@ export class ReflowReaderEngine implements ReaderEngine {
     this.markSignatures = new WeakMap();
     this.visualBlocks = [];
     this.settings = null;
-    this.highlights = [];
+    // Highlights are owned by the reader session, not the DOM. They survive
+    // teardown so `setHighlights` before `open` is applied once the pack
+    // renders (and so reopening the same reader keeps its annotations).
     this.lastEmittedPercent = -1;
     this.lastEmittedBlockId = null;
     this.lastEmittedSourcePage = null;

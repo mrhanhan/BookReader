@@ -7,6 +7,13 @@ import type { ReaderHighlight } from '../types';
 export interface ReflowMark {
   id: string;
   blockId: string;
+  /**
+   * Source page the highlight was anchored on. Block ids are only unique per
+   * page, so rendering must not apply a page 1 mark to a same-id block on
+   * another page. Cross-page `ranges` are best-effort: every range inherits
+   * the locator's `sourcePage` because the schema stores no page per range.
+   */
+  sourcePage: number;
   charRange: [number, number];
   color: AnnotationColor;
   hasNote: boolean;
@@ -33,18 +40,37 @@ export function marksForHighlights(highlights: ReaderHighlight[]): Map<string, R
     if (!highlight || typeof highlight !== 'object') {
       continue;
     }
+    if (typeof highlight.id !== 'string' || highlight.id.length === 0) {
+      continue;
+    }
     const locator = highlight.locator;
     if (!locator || locator.kind !== 'reflow') {
       continue;
     }
+    const rawPage = locator.sourcePage;
+    const sourcePage = typeof rawPage === 'number' && Number.isFinite(rawPage) && rawPage >= 1
+      ? Math.floor(rawPage)
+      : 1;
 
-    const ranges = locator.ranges?.length
-      ? locator.ranges
+    const locatorRanges = Array.isArray(locator.ranges) ? locator.ranges : [];
+    const ranges = locatorRanges.length > 0
+      ? locatorRanges
       : locator.blockId && locator.charRange
         ? [{ blockId: locator.blockId, charRange: locator.charRange }]
         : [];
 
     for (const range of ranges) {
+      // Persisted annotations may predate a schema change; skip garbage
+      // entries instead of letting destructuring throw.
+      if (!range || typeof range !== 'object') {
+        continue;
+      }
+      if (!Array.isArray(range.charRange) || range.charRange.length < 2) {
+        continue;
+      }
+      if (typeof range.blockId !== 'string' || range.blockId.length === 0) {
+        continue;
+      }
       const [start, end] = range.charRange;
       if (typeof start !== 'number' || typeof end !== 'number') {
         continue;
@@ -55,6 +81,7 @@ export function marksForHighlights(highlights: ReaderHighlight[]): Map<string, R
       const mark: ReflowMark = {
         id: highlight.id,
         blockId: range.blockId,
+        sourcePage,
         charRange: [start, end],
         color: highlight.color,
         hasNote: highlight.hasNote === true,
@@ -80,20 +107,26 @@ interface NormalizedMark {
 /**
  * Rebuilds a text block as plain text nodes plus `<mark>` segments.
  *
- * Marks are clamped to the text; inverted or empty ranges are dropped. Every
- * segment boundary comes from a mark start/end, so each segment is either
- * fully covered or uncovered. Where marks overlap the last applicable mark
- * wins, matching the order highlights were supplied in. Text is always
- * inserted through `createTextNode`, never parsed as HTML.
+ * Marks are clamped to the text; inverted or empty ranges are dropped, and a
+ * mark recorded for another block id is ignored (block ids repeat across
+ * pages, so the element is the authority). Every segment boundary comes from a
+ * mark start/end, so each segment is either fully covered or uncovered. Where
+ * marks overlap the last applicable mark wins, matching the order highlights
+ * were supplied in. Text is always inserted through `createTextNode`, never
+ * parsed as HTML.
  */
 export function renderBlockText(block: HTMLElement, text: string, marks: ReflowMark[]): void {
   const document = block.ownerDocument;
   const value = typeof text === 'string' ? text : '';
   const length = value.length;
+  const blockId = block.dataset.blockId ?? '';
 
   const normalized: NormalizedMark[] = [];
   for (const mark of marks) {
     if (!mark || !mark.charRange) {
+      continue;
+    }
+    if (blockId.length === 0 || mark.blockId !== blockId) {
       continue;
     }
     const start = clamp(Math.floor(mark.charRange[0]), 0, length);

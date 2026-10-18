@@ -6,6 +6,8 @@ const DEFAULT_CMAP_URL = '/cmaps/';
 const DEFAULT_STANDARD_FONT_DATA_URL = '/standard_fonts/';
 /** Visual blocks never render smaller than this CSS width, even before layout. */
 const MIN_PAGE_CSS_WIDTH = 640;
+/** Full-page bitmaps kept in memory; older pages re-render when revisited. */
+const MAX_CACHED_PAGES = 8;
 
 /** A page as the painter needs it; mirrors the pdf.js surface used here. */
 export interface PainterPage {
@@ -98,11 +100,30 @@ function devicePixelRatioOf(canvas: HTMLCanvasElement): number {
   return Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
 }
 
+/** Releases a lazy-loaded document, swallowing worker teardown failures. */
+async function releaseDocument(
+  document: LoadedPainterDocument | null | undefined,
+): Promise<void> {
+  if (!document) {
+    return;
+  }
+  try {
+    if (typeof document.destroy === 'function') {
+      await document.destroy();
+    } else if (typeof document.cleanup === 'function') {
+      document.cleanup();
+    }
+  } catch {
+    // The worker may already be gone.
+  }
+}
+
 /**
  * Paints crops of the original PDF page behind reflow visual blocks.
  *
- * Full pages are rendered at device-pixel resolution and cached, so several
- * visual blocks from the same page share one pdf.js render. Concurrent paints
+ * Full pages are rendered at device-pixel resolution and cached in an LRU of
+ * eight pages, so several visual blocks from the same page share one pdf.js
+ * render and long books do not retain every bitmap. Concurrent paints
  * await the same in-flight promise. A generation token invalidates every async
  * step on `destroy`, keeping a torn-down painter away from the DOM.
  */
@@ -138,13 +159,16 @@ export class SourcePagePainter implements SourcePagePainterLike {
     }
     const generation = this.generation;
     const promise = (async () => {
-      const document = this.loadDocument
+      const loaded = this.loadDocument
         ? await this.loadDocument(url, this.options)
         : await loadPdfDocument(url, this.options);
       if (generation !== this.generation) {
+        // destroy() won the race. Release the document that just arrived so
+        // the pdf.js worker and its buffers do not outlive the painter.
+        await releaseDocument(loaded as LoadedPainterDocument);
         throw new Error('The page painter was destroyed');
       }
-      this.document = document as LoadedPainterDocument;
+      this.document = loaded as LoadedPainterDocument;
       return this.document;
     })();
     this.documentPromise = promise;
@@ -185,8 +209,12 @@ export class SourcePagePainter implements SourcePagePainterLike {
       throw new Error('The page painter was destroyed');
     }
 
+    const base = pageProxy.getViewport({ scale: 1 });
+    const pageAspect = base.width > 0 ? base.height / base.width : 1;
     const ratio = rect.w > 0 ? rect.h / rect.w : 0;
-    const targetHeight = Math.max(1, Math.round(cssWidth * ratio * dpr));
+    // The crop describes a normalized region, so the page's own aspect ratio
+    // converts the block's normalized w/h into its physical on-screen aspect.
+    const targetHeight = Math.max(1, Math.round(targetWidth * ratio * pageAspect));
 
     canvas.width = targetWidth;
     canvas.height = targetHeight;
@@ -224,6 +252,8 @@ export class SourcePagePainter implements SourcePagePainterLike {
   ): Promise<HTMLCanvasElement> {
     const cached = this.pages.get(pageNumber);
     if (cached) {
+      // Refresh LRU order: a revisited page is the most recently used.
+      this.cachePage(pageNumber, cached);
       return Promise.resolve(cached);
     }
     const inFlight = this.pagePromises.get(pageNumber);
@@ -233,7 +263,7 @@ export class SourcePagePainter implements SourcePagePainterLike {
 
     const promise = this.renderFullPage(page, targetWidth, ownerDocument)
       .then((canvas) => {
-        this.pages.set(pageNumber, canvas);
+        this.cachePage(pageNumber, canvas);
         return canvas;
       })
       .finally(() => {
@@ -241,6 +271,19 @@ export class SourcePagePainter implements SourcePagePainterLike {
       });
     this.pagePromises.set(pageNumber, promise);
     return promise;
+  }
+
+  /** Stores a page bitmap, evicting the least recently used pages beyond the cap. */
+  private cachePage(pageNumber: number, canvas: HTMLCanvasElement): void {
+    this.pages.delete(pageNumber);
+    this.pages.set(pageNumber, canvas);
+    while (this.pages.size > MAX_CACHED_PAGES) {
+      const oldest = this.pages.keys().next().value as number | undefined;
+      if (oldest === undefined) {
+        break;
+      }
+      this.pages.delete(oldest);
+    }
   }
 
   private async renderFullPage(
@@ -295,16 +338,6 @@ export class SourcePagePainter implements SourcePagePainterLike {
     this.documentPromise = null;
     this.url = null;
 
-    if (document) {
-      try {
-        if (typeof document.destroy === 'function') {
-          await document.destroy();
-        } else if (typeof document.cleanup === 'function') {
-          document.cleanup();
-        }
-      } catch {
-        // The worker may already be gone.
-      }
-    }
+    await releaseDocument(document);
   }
 }

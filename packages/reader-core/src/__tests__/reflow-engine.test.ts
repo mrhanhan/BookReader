@@ -738,10 +738,105 @@ describe('reflow highlights', () => {
       hasNote: false,
     }]);
 
+    window.getSelection()?.removeAllRanges();
     const mark = block.querySelector('[data-highlight-id]') as HTMLElement;
     mark.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(clicks).toEqual(['h2']);
+    await engine.destroy();
+  });
+
+  it('stops a highlight click from bubbling to the host', async () => {
+    const { engine, container } = await openWith(makePack());
+    const block = blockElement(container, 'p1-b2', 1);
+    const clicks: string[] = [];
+    const bubbled = vi.fn();
+    engine.on('highlightClick', ({ id }) => clicks.push(id));
+    document.body.addEventListener('click', bubbled);
+
+    engine.setHighlights([{
+      id: 'h3',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p1-b2', charRange: [0, 1] },
+      color: 'blue',
+      hasNote: false,
+    }]);
+
+    try {
+      window.getSelection()?.removeAllRanges();
+      const mark = block.querySelector('[data-highlight-id]') as HTMLElement;
+      mark.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      expect(clicks).toEqual(['h3']);
+      expect(bubbled).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeEventListener('click', bubbled);
+      await engine.destroy();
+    }
+  });
+
+  it('does not open a highlight while text is selected', async () => {
+    const { engine, container } = await openWith(makePack());
+    const block = blockElement(container, 'p1-b2', 1);
+    const clicks: string[] = [];
+    engine.on('highlightClick', ({ id }) => clicks.push(id));
+
+    engine.setHighlights([{
+      id: 'h4',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p1-b2', charRange: [0, 2] },
+      color: 'green',
+      hasNote: false,
+    }]);
+
+    try {
+      const mark = block.querySelector('[data-highlight-id]') as HTMLElement;
+      selectRange(mark.firstChild as Node, 0, mark.firstChild as Node, 1);
+      mark.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      expect(clicks).toEqual([]);
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      await engine.destroy();
+    }
+  });
+
+  it('applies highlights only on the block source page', async () => {
+    const pack = makePack();
+    // Ids only have to be unique per page; reuse page 1's id on page 3.
+    pack.pages[2]!.blocks[1]!.id = 'p1-b1';
+    const { engine, container } = await openWith(pack);
+
+    engine.setHighlights([{
+      id: 'paged',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p1-b1', charRange: [0, 2] },
+      color: 'yellow',
+      hasNote: false,
+    }]);
+
+    const firstPageBlock = blockElement(container, 'p1-b1', 1);
+    const thirdPageBlock = blockElement(container, 'p1-b1', 3);
+    expect(firstPageBlock.querySelector('mark')?.getAttribute('data-highlight-id')).toBe('paged');
+    expect(thirdPageBlock.querySelector('mark')).toBeNull();
+
+    await engine.destroy();
+  });
+
+  it('applies highlights that were set before open', async () => {
+    const engine = new ReflowReaderEngine({ fetchPack: async () => makePack() });
+    const container = document.createElement('div');
+    engine.setHighlights([{
+      id: 'early',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p1-b1', charRange: [0, 2] },
+      color: 'purple',
+      hasNote: true,
+    }]);
+
+    await engine.open('https://fake-s3.local/pack.json', container, DEFAULT_READER_SETTINGS);
+
+    const block = blockElement(container, 'p1-b1', 1);
+    const mark = block.querySelector('mark.bookr-reflow-mark');
+    expect(mark?.getAttribute('data-highlight-id')).toBe('early');
+    expect(mark?.classList.contains('has-note')).toBe(true);
+
     await engine.destroy();
   });
 });
@@ -775,6 +870,38 @@ describe('reflow visual blocks', () => {
 
     await engine.destroy();
     expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('paints visual blocks from different pages independently', async () => {
+    const pack = makePack();
+    addImageBlock(pack);
+    pack.pages[2]!.blocks.push({
+      id: 'p3-img',
+      type: 'image',
+      rect: { x: 0.1, y: 0.1, w: 0.8, h: 0.4 },
+    });
+    const paint = vi.fn(
+      async (_page: number, _rect: unknown, _canvas: HTMLCanvasElement) => {},
+    );
+    const container = document.createElement('div');
+    const engine = new ReflowReaderEngine({
+      fetchPack: async () => pack,
+      painterFactory: () => ({
+        load: async () => {},
+        paint,
+        destroy: async () => {},
+      }),
+    });
+
+    await engine.open('https://fake-s3.local/pack.json', container, DEFAULT_READER_SETTINGS, {
+      sourcePdfUrl: 'https://files.test/book.pdf',
+    });
+
+    expect(container.querySelectorAll('.bookr-reflow-visual')).toHaveLength(2);
+    expect(paint).toHaveBeenCalledTimes(2);
+    expect(paint.mock.calls.map((call) => call[0]).sort()).toEqual([1, 3]);
+
+    await engine.destroy();
   });
 
   it('shows the original-page note when painting fails', async () => {

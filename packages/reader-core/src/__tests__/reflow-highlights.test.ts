@@ -11,8 +11,15 @@ function mark(
   color: AnnotationColor = 'yellow',
   hasNote = false,
   blockId = 'b1',
+  sourcePage = 1,
 ): ReflowMark {
-  return { id, blockId, charRange, color, hasNote };
+  return { id, blockId, sourcePage, charRange, color, hasNote };
+}
+
+function blockFor(blockId = 'b1'): HTMLElement {
+  const block = document.createElement('p');
+  block.dataset.blockId = blockId;
+  return block;
 }
 
 function highlight(
@@ -26,7 +33,7 @@ function highlight(
 
 describe('renderBlockText', () => {
   it('splits text into segments and lets the last covering mark win', () => {
-    const block = document.createElement('p');
+    const block = blockFor();
 
     renderBlockText(block, 'abcde', [
       mark('one', [0, 2], 'yellow'),
@@ -65,7 +72,7 @@ describe('renderBlockText', () => {
   });
 
   it('marks the whole block when a highlight is wider than the text', () => {
-    const block = document.createElement('p');
+    const block = blockFor();
 
     renderBlockText(block, 'abc', [mark('wide', [-5, 99])]);
 
@@ -76,13 +83,23 @@ describe('renderBlockText', () => {
   });
 
   it('ignores inverted and fully out-of-range marks', () => {
-    const block = document.createElement('p');
+    const block = blockFor();
 
     renderBlockText(block, 'abc', [mark('inverted', [3, 1]), mark('outside', [10, 20])]);
 
     expect(block.querySelector('mark')).toBeNull();
     expect(block.childNodes).toHaveLength(1);
     expect(block.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+    expect(block.textContent).toBe('abc');
+  });
+
+  it('skips marks recorded for another block id', () => {
+    const block = blockFor('b1');
+
+    renderBlockText(block, 'abc', [mark('other', [0, 3], 'yellow', false, 'b2')]);
+
+    expect(block.querySelector('mark')).toBeNull();
+    expect(block.childNodes).toHaveLength(1);
     expect(block.textContent).toBe('abc');
   });
 
@@ -131,12 +148,26 @@ describe('marksForHighlights', () => {
     ]);
 
     expect(marks.get('b1')).toEqual([
-      { id: 'multi', blockId: 'b1', charRange: [0, 2], color: 'blue', hasNote: true },
-      { id: 'single', blockId: 'b1', charRange: [1, 4], color: 'pink', hasNote: false },
+      { id: 'multi', blockId: 'b1', sourcePage: 1, charRange: [0, 2], color: 'blue', hasNote: true },
+      { id: 'single', blockId: 'b1', sourcePage: 1, charRange: [1, 4], color: 'pink', hasNote: false },
     ]);
     expect(marks.get('b2')).toEqual([
-      { id: 'multi', blockId: 'b2', charRange: [3, 5], color: 'blue', hasNote: true },
+      { id: 'multi', blockId: 'b2', sourcePage: 1, charRange: [3, 5], color: 'blue', hasNote: true },
     ]);
+  });
+
+  it('carries the locator source page on every mark', () => {
+    const marks = marksForHighlights([
+      highlight('paged', {
+        kind: 'reflow',
+        sourcePage: 7,
+        percent: 0.5,
+        blockId: 'b1',
+        charRange: [0, 1],
+      }),
+    ]);
+
+    expect(marks.get('b1')?.[0]?.sourcePage).toBe(7);
   });
 
   it('ignores non-reflow highlights and locators without a range', () => {
@@ -148,6 +179,38 @@ describe('marksForHighlights', () => {
     ]);
 
     expect(marks.size).toBe(0);
+  });
+
+  it('ignores malformed highlight and range entries without throwing', () => {
+    const malformed = [
+      { id: '', locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'b1', charRange: [0, 1] }, color: 'yellow', hasNote: false },
+      { id: 7, locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'b1', charRange: [0, 1] }, color: 'yellow', hasNote: false },
+      {
+        id: 'ranges',
+        locator: {
+          kind: 'reflow',
+          sourcePage: 1,
+          percent: 0,
+          ranges: [
+            null,
+            { blockId: 'b1' },
+            { blockId: 'b1', charRange: 'nope' },
+            { blockId: 'b1', charRange: ['a', 'b'] },
+            { charRange: [0, 1] },
+            { blockId: 'b1', charRange: [0, 1] },
+          ],
+        },
+        color: 'yellow',
+        hasNote: false,
+      },
+    ] as unknown as ReaderHighlight[];
+
+    let marks: ReturnType<typeof marksForHighlights> | undefined;
+    expect(() => {
+      marks = marksForHighlights(malformed);
+    }).not.toThrow();
+    expect(marks?.get('b1')).toHaveLength(1);
+    expect(marks?.get('b1')?.[0]?.id).toBe('ranges');
   });
 });
 
