@@ -5,6 +5,7 @@ import type { AppDeps } from '../app';
 import { makeRequireAuth } from '../auth/guards';
 import { AppError } from '../errors';
 import { retryConversion } from './conversion';
+import { getReaderFile } from './reader-file';
 import {
   assertCanManageBook,
   getBook,
@@ -30,6 +31,13 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.get('/api/books/:id', { preHandler: requireAuth }, async (request) => {
     const { id } = bookIdParamsSchema.parse(request.params);
     return { book: await getBook(deps, id) };
+  });
+
+  // Files are shared like the shelf itself: any active member can open any
+  // live book, while notes and progress stay private per user.
+  app.get('/api/books/:id/file', { preHandler: requireAuth }, async (request) => {
+    const { id } = bookIdParamsSchema.parse(request.params);
+    return getReaderFile(deps, id);
   });
 
   app.patch('/api/books/:id', { preHandler: requireAuth }, async (request) => {
