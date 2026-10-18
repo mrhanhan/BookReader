@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
 import { signAccessToken } from '../src/auth/tokens';
+import { runMetadataJob } from '../src/books/metadata';
 import { cleanupTrash } from '../src/books/service';
 import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
@@ -206,6 +207,11 @@ export async function expireSession(uploadId: string, msAgo: number): Promise<vo
 /** Runs the expired-session sweep against the shared test dependencies. */
 export async function cleanupExpiredUploadsForTest(): Promise<number> {
   return cleanupExpiredUploads(await buildTestDeps());
+}
+
+/** Runs metadata extraction for one book against the shared test dependencies. */
+export async function runMetadataJobForTest(bookId: string): Promise<void> {
+  await runMetadataJob(await buildTestDeps(), bookId);
 }
 
 /** Runs the trash purge against the shared test dependencies. */
