@@ -7,6 +7,7 @@ import { registerAuthRoutes } from './auth/routes';
 import type { Converter } from './books/conversion';
 import { registerBookRoutes } from './books/routes';
 import { COVER_MAX_BYTES } from './books/service';
+import { registerCategoryRoutes } from './categories/routes';
 import type { AppConfig } from './config';
 import type { Database } from './db/client';
 import { AppError, defaultMessageFor } from './errors';
@@ -131,6 +132,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerAuthRoutes(app, deps);
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
+  registerCategoryRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {

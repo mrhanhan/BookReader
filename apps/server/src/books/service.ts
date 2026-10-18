@@ -34,6 +34,18 @@ const COVER_URL_EXPIRES_SECONDS = 3600;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** True when the error (or a wrapped cause) is a Postgres foreign-key violation. */
+function isForeignKeyViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
+    if ((current as { code?: unknown }).code === '23503') {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /** One page of the shared shelf. */
 export interface BookListPage {
   items: BookDto[];
@@ -141,62 +153,78 @@ export async function updateBook(
   const now = deps.clock.now();
   const categoryIds = patch.categoryIds ? [...new Set(patch.categoryIds)] : undefined;
 
-  const updated = await deps.db.transaction(async (tx) => {
-    if (categoryIds) {
-      const found = await tx
-        .select({ id: categories.id })
-        .from(categories)
-        .where(
-          and(eq(categories.libraryId, book.libraryId), inArray(categories.id, categoryIds)),
-        );
-      const known = new Set(found.map((row) => row.id));
-      const missing = categoryIds.filter((id) => !known.has(id));
-      if (missing.length > 0) {
-        throw new AppError(
-          400,
-          ERROR_CODES.VALIDATION_FAILED,
-          { categoryIds: missing },
-          'One or more categories do not exist',
-        );
+  let updated: BookRow;
+  try {
+    updated = await deps.db.transaction(async (tx) => {
+      if (categoryIds) {
+        const found = await tx
+          .select({ id: categories.id })
+          .from(categories)
+          .where(
+            and(eq(categories.libraryId, book.libraryId), inArray(categories.id, categoryIds)),
+          );
+        const known = new Set(found.map((row) => row.id));
+        const missing = categoryIds.filter((id) => !known.has(id));
+        if (missing.length > 0) {
+          throw new AppError(
+            400,
+            ERROR_CODES.VALIDATION_FAILED,
+            { categoryIds: missing },
+            'One or more categories do not exist',
+          );
+        }
       }
-    }
 
-    const fields: Partial<NewBook> = { updatedAt: now };
-    if (patch.title !== undefined) {
-      fields.title = patch.title;
-    }
-    if (patch.author !== undefined) {
-      fields.author = patch.author;
-    }
-    if (patch.description !== undefined) {
-      fields.description = patch.description;
-    }
-    if (patch.status !== undefined) {
-      fields.status = patch.status;
-    }
-
-    const [row] = await tx
-      .update(books)
-      .set(fields)
-      .where(and(eq(books.id, book.id), isNull(books.deletedAt)))
-      .returning();
-
-    if (!row) {
-      // The book was trashed between the permission check and the update.
-      throw new AppError(404, ERROR_CODES.NOT_FOUND);
-    }
-
-    if (categoryIds) {
-      await tx.delete(bookCategories).where(eq(bookCategories.bookId, book.id));
-      if (categoryIds.length > 0) {
-        await tx
-          .insert(bookCategories)
-          .values(categoryIds.map((categoryId) => ({ bookId: book.id, categoryId })));
+      const fields: Partial<NewBook> = { updatedAt: now };
+      if (patch.title !== undefined) {
+        fields.title = patch.title;
       }
-    }
+      if (patch.author !== undefined) {
+        fields.author = patch.author;
+      }
+      if (patch.description !== undefined) {
+        fields.description = patch.description;
+      }
+      if (patch.status !== undefined) {
+        fields.status = patch.status;
+      }
 
-    return row;
-  });
+      const [row] = await tx
+        .update(books)
+        .set(fields)
+        .where(and(eq(books.id, book.id), isNull(books.deletedAt)))
+        .returning();
+
+      if (!row) {
+        // The book was trashed between the permission check and the update.
+        throw new AppError(404, ERROR_CODES.NOT_FOUND);
+      }
+
+      if (categoryIds) {
+        await tx.delete(bookCategories).where(eq(bookCategories.bookId, book.id));
+        if (categoryIds.length > 0) {
+          await tx
+            .insert(bookCategories)
+            .values(categoryIds.map((categoryId) => ({ bookId: book.id, categoryId })));
+        }
+      }
+
+      return row;
+    });
+  } catch (error) {
+    // A category can be deleted after the existence check but before the
+    // assignment insert commits. Postgres then rejects the insert with a
+    // foreign-key violation; surface a retryable conflict instead of a 500.
+    if (isForeignKeyViolation(error)) {
+      throw new AppError(
+        409,
+        ERROR_CODES.CONFLICT,
+        { categoryIds },
+        'A category was removed while assigning categories; retry the change',
+      );
+    }
+    throw error;
+  }
 
   return toSingleBookDto(deps, updated);
 }
