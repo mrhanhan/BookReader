@@ -274,6 +274,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // for a render. Signed URLs expire, so refreshes replace entries in place.
   const sourceRef = useRef<ReaderSource | null>(source);
   sourceRef.current = source;
+  const bookIdRef = useRef<string | null>(bookId);
+  bookIdRef.current = bookId;
+  // Concurrent switch clicks share one signing request per side instead of
+  // racing each other; a second click awaits the first result.
+  const refreshInFlightRef = useRef<
+    Partial<Record<'original' | 'reflow', Promise<boolean>>>
+  >({});
   // Bumped only when a whole source is resolved (first load, account switch);
   // refreshing one signed URL must not reopen the same mode.
   const [sourceEpoch, setSourceEpoch] = useState(0);
@@ -292,33 +299,49 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   /**
    * Fetches a fresh signed URL for one side of the source. Signed URLs expire
-   * after an hour, so every mode switch re-signs before reopening. Returns
-   * false when the request fails; the caller decides whether that is fatal.
+   * after an hour, so every mode switch re-signs before reopening. Repeated
+   * calls for the same side share one request. Returns false when the request
+   * fails; the caller decides whether that is fatal.
    */
   const refreshSourceFor = useCallback(
-    async (target: 'original' | 'reflow'): Promise<boolean> => {
-      if (!bookId) return false;
-      const current = sourceRef.current;
-      if (!current) return false;
+    (target: 'original' | 'reflow'): Promise<boolean> => {
+      if (!bookId || !sourceRef.current) return Promise.resolve(false);
+      const inFlight = refreshInFlightRef.current[target];
+      if (inFlight) return inFlight;
 
-      try {
-        if (target === 'reflow') {
-          const reflow = await fetchReflowFile(bookId);
-          if (sourceRef.current !== current) return false;
-          const next = { ...current, reflow };
-          sourceRef.current = next;
-          setSource(next);
-        } else {
-          const file = await fetchReaderFile(bookId);
-          if (sourceRef.current !== current) return false;
-          const next = { ...current, file };
-          sourceRef.current = next;
-          setSource(next);
+      const requestBookId = bookId;
+      const request = (async (): Promise<boolean> => {
+        try {
+          if (target === 'reflow') {
+            const reflow = await fetchReflowFile(requestBookId);
+            if (bookIdRef.current !== requestBookId) return false;
+            const latest = sourceRef.current;
+            if (!latest) return false;
+            const next = { ...latest, reflow };
+            sourceRef.current = next;
+            setSource(next);
+          } else {
+            const file = await fetchReaderFile(requestBookId);
+            if (bookIdRef.current !== requestBookId) return false;
+            const latest = sourceRef.current;
+            if (!latest) return false;
+            const next = { ...latest, file };
+            sourceRef.current = next;
+            setSource(next);
+          }
+          return true;
+        } catch {
+          return false;
         }
-        return true;
-      } catch {
-        return false;
-      }
+      })();
+
+      refreshInFlightRef.current[target] = request;
+      void request.finally(() => {
+        if (refreshInFlightRef.current[target] === request) {
+          delete refreshInFlightRef.current[target];
+        }
+      });
+      return request;
     },
     [bookId],
   );
@@ -353,7 +376,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const switchReadingMode = useCallback(
     async (next: PdfReadingMode) => {
       if (next === 'reflow') {
-        const refreshed = await refreshSourceFor('reflow');
+        // The pack URL is required; the PDF URL feeds `sourcePdfUrl` for
+        // visual blocks, so re-sign both in parallel. A failed PDF refresh
+        // keeps the URL already in the source.
+        const [refreshed] = await Promise.all([
+          refreshSourceFor('reflow'),
+          refreshSourceFor('original'),
+        ]);
         if (!refreshed) {
           showToast(REFLOW_REFRESH_FAILED_MESSAGE);
           return;
@@ -425,6 +454,10 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Reset per-book state before any of the loading effects run.
   useEffect(() => {
     setSource(null);
+    sourceRef.current = null;
+    pendingLocatorRef.current = null;
+    reflowFallbackRef.current = false;
+    refreshInFlightRef.current = {};
     setLoadFailure(null);
     setStatus('loading');
     setEngineFailure(null);
@@ -522,6 +555,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     // original view instead of replacing a readable book with an error page.
     const failLoad = (): void => {
       if (cancelled) return;
+      // Ignore a late success: a document that reported a load failure is not
+      // opened, and its continuation must not clear the fallback's position.
+      cancelled = true;
       if (useReflow) {
         void fallbackToOriginal();
         return;

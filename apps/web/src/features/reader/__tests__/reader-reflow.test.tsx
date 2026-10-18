@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
-import { createMemoryRouter, RouterProvider } from 'react-router';
+import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import { DEFAULT_READER_SETTINGS } from '@bookr/reader-core';
 import type {
@@ -26,15 +26,21 @@ const REFLOW_URL = 'https://fake-s3.local/book.bookr.json';
 const NEW_REFLOW_URL = 'https://fake-s3.local/book-v2.bookr.json';
 const PAGE_COUNT = 300;
 
-function reflowBook(overrides: { reflowAvailable?: boolean } = {}) {
+function reflowBook({
+  id = BOOK_ID,
+  reflowAvailable = true,
+}: {
+  id?: string;
+  reflowAvailable?: boolean;
+} = {}) {
   return book({
-    id: BOOK_ID,
+    id,
     title: '深入理解计算机系统',
     author: 'Randal E. Bryant',
     format: 'pdf',
-    reflowAvailable: overrides.reflowAvailable ?? true,
-    reflowSchemaVersion: overrides.reflowAvailable === false ? null : 1,
-    reflowPageCount: overrides.reflowAvailable === false ? null : PAGE_COUNT,
+    reflowAvailable,
+    reflowSchemaVersion: reflowAvailable ? 1 : null,
+    reflowPageCount: reflowAvailable ? PAGE_COUNT : null,
     uploadedBy: { id: 'user-reader', displayName: '读者' },
   });
 }
@@ -65,7 +71,15 @@ interface OpenCall {
  * starts on page 120, so switching back proves the captured reflow position is
  * mapped to PDF, not the original PDF position.
  */
-function recordingFactory({ failReflowOpen = false }: { failReflowOpen?: boolean } = {}) {
+function recordingFactory({
+  failReflowOpen = false,
+  failPdfOpen = false,
+  emitReflowError = false,
+}: {
+  failReflowOpen?: boolean;
+  failPdfOpen?: boolean;
+  emitReflowError?: boolean;
+} = {}) {
   const openCalls: OpenCall[] = [];
   const engines: FakeReaderEngine[] = [];
   const factory = vi.fn((kind: ReaderEngineKind) => {
@@ -78,9 +92,14 @@ function recordingFactory({ failReflowOpen = false }: { failReflowOpen?: boolean
     engine.open.mockImplementation(async (url, _container, _settings, options) => {
       openCalls.push({ kind, url, options });
       if (kind === 'reflow') {
+        if (emitReflowError) {
+          engine.emit('error', { code: 'load-failed', message: 'pack unreadable' });
+        }
         if (failReflowOpen) throw new Error('pack failed');
         locator = { kind: 'reflow', sourcePage: 98, percent: 0.33 };
         engine.emit('relocated', { locator, percent: 0.33 });
+      } else if (failPdfOpen) {
+        throw new Error('pdf failed');
       }
       return { kind, title: '测试书', pageCount: PAGE_COUNT, toc: [] };
     });
@@ -94,23 +113,41 @@ interface RenderOptions {
   reflowAvailable?: boolean;
   reflowFetchFails?: boolean;
   failReflowOpen?: boolean;
+  failPdfOpen?: boolean;
+  emitReflowError?: boolean;
   progress?: unknown;
   settings?: ReaderSettings;
+  /** Renders a button that navigates to another book id mid-test. */
+  switcherTo?: string;
+}
+
+function BookSwitcher({ nextId }: { nextId: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => void navigate(`/books/${nextId}/read`)}>
+      换书
+    </button>
+  );
 }
 
 async function renderReader({
   reflowAvailable = true,
   reflowFetchFails = false,
   failReflowOpen = false,
+  failPdfOpen = false,
+  emitReflowError = false,
   progress = null,
   settings,
+  switcherTo,
 }: RenderOptions = {}) {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
   if (settings) saveReaderSettings(settings);
 
   server.use(
-    http.get('/api/books/:id', () =>
-      HttpResponse.json({ book: reflowBook({ reflowAvailable }) }),
+    http.get('/api/books/:id', ({ params }) =>
+      HttpResponse.json({
+        book: reflowBook({ id: String(params.id), reflowAvailable }),
+      }),
     ),
     http.get('/api/books/:id/file', () =>
       HttpResponse.json({ url: PDF_URL, format: 'pdf', expiresIn: 3600 }),
@@ -135,9 +172,19 @@ async function renderReader({
     );
   }
 
-  const recorder = recordingFactory({ failReflowOpen });
+  const recorder = recordingFactory({ failReflowOpen, failPdfOpen, emitReflowError });
   const router = createMemoryRouter(
-    [{ path: '/books/:id/read', element: <ReaderPage engineFactory={recorder.factory} /> }],
+    [
+      {
+        path: '/books/:id/read',
+        element: (
+          <>
+            <ReaderPage engineFactory={recorder.factory} />
+            {switcherTo ? <BookSwitcher nextId={switcherTo} /> : null}
+          </>
+        ),
+      },
+    ],
     { initialEntries: [`/books/${BOOK_ID}/read`] },
   );
   const view = renderWithProviders(<RouterProvider router={router} />);
@@ -228,10 +275,11 @@ it('re-signs both URLs on switch and opens the fresh ones', async () => {
   const { openCalls } = await renderReader({ progress: pdfProgress(120) });
   await waitFor(() => expect(openCalls.at(-1)?.kind).toBe('pdf'));
 
-  let refreshes = 0;
+  let reflowRefreshes = 0;
+  let fileRefreshes = 0;
   server.use(
     http.get('/api/books/:id/reflow', () => {
-      refreshes += 1;
+      reflowRefreshes += 1;
       return HttpResponse.json({
         url: NEW_REFLOW_URL,
         schemaVersion: 1,
@@ -240,21 +288,29 @@ it('re-signs both URLs on switch and opens the fresh ones', async () => {
       });
     }),
     http.get('/api/books/:id/file', () => {
-      refreshes += 1;
+      fileRefreshes += 1;
       return HttpResponse.json({ url: NEW_PDF_URL, format: 'pdf', expiresIn: 3600 });
     }),
   );
 
   await userEvent.click(await screen.findByRole('button', { name: '重排' }));
   await waitFor(() =>
-    expect(openCalls.at(-1)).toMatchObject({ kind: 'reflow', url: NEW_REFLOW_URL }),
+    expect(openCalls.at(-1)).toMatchObject({
+      kind: 'reflow',
+      url: NEW_REFLOW_URL,
+      // Both sides are re-signed in parallel on the switch; the fresh PDF URL
+      // also feeds the visual-block painter.
+      options: { sourcePdfUrl: NEW_PDF_URL },
+    }),
   );
+  expect(reflowRefreshes).toBe(1);
+  expect(fileRefreshes).toBe(1);
 
   await userEvent.click(await screen.findByRole('button', { name: '原版' }));
   await waitFor(() =>
     expect(openCalls.at(-1)).toMatchObject({ kind: 'pdf', url: NEW_PDF_URL }),
   );
-  expect(refreshes).toBe(2);
+  expect(fileRefreshes).toBe(2);
 });
 
 it('keeps the current mode when the reflow URL refresh fails', async () => {
@@ -389,4 +445,103 @@ it('falls back to the original when the reflow open fails', async () => {
   expect(screen.queryByRole('alert')).toBeNull();
   expect(storedReadingMode()).toBe('original');
   expect(await screen.findByRole('button', { name: '重排' })).toBeInTheDocument();
+});
+
+it('falls back when the reflow engine reports load-failed without rejecting', async () => {
+  const { openCalls } = await renderReader({
+    settings: settingsFor('reflow'),
+    progress: pdfProgress(120),
+    emitReflowError: true,
+  });
+
+  await waitFor(() =>
+    expect(openCalls.at(-1)).toMatchObject({
+      kind: 'pdf',
+      url: PDF_URL,
+      options: { initialLocator: { kind: 'pdf', page: 120 } },
+    }),
+  );
+  expect(openCalls.filter((call) => call.kind === 'reflow')).toHaveLength(1);
+  expect(await screen.findByText('无法加载重排包，已切回原版')).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(storedReadingMode()).toBe('original');
+});
+
+it('shows the fatal page when the fallback original also fails, without looping', async () => {
+  const { openCalls } = await renderReader({
+    settings: settingsFor('reflow'),
+    failReflowOpen: true,
+    failPdfOpen: true,
+  });
+
+  expect(await screen.findByText('无法打开这本书，请确认文件完整')).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toBeInTheDocument();
+  // One reflow attempt, one fallback attempt: the guard prevents a loop.
+  expect(openCalls.filter((call) => call.kind === 'reflow')).toHaveLength(1);
+  expect(openCalls.filter((call) => call.kind === 'pdf')).toHaveLength(1);
+  expect(storedReadingMode()).toBe('original');
+});
+
+it('shares one refresh between rapid switch clicks', async () => {
+  const { openCalls } = await renderReader({ progress: pdfProgress(120) });
+  await waitFor(() => expect(openCalls.at(-1)?.kind).toBe('pdf'));
+
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reflowFetches = 0;
+  server.use(
+    http.get('/api/books/:id/reflow', async () => {
+      reflowFetches += 1;
+      await gate;
+      return HttpResponse.json({
+        url: NEW_REFLOW_URL,
+        schemaVersion: 1,
+        pageCount: PAGE_COUNT,
+        expiresIn: 3600,
+      });
+    }),
+  );
+
+  const toggle = await screen.findByRole('button', { name: '重排' });
+  await userEvent.click(toggle);
+  await userEvent.click(toggle);
+  await waitFor(() => expect(reflowFetches).toBe(1));
+
+  release();
+
+  await waitFor(() =>
+    expect(openCalls.at(-1)).toMatchObject({ kind: 'reflow', url: NEW_REFLOW_URL }),
+  );
+  expect(reflowFetches).toBe(1);
+  expect(openCalls.filter((call) => call.kind === 'reflow')).toHaveLength(1);
+  expect(screen.queryByText('无法获取重排包，请稍后重试')).toBeNull();
+  expect(screen.getByRole('button', { name: '原版' })).toBeInTheDocument();
+});
+
+it('resets fallback state when the book changes after a failed reflow', async () => {
+  const { openCalls } = await renderReader({
+    settings: settingsFor('reflow'),
+    progress: pdfProgress(120),
+    failReflowOpen: true,
+    switcherTo: 'book-second',
+  });
+
+  await waitFor(() => expect(openCalls.at(-1)?.kind).toBe('pdf'));
+  expect(await screen.findByText('无法加载重排包，已切回原版')).toBeInTheDocument();
+
+  // The next book has no saved position of its own.
+  server.use(http.get('/api/books/:id/progress', () => HttpResponse.json({ progress: null })));
+
+  await userEvent.click(screen.getByRole('button', { name: '换书' }));
+
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: '目录' })).toBeInTheDocument(),
+  );
+  await waitFor(() => {
+    const last = openCalls.at(-1);
+    expect(last?.kind).toBe('pdf');
+    expect(last?.options?.initialLocator).toBeUndefined();
+  });
 });
