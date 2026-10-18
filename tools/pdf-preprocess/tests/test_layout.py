@@ -1,11 +1,21 @@
 from bookr_preprocess.detect import has_usable_text_layer
 from bookr_preprocess.layout import (
     body_font_size,
+    filtered_lines,
     lines_to_blocks,
     merge_lines,
     repeated_margin_texts,
+    source_text,
 )
-from bookr_preprocess.model import Block, ExtractedPage, RawLine, normalize_rect, utf16_len
+from bookr_preprocess.model import (
+    TOOL_NAME,
+    Block,
+    ExtractedPage,
+    RawLine,
+    ReflowPack,
+    normalize_rect,
+    utf16_len,
+)
 from bookr_preprocess.quality import build_quality
 
 
@@ -31,6 +41,10 @@ def test_merge_lines_handles_cjk_and_hyphenation():
     assert merge_lines(['这是第一行', '接着第二行']) == '这是第一行接着第二行'
     assert merge_lines(['inter-', 'national']) == 'international'
     assert merge_lines(['hello', 'world']) == 'hello world'
+
+
+def test_merge_lines_joins_supplementary_cjk():
+    assert merge_lines(['前𠮷', '后文']) == '前𠮷后文'
 
 
 def test_heading_detection_and_levels():
@@ -86,6 +100,90 @@ def test_rect_normalization_clamps():
         'w': 1.0,
         'h': 0.987374,
     }
+
+
+def test_vertical_gap_splits_and_small_gap_merges():
+    split_page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('第一行', y0=100, y1=112),
+        line('第二行', y0=140, y1=152),
+    ])
+    assert len(lines_to_blocks(split_page, set())) == 2
+
+    merged_page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('第一行', y0=100, y1=112),
+        line('第二行', y0=120, y1=132),
+    ])
+    assert [b.text for b in lines_to_blocks(merged_page, set())] == ['第一行第二行']
+
+
+def test_sentence_end_does_not_split_a_normal_wrap():
+    page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('第一句话。', y0=100, y1=112),
+        line('第二句话', y0=116, y1=128),
+    ])
+    blocks = lines_to_blocks(page, set())
+    assert len(blocks) == 1
+    assert blocks[0].text == '第一句话。第二句话'
+
+
+def test_body_left_margin_ignores_formula_at_page_edge():
+    page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('a = b ^ c', x0=0, y0=100, y1=112, size=14),
+        line('第一段正文', x0=72, y0=126, y1=138),
+        line('第二行正文', x0=72, y0=140, y1=152),
+        line('第三行正文', x0=72, y0=154, y1=166),
+    ])
+    blocks = lines_to_blocks(page, set())
+    assert [b.type for b in blocks] == ['formula', 'paragraph']
+    assert blocks[1].text == '第一段正文第二行正文第三行正文'
+
+
+def test_table_detection_needs_wide_cell_gaps():
+    table_page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('1  2  3', y0=100, y1=112),
+        line('4  5  6', y0=114, y1=126),
+        line('7  8  9', y0=128, y1=140),
+    ])
+    assert [b.type for b in lines_to_blocks(table_page, set())] == ['table']
+
+    prose_page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('1 2 3', y0=100, y1=112),
+        line('4 5 6', y0=114, y1=126),
+        line('7 8 9', y0=128, y1=140),
+    ])
+    assert [b.type for b in lines_to_blocks(prose_page, set())] == ['paragraph']
+
+
+def test_single_page_margin_text_is_not_treated_as_noise():
+    page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('Bookr Header', y0=10, y1=20, size=8),
+        line('正文内容', y0=100, y1=112),
+    ])
+    assert repeated_margin_texts([page]) == set()
+    assert [b.text for b in lines_to_blocks(page, set())] == [
+        'Bookr Header',
+        '正文内容',
+    ]
+
+
+def test_block_offsets_index_into_source_text():
+    page = ExtractedPage(page=1, width=612, height=792, lines=[
+        line('第一行', y0=100, y1=112),
+        line('第二行', y0=114, y1=126),
+        line('第三段', y0=160, y1=172),
+    ])
+    assert [line.text for line in filtered_lines(page, set())] == [
+        '第一行',
+        '第二行',
+        '第三段',
+    ]
+    source = source_text(page, set())
+    assert source == '第一行\n第二行\n第三段'
+    blocks = lines_to_blocks(page, set())
+    assert [source[b.source_char_start:b.source_char_end] for b in blocks] == [
+        '第一行\n第二行',
+        '第三段',
+    ]
 
 
 def test_body_font_size_is_character_weighted():
@@ -174,6 +272,68 @@ def test_has_usable_text_layer_needs_at_least_half_the_pages():
     assert not has_usable_text_layer([])
 
 
-def test_has_usable_text_layer_falls_back_to_line_lengths():
+def test_has_usable_text_layer_falls_back_to_line_lengths_when_unset():
     page = ExtractedPage(page=1, width=612, height=792, lines=[line('字' * 120)])
+    assert page.text_chars is None
     assert has_usable_text_layer([page])
+
+
+def test_has_usable_text_layer_treats_explicit_zero_as_empty():
+    page = ExtractedPage(
+        page=1,
+        width=612,
+        height=792,
+        lines=[line('字' * 120)],
+        text_chars=0,
+    )
+    assert not has_usable_text_layer([page])
+
+
+def test_block_to_dict_uses_camel_case_and_omits_confidence():
+    block = Block(
+        id='p1-b0',
+        type='heading',
+        rect={'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0},
+        text='第一章',
+        level=1,
+        source_char_start=0,
+        source_char_end=3,
+        confidence=0.9,
+    )
+    data = block.to_dict()
+    assert data == {
+        'id': 'p1-b0',
+        'type': 'heading',
+        'rect': {'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0},
+        'text': '第一章',
+        'level': 1,
+        'sourceCharStart': 0,
+        'sourceCharEnd': 3,
+    }
+    assert 'confidence' not in data
+
+
+def test_reflow_pack_to_dict_uses_contract_keys():
+    pack = ReflowPack(
+        schema_version=1,
+        source_sha256='a' * 64,
+        page_count=2,
+        generated_at='2026-10-18T08:00:00.000Z',
+        tool_version='0.1.0',
+        pages=[],
+        toc=[],
+        quality={},
+    )
+    data = pack.to_dict()
+    assert set(data) == {
+        'schemaVersion',
+        'source',
+        'generatedAt',
+        'tool',
+        'quality',
+        'toc',
+        'pages',
+    }
+    assert data['schemaVersion'] == 1
+    assert data['source'] == {'sha256': 'a' * 64, 'pageCount': 2}
+    assert data['tool'] == {'name': TOOL_NAME, 'version': '0.1.0'}

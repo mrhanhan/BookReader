@@ -6,10 +6,10 @@ from .model import ExtractedPage, utf16_len
 
 
 def _page_text_chars(page: ExtractedPage) -> int:
-    """Characters on a page, falling back to the line list when unset."""
-    if page.text_chars:
-        return page.text_chars
-    return sum(utf16_len(line.text) for line in page.lines)
+    """Characters on a page; ``None`` falls back to the extracted lines."""
+    if page.text_chars is None:
+        return sum(utf16_len(line.text) for line in page.lines)
+    return page.text_chars
 
 
 def has_usable_text_layer(

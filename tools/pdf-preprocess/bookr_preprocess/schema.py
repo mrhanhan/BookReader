@@ -11,13 +11,12 @@ import math
 import re
 from datetime import datetime
 
-from .model import utf16_len
-
 REFLOW_PACK_SCHEMA_VERSION = 1
 MAX_REFLOW_PAGES = 5000
 MAX_REFLOW_BLOCKS = 200000
 MAX_REFLOW_BLOCKS_PER_PAGE = 2000
 MAX_REFLOW_TEXT_LENGTH = 20000
+MAX_SAFE_INTEGER = 2**53 - 1
 REFLOW_BLOCK_TYPES = ("heading", "paragraph", "image", "table", "formula", "fallback")
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -33,25 +32,31 @@ class PackValidationError(Exception):
 
 
 def _is_int(value: object) -> bool:
-    """Number.isInteger semantics: integral values, but never booleans."""
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and float(value).is_integer()
-    )
+    """JS ``Number.isSafeInteger`` semantics: integral, never boolean."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) <= MAX_SAFE_INTEGER
+    if isinstance(value, float):
+        return (
+            math.isfinite(value)
+            and abs(value) <= MAX_SAFE_INTEGER
+            and value.is_integer()
+        )
+    return False
 
 
 def _is_number(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def _is_non_empty_string(value: object) -> bool:
-    return isinstance(value, str) and utf16_len(value) >= 1
+    # Zod 4 lengths count Unicode code points, not UTF-16 code units.
+    return isinstance(value, str) and len(value) >= 1
 
 
 def _is_datetime(value: object) -> bool:
@@ -110,9 +115,9 @@ def _validate_block(
 
     block_type = block.get("type")
     display_id = block.get("id")
-    if not isinstance(display_id, str) or not 1 <= utf16_len(display_id) <= 64:
+    if not isinstance(display_id, str) or not 1 <= len(display_id) <= 64:
         errors.append(
-            f"page {page} block {index} id must be a string of 1 to 64 UTF-16 code units"
+            f"page {page} block {index} id must be a string of 1 to 64 code points"
         )
     if not isinstance(block_type, str) or block_type not in REFLOW_BLOCK_TYPES:
         errors.append(f"unsupported block type {block_type!r} on page {page}")
@@ -121,10 +126,10 @@ def _validate_block(
         text = block["text"]
         if not isinstance(text, str):
             errors.append(f"block text must be a string on page {page}")
-        elif utf16_len(text) > MAX_REFLOW_TEXT_LENGTH:
+        elif len(text) > MAX_REFLOW_TEXT_LENGTH:
             errors.append(
-                f"block text must be at most {MAX_REFLOW_TEXT_LENGTH} UTF-16 "
-                f"code units on page {page}"
+                f"block text must be at most {MAX_REFLOW_TEXT_LENGTH} "
+                f"code points on page {page}"
             )
     elif block_type in ("heading", "paragraph"):
         errors.append(f"{block_type} blocks require text")

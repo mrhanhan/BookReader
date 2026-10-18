@@ -72,7 +72,9 @@ class ExtractedPage:
     height: float
     lines: list[RawLine]
     image_rects: list[tuple[float, float, float, float]] = field(default_factory=list)
-    text_chars: int = 0
+    # ``None`` means "not measured"; extraction sets the real character count,
+    # and an explicit 0 means the page really has no text.
+    text_chars: int | None = None
     ocr: bool = False
     warnings: list[str] = field(default_factory=list)
 

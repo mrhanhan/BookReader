@@ -100,11 +100,63 @@ def test_rejects_block_count_over_the_pack_limit(monkeypatch):
     assert any('at most 2 blocks' in error for error in errors)
 
 
-def test_rejects_text_longer_than_the_utf16_limit():
+def test_accepts_id_with_supplementary_characters_up_to_the_code_point_limit():
+    pack = golden_pack()
+    pack['pages'][0]['blocks'][0]['id'] = '𠮷' * 33  # 66 UTF-16 units, 33 code points
+    assert validate_pack(pack) == []
+
+
+def test_rejects_ascii_id_over_the_code_point_limit():
+    pack = golden_pack()
+    pack['pages'][0]['blocks'][0]['id'] = 'a' * 65
+    assert validate_pack(pack)
+
+
+def test_accepts_text_with_supplementary_characters_up_to_the_code_point_limit():
     pack = golden_pack()
     pack['pages'][0]['blocks'][1]['text'] = '𠮷' * 10001  # 20002 UTF-16 units
+    assert validate_pack(pack) == []
+
+
+def test_rejects_text_over_the_code_point_limit():
+    pack = golden_pack()
+    pack['pages'][0]['blocks'][1]['text'] = 'a' * 20001
     errors = validate_pack(pack)
     assert any('20000' in error for error in errors)
+
+
+def test_accepts_max_safe_source_offsets():
+    pack = golden_pack()
+    block = pack['pages'][0]['blocks'][1]
+    block['sourceCharStart'] = 2**53 - 1
+    block['sourceCharEnd'] = 2**53 - 1
+    assert validate_pack(pack) == []
+
+
+def test_rejects_unsafe_source_offsets():
+    pack = golden_pack()
+    block = pack['pages'][0]['blocks'][1]
+    block['sourceCharStart'] = 2**53
+    block['sourceCharEnd'] = 2**60
+    errors = validate_pack(pack)
+    assert sum('sourceChar' in error for error in errors) >= 2
+
+
+def test_rejects_unsafe_toc_page_numbers():
+    pack = golden_pack()
+    pack['toc'][0]['page'] = 2**53
+    assert validate_pack(pack)
+    pack['toc'][0]['page'] = 2**60
+    assert validate_pack(pack)
+
+
+def test_rejects_unsafe_quality_page_numbers():
+    pack = golden_pack()
+    pack['quality']['fallbackPages'] = [2**53]
+    assert validate_pack(pack)
+    pack['quality']['fallbackPages'] = [2]
+    pack['quality']['ocrPages'] = [2**60]
+    assert validate_pack(pack)
 
 
 def test_rejects_non_utc_generated_at():

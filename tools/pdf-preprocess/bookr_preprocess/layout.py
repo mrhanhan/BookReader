@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import statistics
+from collections import Counter
 
 from .model import Block, ExtractedPage, RawLine, normalize_rect, utf16_len
 
@@ -19,7 +20,8 @@ DEFAULT_BODY_SIZE = 11.0
 _WHITESPACE_RE = re.compile(r"\s+")
 _TABLE_GAP_RE = re.compile(r"\s{2,}")
 _CJK_RE = re.compile(
-    "[⺀-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯]"
+    "[⺀-〿぀-ヿ㐀-䶿一-鿿豈-﫿"
+    "\U00020000-\U0003ffff\U0002f800-\U0002fa1f＀-￯]"
 )
 _TERMINAL_PUNCTUATION = "。！？.!?…"
 _TRAILING_CLOSERS = "」』”’\"')）》】"
@@ -103,11 +105,17 @@ def repeated_margin_texts(
         for text in normalized:
             counts[text] = counts.get(text, 0) + 1
 
-    limit = threshold * len(pages)
+    limit = max(2.0, threshold * len(pages))
     return {text for text, count in counts.items() if count >= limit}
 
 
-def _filter_lines(page: ExtractedPage, repeated_margins: set[str]) -> list[RawLine]:
+def filtered_lines(page: ExtractedPage, repeated_margins: set[str]) -> list[RawLine]:
+    """Drop noise and empty lines, then sort the page's lines top-to-bottom.
+
+    This is the single definition of "the page's text": both block building
+    and :func:`source_text` use it, so source offsets always index into the
+    same string the blocks were derived from.
+    """
     kept: list[RawLine] = []
     for line in page.lines:
         trimmed = line.text.strip()
@@ -122,9 +130,29 @@ def _filter_lines(page: ExtractedPage, repeated_margins: set[str]) -> list[RawLi
     return sorted(kept, key=lambda line: (round(line.y0, 1), line.x0))
 
 
+def source_text(page: ExtractedPage, repeated_margins: set[str]) -> str:
+    """The page's filtered source string; block offsets are UTF-16 indices."""
+    return "\n".join(line.text for line in filtered_lines(page, repeated_margins))
+
+
 def _ends_paragraph(text: str) -> bool:
     stripped = text.strip().rstrip(_TRAILING_CLOSERS)
     return bool(stripped) and stripped[-1] in _TERMINAL_PUNCTUATION
+
+
+def _body_left_margin(lines: list[RawLine], body: float) -> float:
+    """Typographic left margin of the body text.
+
+    The mode of rounded starts among body-sized lines ignores outliers such
+    as a formula or table starting at the page edge; otherwise every ordinary
+    body line would look indented. With no body-sized line, fall back to the
+    leftmost start.
+    """
+    starts = [round(line.x0) for line in lines if abs(line.font_size - body) <= 0.5]
+    if not starts:
+        return min(line.x0 for line in lines)
+    counts = Counter(starts)
+    return float(min(counts, key=lambda x0: (-counts[x0], x0)))
 
 
 def _starts_new_block(
@@ -134,29 +162,31 @@ def _starts_new_block(
     left_margin: float,
     gap_limit: float,
     indent_limit: float,
+    median_h: float,
 ) -> bool:
     first = lines[indices[0]]
     previous = lines[indices[-1]]
     line = lines[index]
+    gap = line.y0 - previous.y1
 
-    if line.y0 - previous.y1 > gap_limit:
+    if gap > gap_limit:
         return True
     if first.font_size > 0 and abs(line.font_size - first.font_size) / first.font_size > 0.15:
         return True
     if line.x0 - left_margin >= indent_limit:
         return True
-    # A sentence that ends on this line closes the paragraph. Without this
-    # rule back-to-back paragraphs with identical indentation and leading
-    # would be merged, because their line gap looks like ordinary wrapping.
-    if _ends_paragraph(previous.text):
+    # A sentence that ends on this line closes the paragraph, but only when
+    # the following line is separated by more than ordinary leading; a normal
+    # wrap directly below a sentence end stays in the same paragraph.
+    if _ends_paragraph(previous.text) and gap > 1.25 * median_h:
         return True
     return False
 
 
 def _line_cells(line: RawLine) -> list[str]:
-    # ``RawLine`` has no per-run geometry. Extraction encodes the wide gap
-    # between table cells (>= 2 * body points) as a run of two or more spaces,
-    # which is the signal used here.
+    # ``RawLine`` has no per-run geometry. Extraction joins spans whose gap is
+    # at least 1.5x the span size with two spaces, so a run of two or more
+    # spaces marks a table-cell boundary.
     return [cell for cell in _TABLE_GAP_RE.split(line.text.strip()) if cell]
 
 
@@ -199,21 +229,27 @@ def _block_confidence(lines: list[RawLine]) -> float | None:
 
 def lines_to_blocks(page: ExtractedPage, repeated_margins: set[str]) -> list[Block]:
     """Group the page's raw lines into classified, normalized blocks."""
-    lines = _filter_lines(page, repeated_margins)
+    lines = filtered_lines(page, repeated_margins)
     if not lines:
         return []
 
     body = body_font_size(lines)
     median_h = median_line_height(lines)
     gap_limit = 1.6 * max(median_h, 0.8 * body)
-    left_margin = min(line.x0 for line in lines)
+    left_margin = _body_left_margin(lines, body)
     indent_limit = 1.5 * body
 
     groups: list[list[int]] = []
     current: list[int] = []
     for index in range(len(lines)):
         if current and _starts_new_block(
-            lines, current, index, left_margin, gap_limit, indent_limit
+            lines,
+            current,
+            index,
+            left_margin,
+            gap_limit,
+            indent_limit,
+            median_h,
         ):
             groups.append(current)
             current = [index]
