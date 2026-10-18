@@ -23,7 +23,7 @@
 - 位置映射：原版→重排优先使用 PDF 定位器的 `rect`（页内纵向位置）匹配块，其次 `charOffset`，最后该页第一个文本块；重排→原版使用 `sourcePage` + 块 `rect` + `sourceCharStart + charRange[0]`。切换模式后页码误差必须 ≤1 页。
 - 重排设置与 P2 设置同存于 `localStorage` 键 `bookr.reader.settings.v1`：`pdf.readingMode` 为 `'original' | 'reflow'`（默认 `original`）；`reflow.fontFamily` 为 `'serif' | 'sans'`，`fontSize` 16–28（默认 19），`lineHeight` 1.5–2.4（默认 1.9），`margin` 2–16（百分比，默认 7）。
 - 重排包上传/删除仅限该书上传者或管理员；任何活跃成员都可以读取已存在的重排包。响应仍用预签名 URL，包体不经过应用服务器转发（仅完成上传时读取一次做校验）。
-- 每本书最多一个未完成的 reflow 上传会话和一份已存储的重排包（≤32 MiB）；创建新会话会使同书旧会话过期并删除其对象，替换/删除重排包会删除旧对象。重排包不单独计入图书配额（由上述上限约束），这一点必须在 README 中说明。
+- 每本书最多一个未完成的 reflow 上传会话和一份已存储的重排包（≤32 MiB）；创建新会话会使同书旧会话过期并删除其对象，替换/删除重排包会删除旧对象；每日清理还会在过期/失败会话的 24h 期限后回收其对象（覆盖 presign URL 在会话失效后仍可写入 15 分钟的窗口）。重排包不单独计入图书配额（由上述上限约束），这一点必须在 README 中说明。
 - 重排包读取端点：`GET /api/books/:id/reflow`，URL 有效期 3600 秒；无包返回 409 `REFLOW_NOT_READY`；包无效返回 422 `REFLOW_INVALID`。
 - 重排渲染的安全底线：包内文本只能通过 `textContent` 进入 DOM，任何情况下不得 `innerHTML`；所有块矩形必须被 clamp 到 `[0,1]`；非法块跳过而不是让整本书打不开。
 - 本地工具的输出是唯一事实来源：它生成 `*.bookr.json` 与质量报告；服务端不修正包内容，只校验与拒绝。工具不得联网，除非显式传入 `--ai-correct`。
