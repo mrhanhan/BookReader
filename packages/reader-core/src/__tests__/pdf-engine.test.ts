@@ -5,6 +5,8 @@ const mock = vi.hoisted(() => ({
   renderCalls: [] as number[],
   failedPages: new Set<number>(),
   pageCount: 10,
+  textByPage: {} as Record<number, Array<{ str: string; hasEOL?: boolean }>>,
+  outline: [] as Array<{ title: string; dest: unknown }>,
 }));
 
 vi.mock('pdfjs-dist', () => ({
@@ -27,10 +29,12 @@ vi.mock('pdfjs-dist', () => ({
           };
         },
         streamTextContent: () => ({ items: [], styles: {} }),
+        getTextContent: async () => ({ items: mock.textByPage[pageNumber] ?? [] }),
         cleanup: () => {},
       }),
       getMetadata: async () => ({ info: {} }),
-      getOutline: async () => [],
+      getOutline: async () => mock.outline,
+      getPageIndex: async (ref: { num?: number }) => (ref.num ?? 1) - 1,
       cleanup: () => {},
     }),
     destroy: async () => {},
@@ -118,6 +122,8 @@ async function openReader(
 beforeEach(() => {
   mock.renderCalls.length = 0;
   mock.failedPages.clear();
+  mock.textByPage = {};
+  mock.outline = [];
   HTMLCanvasElement.prototype.getContext = (() =>
     context2d) as unknown as typeof HTMLCanvasElement.prototype.getContext;
 });
@@ -210,6 +216,30 @@ it('clamps a reflow locator page into the document', async () => {
     await engine.goTo({ kind: 'reflow', sourcePage: 99, percent: 1 });
 
     expect(engine.currentLocator()).toMatchObject({ kind: 'pdf', page: mock.pageCount });
+  } finally {
+    await engine.destroy();
+  }
+});
+
+it('returns page and outline chapter text for the AI companion', async () => {
+  mock.textByPage = {
+    1: [{ str: '第一章开头' }],
+    2: [{ str: '本页第一句。' }, { str: '本页第二句。' }],
+    3: [{ str: '第二章开头' }],
+  };
+  mock.outline = [
+    { title: '第一章', dest: [{ num: 1 }] },
+    { title: '第二章', dest: [{ num: 3 }] },
+  ];
+  const { engine } = await openReader('single', 2);
+  try {
+    const page = await engine.getTextContext('page');
+    expect(page).toMatchObject({ scope: 'page', label: '第 2 页' });
+    expect(page.text).toContain('本页第一句');
+
+    const chapter = await engine.getTextContext('chapter');
+    expect(chapter.text).toContain('本页第一句');
+    expect(chapter.text).not.toContain('第二章开头');
   } finally {
     await engine.destroy();
   }

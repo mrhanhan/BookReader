@@ -1,5 +1,10 @@
 import { vi } from 'vitest';
-import type { ReaderEngine, ReaderEngineKind, ReaderEventMap } from '@bookr/reader-core';
+import type {
+  ReaderContextScope,
+  ReaderEngine,
+  ReaderEngineKind,
+  ReaderEventMap,
+} from '@bookr/reader-core';
 import type { Locator } from '@bookr/shared';
 
 /**
@@ -22,6 +27,12 @@ export function createFakeEngine(kind: ReaderEngineKind = 'pdf') {
     next: vi.fn(async () => {}),
     previous: vi.fn(async () => {}),
     currentLocator: vi.fn((): Locator => ({ kind: 'pdf' as const, page: 2, percent: 0.42 })),
+    getTextContext: vi.fn(async (scope: ReaderContextScope) => ({
+      scope,
+      text: scope === 'page' ? '模拟本页正文' : '模拟本章正文',
+      label: scope === 'page' ? '第 2 页' : '第一章',
+      truncated: false,
+    })),
     setSettings: vi.fn((..._args: Parameters<ReaderEngine['setSettings']>) => {}),
     setHighlights: vi.fn((..._args: Parameters<ReaderEngine['setHighlights']>) => {}),
     on: vi.fn((event: string, listener: (payload: unknown) => void) => {

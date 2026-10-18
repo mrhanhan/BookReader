@@ -5,13 +5,21 @@ import type { Book, Contents, Location as EpubLocation, Rendition } from 'epubjs
 import { TypedEmitter } from '../emitter';
 import { clamp } from '../locator';
 import { HIGHLIGHT_HEX } from '../settings';
+import {
+  DEFAULT_CONTEXT_MAX_CHARS,
+  capContextText,
+  epubTextFromDocument,
+} from '../text-context';
 import type {
   OpenReaderOptions,
+  ReaderContextScope,
   ReaderDocumentInfo,
   ReaderEngine,
   ReaderEventMap,
   ReaderHighlight,
   ReaderSettings,
+  ReaderTextContext,
+  TocItem,
 } from '../types';
 import {
   EPUB_THEME_NAMES,
@@ -92,6 +100,25 @@ function readTitle(metadata: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/** Section path without query, fragment, origin or leading `./`, URI-decoded. */
+function comparableHref(href: string): string {
+  const withoutFragment = href.split('#')[0]?.split('?')[0] ?? '';
+  let decoded = withoutFragment;
+  try {
+    decoded = decodeURI(withoutFragment);
+  } catch {
+    // Malformed escapes keep the raw href; comparison can still succeed.
+  }
+  return decoded.replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+/** TOC hrefs are document-relative while relocations report resolved paths. */
+function isSameSection(left: string, right: string): boolean {
+  return left === right
+    || left.endsWith(`/${right}`)
+    || right.endsWith(`/${left}`);
+}
+
 /**
  * Reflowable EPUB engine backed by epub.js.
  *
@@ -115,6 +142,7 @@ export class EpubReaderEngine implements ReaderEngine {
   private renderHook: ((view: unknown) => void) | null = null;
 
   private lastLocator: EpubLocator | null = null;
+  private toc: TocItem[] = [];
   private lastEmission: Emission | null = null;
   private highlights: ReaderHighlight[] = [];
   private appliedCfi = new Set<string>();
@@ -154,6 +182,7 @@ export class EpubReaderEngine implements ReaderEngine {
         this.readMetadata(book),
         this.readToc(book),
       ]);
+      this.toc = toc;
       this.ensureAlive(token);
 
       const rendition = this.createRendition(book, container, settings);
@@ -274,6 +303,69 @@ export class EpubReaderEngine implements ReaderEngine {
       throw new Error('Reader is not open');
     }
     return this.lastLocator;
+  }
+
+  /**
+   * EPUB has no fixed pagination, so both scopes return the rendered chapter.
+   */
+  async getTextContext(
+    scope: ReaderContextScope,
+    maxChars: number = DEFAULT_CONTEXT_MAX_CHARS,
+  ): Promise<ReaderTextContext> {
+    const rendition = this.rendition;
+    if (!rendition) {
+      throw new Error('Reader is not open');
+    }
+
+    const document = this.renditionContents(rendition)
+      .find((contents) => Boolean(contents.document))?.document ?? null;
+    const capped = capContextText(
+      epubTextFromDocument(document),
+      maxChars ?? DEFAULT_CONTEXT_MAX_CHARS,
+    );
+    return {
+      scope,
+      text: capped.text,
+      label: this.contextLabel(document),
+      truncated: capped.truncated,
+    };
+  }
+
+  /** TOC title for the current section, then the HTML title, then `本章`. */
+  private contextLabel(document: Document | null): string {
+    const href = this.lastLocator?.href;
+    if (href) {
+      const match = this.tocItemForHref(href);
+      const label = match?.label.trim() ?? '';
+      if (label.length > 0) {
+        return label;
+      }
+    }
+    const title = document?.title?.trim() ?? '';
+    return title.length > 0 ? title : '本章';
+  }
+
+  private tocItemForHref(href: string): TocItem | null {
+    const wanted = comparableHref(href);
+    if (wanted.length === 0) {
+      return null;
+    }
+    const visit = (items: TocItem[]): TocItem | null => {
+      for (const item of items) {
+        const candidate = item.locator.kind === 'epub' && item.locator.href
+          ? comparableHref(item.locator.href)
+          : '';
+        if (candidate.length > 0 && isSameSection(candidate, wanted)) {
+          return item;
+        }
+        const nested = visit(item.children);
+        if (nested) {
+          return nested;
+        }
+      }
+      return null;
+    };
+    return visit(this.toc);
   }
 
   setSettings(settings: ReaderSettings): void {
@@ -866,6 +958,7 @@ export class EpubReaderEngine implements ReaderEngine {
     this.container = null;
     this.settings = null;
     this.lastLocator = null;
+    this.toc = [];
     this.lastEmission = null;
     this.pendingPercent = null;
     this.selectionActive = false;

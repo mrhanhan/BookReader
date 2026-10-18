@@ -62,6 +62,14 @@ export interface OpenReaderOptions {
   /** Original PDF URL, used by the reflow engine to paint visual blocks. */
   sourcePdfUrl?: string;
 }
+export type ReaderContextScope = 'page' | 'chapter';
+/** Text the reader can hand to the AI companion for the current view. */
+export interface ReaderTextContext {
+  scope: ReaderContextScope;
+  text: string;
+  label: string;
+  truncated: boolean;
+}
 export interface ReaderEngine {
   readonly kind: ReaderEngineKind;
   open(url: string, container: HTMLElement, settings: ReaderSettings, options?: OpenReaderOptions): Promise<ReaderDocumentInfo>;
@@ -70,6 +78,7 @@ export interface ReaderEngine {
   next(): Promise<void>;
   previous(): Promise<void>;
   currentLocator(): Locator;
+  getTextContext(scope: ReaderContextScope, maxChars?: number): Promise<ReaderTextContext>;
   setSettings(settings: ReaderSettings): void;
   setHighlights(highlights: ReaderHighlight[]): void;
   on<K extends keyof ReaderEventMap>(event: K, listener: (payload: ReaderEventMap[K]) => void): () => void;

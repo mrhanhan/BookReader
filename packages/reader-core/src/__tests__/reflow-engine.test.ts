@@ -1321,3 +1321,23 @@ describe('reflow visual blocks', () => {
     }
   });
 });
+
+it('returns page and chapter text for the AI companion', async () => {
+  const { engine, container, host } = await openWith(makePack());
+  // jsdom has no layout; without stacked offsets the focus rule reports the
+  // last block and currentLocator cannot stand in for the reader's position.
+  scrollMetrics(host);
+  stackTextBlocks(container);
+  refreshLayout(host);
+  try {
+    const page = await engine.getTextContext('page');
+    expect(page.text).toContain('p1-b1 的正文');
+
+    const chapter = await engine.getTextContext('chapter');
+    expect(chapter.label).toContain('第 p1-b0 节');
+    expect(chapter.text).toContain('p1-b1 的正文');
+    expect(chapter.text).not.toContain('p3-b1 的正文');
+  } finally {
+    await engine.destroy();
+  }
+});

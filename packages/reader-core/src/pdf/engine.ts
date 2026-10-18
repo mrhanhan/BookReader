@@ -13,15 +13,23 @@ import {
 import { TypedEmitter } from '../emitter';
 import { clamp, pageForPercent, percentForPage } from '../locator';
 import { HIGHLIGHT_HEX } from '../settings';
+import {
+  DEFAULT_CONTEXT_MAX_CHARS,
+  capContextText,
+  pdfChapterRange,
+  pdfPageText,
+} from '../text-context';
 import type {
   OpenReaderOptions,
   PdfLayoutMode,
+  ReaderContextScope,
   ReaderDocumentInfo,
   ReaderEngine,
   ReaderEventMap,
   ReaderHighlight,
   ReaderSelection,
   ReaderSettings,
+  ReaderTextContext,
   TocItem,
 } from '../types';
 import { detectCropMargins, type CropMargins } from './crop';
@@ -110,6 +118,22 @@ function configureWorker(workerSrc: string | undefined): void {
   }
 }
 
+/** Projects pdf.js text items onto the minimal shape the context helpers read. */
+function textItemsOf(items: readonly unknown[]): Array<{ str?: string; hasEOL?: boolean }> {
+  const projected: Array<{ str?: string; hasEOL?: boolean }> = [];
+  for (const item of items) {
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    const record = item as { str?: unknown; hasEOL?: unknown };
+    projected.push({
+      str: typeof record.str === 'string' ? record.str : undefined,
+      hasEOL: record.hasEOL === true,
+    });
+  }
+  return projected;
+}
+
 type PdfHighlight = ReaderHighlight & { locator: PdfLocator };
 
 interface PageSlot {
@@ -162,6 +186,7 @@ export class PdfReaderEngine implements ReaderEngine {
   private crop: CropMargins = zeroCrop();
   private scale = 1;
   private currentPage = 1;
+  private toc: TocItem[] = [];
   private highlights: ReaderHighlight[] = [];
   private observer: IntersectionObserver | null = null;
   private scrollFrame: number | null = null;
@@ -237,6 +262,7 @@ export class PdfReaderEngine implements ReaderEngine {
         ),
       );
       const [title, toc] = await Promise.all([this.readTitle(), this.readToc()]);
+      this.toc = toc;
       this.ensureAlive();
       await firstRender;
       this.ensureAlive();
@@ -397,6 +423,98 @@ export class PdfReaderEngine implements ReaderEngine {
     return this.pdfLocatorNow();
   }
 
+  async getTextContext(
+    scope: ReaderContextScope,
+    maxChars: number = DEFAULT_CONTEXT_MAX_CHARS,
+  ): Promise<ReaderTextContext> {
+    if (!this.pdf) {
+      throw new Error('Reader is not open');
+    }
+
+    const limit = maxChars ?? DEFAULT_CONTEXT_MAX_CHARS;
+    const page = this.contextPage();
+    if (scope === 'page') {
+      const text = await this.readPageText(page);
+      const capped = capContextText(text, limit);
+      return {
+        scope,
+        text: capped.text,
+        label: `第 ${page} 页`,
+        truncated: capped.truncated,
+      };
+    }
+
+    const entries = this.tocEntries();
+    const range = pdfChapterRange(page, entries.map((entry) => entry.page), this.pageCount);
+    const parts: string[] = [];
+    let length = 0;
+    let stoppedEarly = false;
+    for (let current = range.start; current <= range.end; current += 1) {
+      // More pages remain but the cap is already reached: the context is cut.
+      if (length >= limit) {
+        stoppedEarly = true;
+        break;
+      }
+      const text = await this.readPageText(current);
+      if (text.length === 0) {
+        continue;
+      }
+      if (parts.length > 0) {
+        length += 2;
+      }
+      parts.push(text);
+      length += text.length;
+    }
+
+    const capped = capContextText(parts.join('\n\n'), limit);
+    const label = entries.find((entry) => entry.page === range.start)?.label
+      ?? `第 ${range.start} 页`;
+    return {
+      scope,
+      text: capped.text,
+      label,
+      truncated: capped.truncated || stoppedEarly,
+    };
+  }
+
+  /** Current 1-based page, clamped to the document. */
+  private contextPage(): number {
+    const count = Math.max(1, this.pageCount);
+    const locator = this.currentLocator();
+    const page = locator.kind === 'pdf' ? locator.page : this.currentPage;
+    return clamp(Math.floor(page), 1, count);
+  }
+
+  /** Reads one page's text; unloaded or broken pages yield an empty string. */
+  private async readPageText(pageNumber: number): Promise<string> {
+    const pdf = this.pdf;
+    if (!pdf) {
+      return '';
+    }
+    try {
+      const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      return pdfPageText(textItemsOf(content.items));
+    } catch {
+      return '';
+    }
+  }
+
+  /** Flattened outline entries whose locator points at a PDF page. */
+  private tocEntries(): Array<{ label: string; page: number }> {
+    const entries: Array<{ label: string; page: number }> = [];
+    const walk = (items: TocItem[]): void => {
+      for (const item of items) {
+        if (item.locator.kind === 'pdf') {
+          entries.push({ label: item.label, page: item.locator.page });
+        }
+        walk(item.children);
+      }
+    };
+    walk(this.toc);
+    return entries;
+  }
+
   private pdfLocatorNow(precomputedTops?: number[]): PdfLocator {
     if (!this.pdf) {
       throw new Error('Reader is not open');
@@ -549,6 +667,7 @@ export class PdfReaderEngine implements ReaderEngine {
     this.settings = null;
     this.pageCount = 0;
     this.currentPage = 1;
+    this.toc = [];
     this.scale = 1;
     this.baseSize = { width: 0, height: 0 };
     this.detectedCrop = zeroCrop();

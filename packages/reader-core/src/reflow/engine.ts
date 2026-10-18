@@ -2,18 +2,26 @@ import type { Locator, LocatorRect, ReflowLocator, ReflowPack } from '@bookr/sha
 
 import { TypedEmitter } from '../emitter';
 import { clamp, percentForPage } from '../locator';
+import {
+  DEFAULT_CONTEXT_MAX_CHARS,
+  capContextText,
+  normalizeContextText,
+  reflowChapterText,
+} from '../text-context';
 import type {
   OpenReaderOptions,
+  ReaderContextScope,
   ReaderDocumentInfo,
   ReaderEngine,
   ReaderEventMap,
   ReaderHighlight,
   ReaderSettings,
+  ReaderTextContext,
   TocItem,
 } from '../types';
 import { marksForHighlights, renderBlockText, type ReflowMark } from './highlights';
 import { reflowLocatorFor } from './mapping';
-import { indexReflowPack } from './pack';
+import { indexForPack, indexReflowPack } from './pack';
 import {
   applyReflowStyles,
   renderReflowDocument,
@@ -326,6 +334,36 @@ export class ReflowReaderEngine implements ReaderEngine {
   currentLocator(): Locator {
     this.assertOpen();
     return this.locatorNow();
+  }
+
+  async getTextContext(
+    scope: ReaderContextScope,
+    maxChars: number = DEFAULT_CONTEXT_MAX_CHARS,
+  ): Promise<ReaderTextContext> {
+    const { pack } = this.openState();
+    const index = indexForPack(pack);
+    const locator = this.locatorNow();
+    const limit = maxChars ?? DEFAULT_CONTEXT_MAX_CHARS;
+
+    if (scope === 'chapter') {
+      const chapter = reflowChapterText(
+        index,
+        locator.sourcePage,
+        locator.blockId ?? null,
+        limit,
+      );
+      return { scope, text: chapter.text, label: chapter.label, truncated: chapter.truncated };
+    }
+
+    const blocks = index.textBlocksOnPage(locator.sourcePage);
+    const text = normalizeContextText(blocks.map((block) => block.text ?? '').join('\n\n'));
+    const capped = capContextText(text, limit);
+    return {
+      scope,
+      text: capped.text,
+      label: `第 ${locator.sourcePage} 页`,
+      truncated: capped.truncated,
+    };
   }
 
   setSettings(settings: ReaderSettings): void {
