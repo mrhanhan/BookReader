@@ -6,6 +6,7 @@ import { ZodError } from 'zod';
 import { registerAdminRoutes } from './admin/routes';
 import { registerAiAdminRoutes } from './ai/admin';
 import type { AiRuntimeConfig } from './ai/config';
+import { registerAiRoutes } from './ai/routes';
 import type { AiClient } from './ai/types';
 import { registerAuthRoutes } from './auth/routes';
 import type { Converter } from './books/conversion';
@@ -192,6 +193,7 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
   registerAuthRoutes(app, deps);
   registerAdminRoutes(app, deps);
   registerAiAdminRoutes(app, deps);
+  registerAiRoutes(app, deps);
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
   registerReadingRoutes(app, deps);
