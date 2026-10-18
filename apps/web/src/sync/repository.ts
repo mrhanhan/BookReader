@@ -324,16 +324,16 @@ async function applyProgressChange(
   change: SyncChangeEnvelope,
 ): Promise<'applied' | 'skipped'> {
   return db.transaction('rw', db.progress, db.outbox, async () => {
-    if (change.op === 'delete') {
-      await db.progress.delete([userId, change.entityId]);
-      await dropOutboxFor(db, userId, 'reading_progress', change.entityId);
-      return 'applied';
-    }
-
     const local = await db.progress.get([userId, change.entityId]);
     const pending = await pendingFor(db, userId, 'reading_progress', change.entityId);
     if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
       return 'skipped';
+    }
+
+    if (change.op === 'delete') {
+      await db.progress.delete([userId, change.entityId]);
+      await dropOutboxFor(db, userId, 'reading_progress', change.entityId);
+      return 'applied';
     }
 
     const payload = readProgressPayload(change.payload);
@@ -366,15 +366,15 @@ async function applyAnnotationChange(
       return 'skipped';
     }
 
+    const pending = await pendingFor(db, userId, 'annotation', change.entityId);
+    if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
+      return 'skipped';
+    }
+
     if (change.op === 'delete') {
       await db.annotations.delete(change.entityId);
       await dropOutboxFor(db, userId, 'annotation', change.entityId);
       return 'applied';
-    }
-
-    const pending = await pendingFor(db, userId, 'annotation', change.entityId);
-    if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
-      return 'skipped';
     }
 
     const payload = readAnnotationPayload(change.payload);
@@ -399,15 +399,15 @@ async function applyBookmarkChange(
       return 'skipped';
     }
 
+    const pending = await pendingFor(db, userId, 'bookmark', change.entityId);
+    if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
+      return 'skipped';
+    }
+
     if (change.op === 'delete') {
       await db.bookmarks.delete(change.entityId);
       await dropOutboxFor(db, userId, 'bookmark', change.entityId);
       return 'applied';
-    }
-
-    const pending = await pendingFor(db, userId, 'bookmark', change.entityId);
-    if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
-      return 'skipped';
     }
 
     const payload = readBookmarkPayload(change.payload);
@@ -427,16 +427,16 @@ async function applySettingsChange(
   change: SyncChangeEnvelope,
 ): Promise<'applied' | 'skipped'> {
   return db.transaction('rw', db.settings, db.outbox, async () => {
-    if (change.op === 'delete') {
-      await db.settings.delete(userId);
-      await dropOutboxFor(db, userId, 'reader_settings', change.entityId);
-      return 'applied';
-    }
-
     const local = await db.settings.get(userId);
     const pending = await pendingFor(db, userId, 'reader_settings', change.entityId);
     if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
       return 'skipped';
+    }
+
+    if (change.op === 'delete') {
+      await db.settings.delete(userId);
+      await dropOutboxFor(db, userId, 'reader_settings', change.entityId);
+      return 'applied';
     }
 
     const payload = readSettingsPayload(change.payload);

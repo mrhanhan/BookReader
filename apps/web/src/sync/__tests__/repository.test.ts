@@ -14,6 +14,7 @@ const laterLocator: Locator = { kind: 'pdf', page: 9, percent: 0.75 };
 
 const T1 = '2026-01-01T00:00:00.000Z';
 const T2 = '2026-01-02T00:00:00.000Z';
+const T3 = '2030-01-01T00:00:00.000Z';
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -205,6 +206,18 @@ describe('LocalRepository', () => {
     expect(await repo.pendingCount(USER)).toBe(0);
   });
 
+  it('applies an equal-time server change and confirms the local write', async () => {
+    await repo.saveProgress(USER, BOOK, locator, Date.parse(T1));
+
+    const result = await repo.applyServerChange(USER, progressEnvelope(T1));
+
+    expect(result).toBe('applied');
+    const row = await repo.progressFor(USER, BOOK);
+    expect(row?.locator).toEqual(laterLocator);
+    expect(row?.dirty).toBe(false);
+    expect(await repo.pendingCount(USER)).toBe(0);
+  });
+
   it('applies an annotation upsert from the change log', async () => {
     const result = await repo.applyServerChange(USER, {
       revision: 4,
@@ -240,7 +253,7 @@ describe('LocalRepository', () => {
     });
   });
 
-  it('removes local rows on a server delete and drops their outbox', async () => {
+  it('removes local rows on a newer server delete and drops their outbox', async () => {
     const created = await repo.createBookmark(USER, {
       bookId: BOOK,
       locator,
@@ -254,13 +267,53 @@ describe('LocalRepository', () => {
       entityId: created.id,
       op: 'delete',
       payload: created,
-      clientUpdatedAt: T2,
-      serverUpdatedAt: T2,
+      clientUpdatedAt: T3,
+      serverUpdatedAt: T3,
     });
 
     expect(result).toBe('applied');
     expect(await repo.listBookmarks(USER, BOOK)).toEqual([]);
     expect(await repo.pendingCount(USER)).toBe(0);
+  });
+
+  it('keeps a newer local row when the server delete is older', async () => {
+    const created = await repo.createBookmark(USER, {
+      bookId: BOOK,
+      locator,
+      label: '本地较新',
+    });
+
+    const result = await repo.applyServerChange(USER, {
+      revision: 3,
+      entityType: 'bookmark',
+      entityId: created.id,
+      op: 'delete',
+      payload: created,
+      clientUpdatedAt: T1,
+      serverUpdatedAt: T1,
+    });
+
+    expect(result).toBe('skipped');
+    expect((await repo.listBookmarks(USER, BOOK)).map((row) => row.id)).toEqual([created.id]);
+    expect(await repo.pendingCount(USER)).toBe(1);
+  });
+
+  it('keeps newer local progress when the server delete is older', async () => {
+    await repo.saveProgress(USER, BOOK, locator, Date.parse(T2));
+
+    const result = await repo.applyServerChange(USER, {
+      revision: 3,
+      entityType: 'reading_progress',
+      entityId: BOOK,
+      op: 'delete',
+      payload: null,
+      clientUpdatedAt: T1,
+      serverUpdatedAt: T1,
+    });
+
+    expect(result).toBe('skipped');
+    expect((await repo.progressFor(USER, BOOK))?.locator).toEqual(locator);
+    expect(await repo.pendingCount(USER)).toBe(1);
   });
 
   it('applies a snapshot without clearing the outbox', async () => {
