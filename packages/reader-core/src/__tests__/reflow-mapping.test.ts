@@ -40,8 +40,10 @@ function makePack(): ReflowPack {
         width: 600,
         height: 800,
         blocks: [
-          paragraph('p1-b0', 0, 40, 0.1),
+          // A leading visual block proves text fallbacks filter by type rather
+          // than returning the page's first block.
           { id: 'p1-img', type: 'image', rect: { x: 0.1, y: 0.3, w: 0.8, h: 0.12 } },
+          paragraph('p1-b0', 0, 40, 0.1),
           paragraph('p1-b1', 40, 90, 0.55),
         ],
       },
