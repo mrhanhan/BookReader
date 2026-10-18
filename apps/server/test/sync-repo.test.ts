@@ -104,6 +104,9 @@ it('reads and writes the pruned-through watermark', async () => {
 
   await markPrunedThroughInTx(84);
   expect(await prunedThrough(testDb)).toBe(84);
+
+  await markPrunedThroughInTx(42);
+  expect(await prunedThrough(testDb)).toBe(84);
 });
 
 it('upserts user settings in place', async () => {

@@ -102,12 +102,15 @@ export async function prunedThrough(db: Database): Promise<number> {
   return row?.value ?? 0;
 }
 
-/** Moves the pruned-through watermark forward. */
+/** Moves the pruned-through watermark forward, never backward. */
 export async function markPrunedThrough(tx: Transaction, revision: number): Promise<void> {
   await tx
     .insert(syncMeta)
     .values({ key: PRUNED_THROUGH_KEY, value: revision })
-    .onConflictDoUpdate({ target: syncMeta.key, set: { value: revision } });
+    .onConflictDoUpdate({
+      target: syncMeta.key,
+      set: { value: sql`greatest(${syncMeta.value}, ${revision})` },
+    });
 }
 
 /** Loads a user's synced reader settings, or null when they never saved any. */
