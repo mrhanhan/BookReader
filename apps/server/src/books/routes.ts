@@ -5,6 +5,7 @@ import type { AppDeps } from '../app';
 import { makeRequireAuth } from '../auth/guards';
 import { AppError } from '../errors';
 import {
+  assertCanManageBook,
   getBook,
   listBooks,
   listTrash,
@@ -51,13 +52,32 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { items: await listTrash(deps) };
   });
 
-  app.post('/api/books/:id/cover', { preHandler: requireAuth }, async (request) => {
-    const { id } = bookIdParamsSchema.parse(request.params);
-    const part = await request.file();
-    if (!part) {
-      throw new AppError(400, ERROR_CODES.VALIDATION_FAILED, undefined, 'A cover image is required');
-    }
-    const buffer = await part.toBuffer();
-    return replaceCover(deps, request.user!, id, { buffer, contentType: part.mimetype });
-  });
+  // The permission check runs in `onRequest`, before the multipart body is
+  // parsed, so an unauthorized caller cannot make the server buffer an image.
+  app.post(
+    '/api/books/:id/cover',
+    {
+      onRequest: [
+        requireAuth,
+        async (request) => {
+          const { id } = bookIdParamsSchema.parse(request.params);
+          await assertCanManageBook(deps, request.user!, id);
+        },
+      ],
+    },
+    async (request) => {
+      const { id } = bookIdParamsSchema.parse(request.params);
+      const part = await request.file();
+      if (!part) {
+        throw new AppError(
+          400,
+          ERROR_CODES.VALIDATION_FAILED,
+          undefined,
+          'A cover image is required',
+        );
+      }
+      const buffer = await part.toBuffer();
+      return replaceCover(deps, request.user!, id, { buffer, contentType: part.mimetype });
+    },
+  );
 }

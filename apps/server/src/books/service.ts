@@ -12,13 +12,12 @@ import { auditLogs, books, bookCategories, categories, type BookRow, type NewBoo
 import { AppError } from '../errors';
 import { toBookDto } from './dto';
 import {
-  deletePurgedBook,
-  findBooksDeletedBefore,
   findBookById,
   findCategoriesForBooks,
   findUploaderNames,
   listBooksPage,
   listDeletedBooks,
+  purgeBooksDeletedBefore,
 } from './repo';
 
 /** The authenticated caller, as attached to a request by the auth guard. */
@@ -78,6 +77,19 @@ async function requireManageableBook(
     throw new AppError(403, ERROR_CODES.FORBIDDEN);
   }
   return book;
+}
+
+/**
+ * Permission-only book check for request hooks that must run before the body
+ * is parsed; cover uploads use it so an unauthorized caller never pays to
+ * buffer the image.
+ */
+export async function assertCanManageBook(
+  deps: AppDeps,
+  actor: BookActor,
+  bookId: string,
+): Promise<void> {
+  await requireManageableBook(deps, actor, bookId);
 }
 
 /** Maps rows to DTOs, loading categories and uploader names in two queries. */
@@ -337,33 +349,25 @@ export async function replaceCover(
 
 /**
  * Permanently removes books that have sat in the trash past the retention
- * window, along with every stored object they reference.
+ * window and then deletes every stored object they referenced. Rows are
+ * committed first, so a restore that wins the race keeps the book and its
+ * files instead of resurrecting a row whose objects are already gone.
  */
 export async function cleanupTrash(deps: AppDeps): Promise<number> {
   const cutoff = new Date(deps.clock.now().getTime() - TRASH_RETENTION_DAYS * DAY_MS);
-  const expired = await findBooksDeletedBefore(deps.db, cutoff);
+  const purged = await purgeBooksDeletedBefore(deps.db, cutoff);
 
-  let removed = 0;
-  for (const book of expired) {
+  for (const book of purged) {
     const keys = [book.fileKey, book.coverKey, book.epubKey, book.textLayerKey, book.reflowKey].filter(
       (key): key is string => key !== null,
     );
 
-    try {
-      for (const key of keys) {
-        await deps.storage.delete(key);
-      }
-    } catch {
-      // Leave the row for the next sweep: deleting the row first would orphan
-      // the remaining objects. Deletes that already succeeded are harmless to
-      // repeat.
-      continue;
-    }
-
-    if (await deletePurgedBook(deps.db, book.id, cutoff)) {
-      removed += 1;
+    for (const key of keys) {
+      // The rows are already gone; a storage hiccup can only leave an orphan
+      // object, and retrying every key keeps the sweep moving.
+      await deps.storage.delete(key).catch(() => undefined);
     }
   }
 
-  return removed;
+  return purged.length;
 }

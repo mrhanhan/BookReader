@@ -99,29 +99,39 @@ export async function listDeletedBooks(db: Database): Promise<BookRow[]> {
     .orderBy(desc(books.deletedAt), desc(books.id));
 }
 
-/** Books whose retention window has elapsed, oldest deletion first. */
-export async function findBooksDeletedBefore(db: Database, cutoff: Date): Promise<BookRow[]> {
-  return db
-    .select()
-    .from(books)
-    .where(and(isNotNull(books.deletedAt), lt(books.deletedAt, cutoff)))
-    .orderBy(asc(books.deletedAt));
+/** Storage keys of a row removed by the trash purge. */
+export interface PurgedBook {
+  id: string;
+  fileKey: string | null;
+  coverKey: string | null;
+  epubKey: string | null;
+  textLayerKey: string | null;
+  reflowKey: string | null;
 }
 
 /**
- * Deletes one purged book, re-checking the cutoff so a book restored after the
- * sweep query is kept.
+ * Removes every book past the retention window and returns the storage keys
+ * that belonged to them. The rows commit before objects are deleted, so a
+ * restore that wins the race keeps both the row and its files; a restore that
+ * loses finds no row and sees a 404.
  */
-export async function deletePurgedBook(
+export async function purgeBooksDeletedBefore(
   db: Database,
-  bookId: string,
   cutoff: Date,
-): Promise<boolean> {
-  const deleted = await db
-    .delete(books)
-    .where(and(eq(books.id, bookId), isNotNull(books.deletedAt), lt(books.deletedAt, cutoff)))
-    .returning({ id: books.id });
-  return deleted.length === 1;
+): Promise<PurgedBook[]> {
+  return db.transaction((tx) =>
+    tx
+      .delete(books)
+      .where(and(isNotNull(books.deletedAt), lt(books.deletedAt, cutoff)))
+      .returning({
+        id: books.id,
+        fileKey: books.fileKey,
+        coverKey: books.coverKey,
+        epubKey: books.epubKey,
+        textLayerKey: books.textLayerKey,
+        reflowKey: books.reflowKey,
+      }),
+  );
 }
 
 /** Categories of many books, keyed by book id, in a single query. */

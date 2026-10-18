@@ -185,6 +185,46 @@ it('rejects a cover whose bytes are not an allowed image', async () => {
   expect((await getBookRow(book.id))!.coverKey).toBeNull();
 });
 
+it('checks cover permission before reading the request body', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member', 'owner');
+  const other = await seedUser('member', 'other');
+  const book = await seedBook({ uploadedBy: owner.id });
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/books/${book.id}/cover`,
+    // A non-multipart body would be rejected by the parser, so a 403 here
+    // proves the permission hook runs before the body is consumed.
+    headers: { ...(await authHeader(other)), 'content-type': 'application/json' },
+    payload: { not: 'a multipart form' },
+  });
+  expect(res.statusCode).toBe(403);
+});
+
+it('keeps a book and its file when it is restored before the purge runs', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const book = await seedBook({ uploadedBy: user.id });
+  await fakeStorage.putObject(book.fileKey!, Buffer.from('%PDF-1.7'), 'application/pdf');
+  await testDb
+    .update(books)
+    .set({ deletedAt: new Date(Date.now() - 31 * 86_400_000) })
+    .where(eq(books.id, book.id));
+
+  const restored = await app.inject({
+    method: 'POST',
+    url: `/api/books/${book.id}/restore`,
+    headers: await authHeader(user),
+  });
+  expect(restored.statusCode).toBe(200);
+
+  expect(await cleanupTrashForTest()).toBe(0);
+  expect(await getBookRow(book.id)).toBeDefined();
+  expect(await fakeStorage.head(book.fileKey!)).not.toBeNull();
+});
+
 it('purges books deleted more than 30 days ago', async () => {
   await resetDb();
   const app = await buildTestApp();
