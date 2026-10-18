@@ -193,8 +193,11 @@ class PaddleOcrBackend:
 
     The engine and the PNG decoder are injectable so tests (and callers with
     an alternate pipeline) do not need the optional dependencies installed.
+    The default engine is built lazily on the first ``recognize`` call, so a
+    text-layer PDF that needs no OCR never imports PaddleOCR or loads models.
     PaddleOCR 2.x builds are driven through ``ocr(image, cls=True)``; 3.x
-    builds through ``predict(image)``; the branch is fixed in ``__init__``.
+    builds through ``predict(image)``; the branch is fixed when the engine is
+    created and inspected.
     """
 
     def __init__(
@@ -204,24 +207,31 @@ class PaddleOcrBackend:
         decoder: Decoder | None = None,
     ) -> None:
         self.lang = lang
-        if engine is not None:
-            self._engine = engine
-            self._use_predict = _is_paddle_v3(engine)
-        else:
-            self._engine, self._use_predict = _build_engine(lang)
+        self._engine = engine
+        self._use_predict = (
+            _is_paddle_v3(engine) if engine is not None else False
+        )
         self._decoder = decoder if decoder is not None else _default_decoder
+
+    def _ensure_engine(self) -> object:
+        if self._engine is None:
+            self._engine, self._use_predict = _build_engine(self.lang)
+        return self._engine
 
     def recognize(self, png: bytes, lang: str) -> list[OcrLine]:
         """Recognize one PNG page.
 
         The engine language is fixed at construction; the shared protocol
-        always passes the same value the CLI configured.
+        always passes the same value the CLI configured. Dependency and
+        construction errors surface here so the builder can fall back per
+        page.
         """
         if lang != self.lang:
             raise ValueError("OCR language cannot change after initialization")
+        engine = self._ensure_engine()
         image, width, height = self._decoder(png)
         if self._use_predict:
-            raw = self._engine.predict(image)
+            raw = engine.predict(image)
         else:
-            raw = self._engine.ocr(image, cls=True)
+            raw = engine.ocr(image, cls=True)
         return parse_paddle_result(raw, width, height)

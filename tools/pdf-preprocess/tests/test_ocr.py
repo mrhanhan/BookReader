@@ -111,8 +111,9 @@ def test_backend_reports_missing_dependencies(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, '__import__', fake_import)
+    backend = PaddleOcrBackend('ch', decoder=lambda png: (object(), 10, 10))
     with pytest.raises(RuntimeError, match='OCR dependencies missing'):
-        PaddleOcrBackend('ch')
+        backend.recognize(b'png', 'ch')
 
 
 def _install_fake_paddle(monkeypatch, paddle_class):
@@ -128,6 +129,25 @@ def _install_fake_paddle(monkeypatch, paddle_class):
     monkeypatch.setitem(sys.modules, 'paddleocr', paddleocr)
 
 
+def test_engine_is_built_only_on_first_recognize(monkeypatch):
+    calls = []
+
+    class FakePaddleOCR:
+        def __init__(self, use_angle_cls=False, lang=None, show_log=True):
+            calls.append(lang)
+
+        def ocr(self, image, cls=True):
+            return []
+
+    _install_fake_paddle(monkeypatch, FakePaddleOCR)
+    backend = PaddleOcrBackend('ch', decoder=lambda png: (object(), 10, 10))
+    assert calls == []
+    assert backend.recognize(b'png', 'ch') == []
+    assert calls == ['ch']
+    assert backend.recognize(b'png', 'ch') == []
+    assert calls == ['ch']
+
+
 def test_builds_paddle_v2_engine_with_legacy_arguments(monkeypatch):
     calls = []
 
@@ -141,8 +161,12 @@ def test_builds_paddle_v2_engine_with_legacy_arguments(monkeypatch):
                 }
             )
 
+        def ocr(self, image, cls=True):
+            return []
+
     _install_fake_paddle(monkeypatch, FakePaddleOCR)
-    PaddleOcrBackend('ch')
+    backend = PaddleOcrBackend('ch', decoder=lambda png: (object(), 10, 10))
+    backend.recognize(b'png', 'ch')
     assert calls == [
         {'use_angle_cls': True, 'lang': 'ch', 'show_log': False}
     ]
@@ -161,8 +185,12 @@ def test_builds_paddle_v3_engine_with_textline_orientation(monkeypatch):
                 }
             )
 
+        def predict(self, image):
+            return []
+
     _install_fake_paddle(monkeypatch, FakePaddleOCR)
-    PaddleOcrBackend('ch')
+    backend = PaddleOcrBackend('ch', decoder=lambda png: (object(), 10, 10))
+    backend.recognize(b'png', 'ch')
     assert calls == [{'lang': 'ch', 'use_textline_orientation': True}]
     assert 'show_log' not in calls[0]
 
@@ -174,10 +202,11 @@ def test_engine_construction_failure_becomes_runtime_error(monkeypatch, error):
             raise error
 
     _install_fake_paddle(monkeypatch, FakePaddleOCR)
+    backend = PaddleOcrBackend('ch', decoder=lambda png: (object(), 10, 10))
     with pytest.raises(
         RuntimeError, match=f'OCR engine unavailable: {type(error).__name__}'
     ):
-        PaddleOcrBackend('ch')
+        backend.recognize(b'png', 'ch')
 
 
 def test_backend_dispatches_paddle_v3_to_predict():
