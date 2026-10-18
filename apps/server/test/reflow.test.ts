@@ -1,4 +1,5 @@
-import { eq } from 'drizzle-orm';
+import { MAX_REFLOW_PACK_BYTES } from '@bookr/shared';
+import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { expect, it } from 'vitest';
 import { books, reflowUploads } from '../src/db/schema';
@@ -524,4 +525,206 @@ it('does not mutate books row on delete when the caller lacks permission', async
   expect(removed.statusCode).toBe(403);
   const [row] = await testDb.select().from(books).where(eq(books.id, book.id));
   expect(row!.reflowKey).toBe('library/keep.json');
+});
+
+it('expires the previous outstanding session when a new one is created', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const first = await createUpload(app, owner, book.id, 128, sha('c'));
+  expect(first.statusCode).toBe(201);
+  const firstBody = first.json<{ uploadId: string; upload: { fields: Record<string, string> } }>();
+  const firstKey = firstBody.upload.fields.key!;
+  await fakeStorage.putObject(firstKey, Buffer.from('{}'), 'application/json');
+
+  const second = await createUpload(app, owner, book.id, 128, sha('c'));
+  expect(second.statusCode).toBe(201);
+
+  // Only one presigned write target may be outstanding per book.
+  const [firstRow] = await testDb
+    .select({ status: reflowUploads.status })
+    .from(reflowUploads)
+    .where(eq(reflowUploads.id, firstBody.uploadId));
+  expect(firstRow!.status).toBe('expired');
+  expect(fakeStorage.objects.has(firstKey)).toBe(false);
+
+  const created = await testDb
+    .select({ id: reflowUploads.id })
+    .from(reflowUploads)
+    .where(and(eq(reflowUploads.bookId, book.id), eq(reflowUploads.status, 'created')));
+  expect(created).toHaveLength(1);
+});
+
+it('rejects a stored object whose size differs from the declared size', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const bytes = packBytes(validPack(sha('c')));
+  const declaredSize = bytes.length + 5;
+  const created = await createUpload(app, owner, book.id, declaredSize, sha('c'));
+  expect(created.statusCode).toBe(201);
+  const { uploadId, upload } = created.json<{
+    uploadId: string;
+    upload: { fields: Record<string, string> };
+  }>();
+  const key = upload.fields.key!;
+  await fakeStorage.putObject(key, bytes, 'application/json');
+
+  const completed = await completeUpload(app, owner, book.id, uploadId);
+  expect(completed.statusCode).toBe(422);
+  expect(completed.json().error.code).toBe('REFLOW_INVALID');
+  expect(completed.json().error.details).toEqual({ reason: 'pack/size' });
+  expect((await getBookRow(book.id))!.reflowKey).toBeNull();
+  expect(fakeStorage.objects.has(key)).toBe(false);
+
+  const [session] = await testDb
+    .select({ status: reflowUploads.status })
+    .from(reflowUploads)
+    .where(eq(reflowUploads.id, uploadId));
+  expect(session!.status).toBe('failed');
+});
+
+it('rejects oversized session declarations and pins the declared size', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const accepted = await createUpload(app, owner, book.id, 1024, sha('c'));
+  expect(accepted.statusCode).toBe(201);
+  // The POST policy allows exactly the declared byte count.
+  expect(accepted.json().upload.fields['X-Amz-Content-Length-Range']).toBe('1024-1024');
+
+  const rejected = await createUpload(app, owner, book.id, MAX_REFLOW_PACK_BYTES + 1, sha('c'));
+  expect(rejected.statusCode).toBe(400);
+  expect(rejected.json().error.code).toBe('VALIDATION_FAILED');
+});
+
+it('treats a trashed book as missing for every reflow endpoint', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({
+    uploadedBy: owner.id,
+    format: 'pdf',
+    sha256: sha('c'),
+    deletedAt: new Date(),
+  });
+  const headers = await authHeader(owner);
+  const missingUploadId = '11111111-1111-7111-8111-111111111111';
+
+  const created = await createUpload(app, owner, book.id, 128, sha('c'));
+  expect(created.statusCode).toBe(404);
+  expect(created.json().error.code).toBe('NOT_FOUND');
+
+  const completed = await completeUpload(app, owner, book.id, missingUploadId);
+  expect(completed.statusCode).toBe(404);
+  expect(completed.json().error.code).toBe('NOT_FOUND');
+
+  const file = await app.inject({
+    method: 'GET',
+    url: `/api/books/${book.id}/reflow`,
+    headers,
+  });
+  expect(file.statusCode).toBe(404);
+
+  const removed = await app.inject({
+    method: 'DELETE',
+    url: `/api/books/${book.id}/reflow`,
+    headers,
+  });
+  expect(removed.statusCode).toBe(404);
+});
+
+it('lets an admin upload a pack for another member book', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member', 'owner');
+  const admin = await seedUser('admin', 'admin');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const { completed, key } = await uploadPack(app, admin, book.id, validPack(sha('c')));
+  expect(completed.statusCode).toBe(200);
+  expect(completed.json().book.reflowAvailable).toBe(true);
+  expect((await getBookRow(book.id))!.reflowKey).toBe(key);
+});
+
+it("hides another member's session from completion", async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member', 'owner');
+  const other = await seedUser('member', 'other');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const bytes = packBytes(validPack(sha('c')));
+  const created = await createUpload(app, owner, book.id, bytes.length, sha('c'));
+  const { uploadId, upload } = created.json<{
+    uploadId: string;
+    upload: { fields: Record<string, string> };
+  }>();
+  const key = upload.fields.key!;
+  await fakeStorage.putObject(key, bytes, 'application/json');
+
+  const completed = await completeUpload(app, other, book.id, uploadId);
+  expect(completed.statusCode).toBe(404);
+  expect(completed.json().error.code).toBe('NOT_FOUND');
+
+  const [session] = await testDb
+    .select({ status: reflowUploads.status })
+    .from(reflowUploads)
+    .where(eq(reflowUploads.id, uploadId));
+  expect(session!.status).toBe('created');
+  expect(fakeStorage.objects.has(key)).toBe(true);
+});
+
+it('cleanup removes only abandoned sessions, never a completed pack', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const stored = await uploadPack(app, owner, book.id, validPack(sha('c')));
+  expect(stored.completed.statusCode).toBe(200);
+
+  // Creating a new session supersedes outstanding ones only, so the completed
+  // session and its object stay put.
+  const abandoned = await createUpload(app, owner, book.id, 64, sha('c'));
+  expect(abandoned.statusCode).toBe(201);
+  const abandonedBody = abandoned.json<{
+    uploadId: string;
+    upload: { fields: Record<string, string> };
+  }>();
+  const abandonedKey = abandonedBody.upload.fields.key!;
+  await fakeStorage.putObject(abandonedKey, Buffer.from('{}'), 'application/json');
+  await expireReflowSession(abandonedBody.uploadId, 60_000);
+
+  expect(await cleanupExpiredReflowUploadsForTest()).toBe(1);
+  expect(fakeStorage.objects.has(abandonedKey)).toBe(false);
+  expect(fakeStorage.objects.has(stored.key)).toBe(true);
+  expect((await getBookRow(book.id))!.reflowKey).toBe(stored.key);
+});
+
+it('never echoes pack text in an invalid-pack error', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  const secret = 'SECRET-PACK-TEXT-9f3a';
+  const bytes = Buffer.from(`${secret} is not valid JSON`);
+  const created = await createUpload(app, owner, book.id, bytes.length, sha('c'));
+  const { uploadId, upload } = created.json<{
+    uploadId: string;
+    upload: { fields: Record<string, string> };
+  }>();
+  await fakeStorage.putObject(upload.fields.key!, bytes, 'application/json');
+
+  const completed = await completeUpload(app, owner, book.id, uploadId);
+  expect(completed.statusCode).toBe(422);
+  expect(JSON.stringify(completed.json())).not.toContain(secret);
+  expect(JSON.stringify(completed.json())).not.toContain('not valid JSON');
 });

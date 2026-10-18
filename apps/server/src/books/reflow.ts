@@ -67,15 +67,47 @@ export async function createReflowUpload(
   const objectKey = `library/${book.libraryId}/books/${book.id}/reflow/${uploadId}.json`;
   const expiresAt = new Date(deps.clock.now().getTime() + REFLOW_SESSION_TTL_MS);
 
-  await deps.db.insert(reflowUploads).values({
-    id: uploadId,
-    bookId: book.id,
-    userId: actor.id,
-    objectKey,
-    size: parsed.size,
-    sha256: parsed.sha256,
-    expiresAt,
+  // At most one outstanding session per book. A book row lock serialises
+  // concurrent creates, so every earlier `created` session is expired and its
+  // presigned target invalidated before the new one exists. Objects are only
+  // removed after the commit: a failed insert must not delete anything.
+  const supersededKeys = await deps.db.transaction(async (tx) => {
+    const [lockedBook] = await tx
+      .select({ id: books.id })
+      .from(books)
+      .where(and(eq(books.id, bookId), isNull(books.deletedAt)))
+      .limit(1)
+      .for('update');
+
+    // The book may have been trashed since the permission check.
+    if (!lockedBook) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
+
+    const superseded = await tx
+      .update(reflowUploads)
+      .set({ status: 'expired' })
+      .where(
+        and(eq(reflowUploads.bookId, bookId), eq(reflowUploads.status, 'created')),
+      )
+      .returning({ objectKey: reflowUploads.objectKey });
+
+    await tx.insert(reflowUploads).values({
+      id: uploadId,
+      bookId: book.id,
+      userId: actor.id,
+      objectKey,
+      size: parsed.size,
+      sha256: parsed.sha256,
+      expiresAt,
+    });
+
+    return superseded.map((session) => session.objectKey);
   });
+
+  for (const key of supersededKeys) {
+    await deps.storage.delete(key).catch(() => undefined);
+  }
 
   const upload = await deps.storage.presignPost(
     objectKey,
@@ -188,6 +220,27 @@ export async function completeReflowUpload(
   }
 
   const previousKey = await deps.db.transaction(async (tx) => {
+    // Lock the book first and the session second, matching createReflowUpload
+    // so the two paths can never acquire the same pair in opposite order.
+    const [currentBook] = await tx
+      .select()
+      .from(books)
+      .where(and(eq(books.id, bookId), isNull(books.deletedAt)))
+      .limit(1)
+      .for('update');
+
+    if (!currentBook) {
+      // A concurrent trash wins the race and behaves like a missing book.
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
+    if (!canManage(actor, currentBook)) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN);
+    }
+
+    // Time is re-read under the lock: validation above may have taken long
+    // enough for the session to expire.
+    const lockedNow = deps.clock.now();
+
     const [locked] = await tx
       .select()
       .from(reflowUploads)
@@ -195,25 +248,16 @@ export async function completeReflowUpload(
       .limit(1)
       .for('update');
 
+    if (!locked) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
     // A concurrent completion (or cleanup) won the race; the book already
     // reflects whichever transition won, so this request changes nothing.
     if (
-      !locked ||
       locked.status !== 'created' ||
-      locked.expiresAt.getTime() <= now.getTime()
+      locked.expiresAt.getTime() <= lockedNow.getTime()
     ) {
       throw new AppError(409, ERROR_CODES.CONFLICT);
-    }
-
-    const [current] = await tx
-      .select({ reflowKey: books.reflowKey })
-      .from(books)
-      .where(and(eq(books.id, bookId), isNull(books.deletedAt)))
-      .limit(1)
-      .for('update');
-
-    if (!current) {
-      throw new AppError(404, ERROR_CODES.NOT_FOUND);
     }
 
     await tx
@@ -222,13 +266,13 @@ export async function completeReflowUpload(
         reflowKey: session.objectKey,
         reflowSchemaVersion: pack.schemaVersion,
         reflowPageCount: pack.pages.length,
-        reflowUpdatedAt: now,
+        reflowUpdatedAt: lockedNow,
       })
       .where(eq(books.id, bookId));
 
     const completed = await tx
       .update(reflowUploads)
-      .set({ status: 'completed', completedAt: now })
+      .set({ status: 'completed', completedAt: lockedNow })
       .where(and(eq(reflowUploads.id, session.id), eq(reflowUploads.status, 'created')))
       .returning({ id: reflowUploads.id });
 
@@ -236,7 +280,7 @@ export async function completeReflowUpload(
       throw new Error('Reflow upload session changed while holding its lock');
     }
 
-    return current.reflowKey;
+    return currentBook.reflowKey;
   });
 
   if (previousKey !== null && previousKey !== session.objectKey) {
@@ -255,33 +299,42 @@ export async function deleteReflowPack(
   actor: BookActor,
   bookId: string,
 ): Promise<void> {
-  const book = await findBookById(deps.db, bookId, { includeDeleted: false });
-  if (!book) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
-  if (!canManage(actor, book)) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN);
-  }
+  // Read the key under the same row lock as the clear. A plain pre-read could
+  // see a stale key and delete the wrong object when a completion commits in
+  // between, orphaning the pack the book now points at. PostgreSQL's
+  // `RETURNING` reports post-update values, so it cannot supply the old key.
+  const removedKey = await deps.db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({ reflowKey: books.reflowKey, uploadedBy: books.uploadedBy })
+      .from(books)
+      .where(and(eq(books.id, bookId), isNull(books.deletedAt)))
+      .limit(1)
+      .for('update');
 
-  const cleared = await deps.db
-    .update(books)
-    .set({
-      reflowKey: null,
-      reflowSchemaVersion: null,
-      reflowPageCount: null,
-      reflowUpdatedAt: null,
-    })
-    .where(and(eq(books.id, bookId), isNull(books.deletedAt)))
-    .returning({ id: books.id });
+    // A concurrent trash wins the race and behaves like a missing book; its
+    // row still owns the object, so no bytes are deleted.
+    if (!current) {
+      throw new AppError(404, ERROR_CODES.NOT_FOUND);
+    }
+    if (!canManage(actor, current)) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN);
+    }
 
-  // The book may have been trashed between the permission check and the
-  // update; its row still owns the object, so leave the bytes alone.
-  if (cleared.length === 0) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
+    await tx
+      .update(books)
+      .set({
+        reflowKey: null,
+        reflowSchemaVersion: null,
+        reflowPageCount: null,
+        reflowUpdatedAt: null,
+      })
+      .where(eq(books.id, bookId));
 
-  if (book.reflowKey !== null) {
-    await deps.storage.delete(book.reflowKey).catch(() => undefined);
+    return current.reflowKey;
+  });
+
+  if (removedKey !== null) {
+    await deps.storage.delete(removedKey).catch(() => undefined);
   }
 }
 
