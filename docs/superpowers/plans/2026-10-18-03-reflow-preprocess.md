@@ -902,7 +902,7 @@ Reuse `hashFile` and `postWithProgress` from `../lib/upload`. `uploadReflowPack`
 
 - [ ] **Step 5: Wire into the edit dialog and card**
 
-In `EditBookDialog`, render `<ReflowPackSection book={book} onChanged={() => void queryClient.invalidateQueries({ queryKey: ['book', book.id] })} />` above the title field when `book.format === 'pdf'`. Keep local `reflow` state if needed to reflect success before the query refetch.
+In `EditBookDialog`, render `<ReflowPackSection book={book} onChanged={...} />` above the title field when `book.format === 'pdf'`. The change handler must invalidate `BOOKS_QUERY_KEY` (plus the single-book key) and `BookshelfPage` must derive the edited book from the refreshed list (or an id-keyed query), so closing and reopening shows the new pack state.
 
 In `BookCard`, near the format badge add a `可重排` badge when `book.reflowAvailable`; add `REFLOW_BADGE_LABEL = '可重排'` to `labels.ts`.
 
@@ -1449,7 +1449,6 @@ class BuildOptions:
     ocr_lang: str = 'ch'
     dpi: int = 300
     ai_correct: bool = False
-    title: str | None = None
     text_pdf: str | None = None
     max_pages: int | None = None
 
@@ -1573,7 +1572,7 @@ Flow:
 8. Fallback: a page with no blocks at all gets one `fallback` block covering `{x:0,y:0,w:1,h:1}` and is recorded in `fallback_pages`.
 9. Apply AI correction to each heading/paragraph text when `options.corrector` is present and `options.ai_correct`: on exception append `第 N 页第 M 块纠错失败（{error class}）` and keep the original. Do not update source offsets after correction; document that highlight mapping in corrected text is block-approximate.
 10. TOC: extractor outline entries with `1 <= page <= page_count`; if empty, the first 50 heading blocks in reading order become `{label, page, level}`.
-11. Build pack dict; `generated_at` = current UTC with milliseconds and `Z`; `title` only when provided. Validate with `validate_pack`; any error raises `PackValidationError(errors)`.
+11. Build pack dict; `generated_at` = current UTC with milliseconds and `Z`. Validate with `validate_pack`; any error raises `PackValidationError(errors)`.
 12. If `options.text_pdf` and OCR lines exist, call `write_text_layer_pdf`.
 13. `report` = quality plus `{"source": source_path, "outputPages": len(pages), "textPdf": options.text_pdf}` (the CLI adds file paths). Never include book text in the report.
 
@@ -1583,7 +1582,7 @@ Open the source with `pymupdf`; for each page with OCR lines, choose `fontname =
 
 - [ ] **Step 7: Implement the CLI**
 
-`argparse` arguments: `input`, `--out` (required), `--report`, `--text-pdf`, `--title`, `--ocr {auto,always,never}` (default auto), `--ocr-lang` (default ch), `--dpi` (default 300), `--ai-correct`, `--max-pages` (help: 仅用于调试), `--force`, `--verbose`.
+`argparse` arguments: `input`, `--out` (required), `--report`, `--text-pdf`, `--ocr {auto,always,never}` (default auto), `--ocr-lang` (default ch), `--dpi` (default 300), `--ai-correct`, `--max-pages` (help: 仅用于调试), `--force`, `--verbose`.
 
 Behavior:
 - Missing input → stderr Chinese message, return 2.
