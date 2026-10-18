@@ -17,6 +17,7 @@
 - 重排包 schema 版本固定为 `1`（`REFLOW_PACK_SCHEMA_VERSION = 1`）；服务端只接受该版本，未来升级必须新增版本号并保留旧版读取能力。
 - 重排包不得内嵌图片/base64；`image`、`table`、`formula`、`fallback` 块只保存源页归一化矩形，由阅读器用原 PDF 裁绘。包体上限 32 MiB，页数上限 5000，块总数上限 200000，单页块数上限 2000，单块文本上限 20000 字符。
 - 包内 `source.sha256` 必须等于书库中该书的原始 `books.sha256`；`source.pageCount` 必须等于 `pages.length`，页号从 1 连续递增且唯一。
+- `generatedAt` 必须是 UTC 且以 `Z` 结尾（schema 使用 `z.iso.datetime()`，不接受 `+00:00`）；Python 工具用 `datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'`。
 - 所有字符区间一律使用 **UTF-16 code unit** 偏移（与 JavaScript 字符串一致）；Python 工具必须用 `utf16_len(text)` 计算，禁止直接使用 `len(text)`。补充平面字符（如 `𠮷`）必须有测试。
 - 重排定位器在 P2 基础上增加可选 `ranges`：`{ kind:'reflow', sourcePage, percent, blockId?, charRange?, ranges?: Array<{ blockId, charRange }> }`；`ranges` 最多 200 项，用于跨块划线。
 - 位置映射：原版→重排优先使用 PDF 定位器的 `rect`（页内纵向位置）匹配块，其次 `charOffset`，最后该页第一个文本块；重排→原版使用 `sourcePage` + 块 `rect` + `sourceCharStart + charRange[0]`。切换模式后页码误差必须 ≤1 页。
@@ -1497,6 +1498,7 @@ def test_builds_text_pages_with_fallback_and_toc(tmp_path):
     result = build_pack(source_path=str(source), extractor=FakeExtractor(pages), options=BuildOptions(ocr='never'))
     pack = result.pack_dict
     assert pack['source']['sha256'] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert pack['generatedAt'].endswith('Z')
     assert pack['source']['pageCount'] == 3
     assert [b['type'] for b in pack['pages'][0]['blocks']][:2] == ['heading', 'paragraph']
     assert pack['pages'][1]['blocks'][0]['type'] == 'fallback'
