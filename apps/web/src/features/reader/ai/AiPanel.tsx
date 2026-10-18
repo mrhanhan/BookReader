@@ -100,10 +100,23 @@ export function AiPanel({
       {controller.error ? (
         <div className="ai-error" role="alert">
           <span className="ai-error-text">{controller.error}</span>
-          <button type="button" onClick={() => void controller.retry()}>
+          <button
+            type="button"
+            onClick={() => {
+              if (controller.usage) {
+                void controller.retry();
+              } else {
+                void controller.refreshUsage();
+              }
+            }}
+          >
             重试
           </button>
-          <button type="button" onClick={() => controller.dismissError()}>
+          <button
+            type="button"
+            aria-label="关闭错误"
+            onClick={() => controller.dismissError()}
+          >
             关闭
           </button>
         </div>

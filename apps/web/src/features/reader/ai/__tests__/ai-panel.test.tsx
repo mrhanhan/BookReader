@@ -112,7 +112,7 @@ it('shows the error bar with retry and dismiss', async () => {
   expect(alert).toHaveTextContent('AI 服务暂时不可用，请稍后重试');
   await userEvent.click(within(alert).getByRole('button', { name: '重试' }));
   expect(retry).toHaveBeenCalled();
-  await userEvent.click(within(alert).getByRole('button', { name: '关闭' }));
+  await userEvent.click(within(alert).getByRole('button', { name: '关闭错误' }));
   expect(dismissError).toHaveBeenCalled();
 });
 
@@ -178,9 +178,9 @@ it('confirms thread deletion in two clicks within three seconds', async () => {
   );
 
   await userEvent.click(screen.getByRole('button', { name: '历史' }));
-  await userEvent.click(screen.getByRole('button', { name: '删除' }));
-  expect(screen.getByRole('button', { name: '确认删除？' })).toBeInTheDocument();
-  await userEvent.click(screen.getByRole('button', { name: '确认删除？' }));
+  await userEvent.click(screen.getByRole('button', { name: /^删除/ }));
+  expect(screen.getByRole('button', { name: /^确认删除/ })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: /^确认删除/ }));
   expect(removeThread).toHaveBeenCalledWith('t1');
 });
 
@@ -196,13 +196,13 @@ it('reverts the delete confirmation after three seconds', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: '历史' }));
-    fireEvent.click(screen.getByRole('button', { name: '删除' }));
-    expect(screen.getByRole('button', { name: '确认删除？' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^删除/ }));
+    expect(screen.getByRole('button', { name: /^确认删除/ })).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(screen.getByRole('button', { name: '删除' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^删除/ })).toBeInTheDocument();
   } finally {
     vi.useRealTimers();
   }

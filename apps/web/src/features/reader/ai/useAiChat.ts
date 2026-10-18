@@ -497,27 +497,38 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
     return doneReceived && !aborted && failureMessage === null;
   }
 
-  function newThread(): void {
+  /**
+   * Invalidates any in-flight stream/fetch before switching transcripts. The
+   * token bump makes late handlers and refreshes ignore the abandoned thread.
+   */
+  function beginNavigation(): number {
+    tokenRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
+    streamingRef.current = false;
+    setStreaming(false);
+    return tokenRef.current;
+  }
+
+  function newThread(): void {
+    beginNavigation();
     applyThread(null);
     setMessages([]);
     setError(null);
   }
 
   async function openThread(threadId: string): Promise<void> {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    const token = beginNavigation();
     const known = latest.current.threads.find((item) => item.id === threadId) ?? null;
     applyThread(known);
     setMessages([]);
-    const token = tokenRef.current;
     try {
       const result = await apiRef.current.fetchThread(threadId);
       if (tokenRef.current !== token) return;
       applyThread(result.thread);
       setMessages(result.messages);
     } catch {
+      if (tokenRef.current !== token) return;
       setError(THREAD_ERROR);
     }
   }
@@ -637,6 +648,9 @@ export function useAiChat({ bookId, offline, context, api }: UseAiChatOptions): 
 
   async function removeThread(threadId: string): Promise<void> {
     if (bookId === '') return;
+    if (latest.current.activeThread?.id === threadId) {
+      beginNavigation();
+    }
     try {
       await apiRef.current.deleteThread(threadId);
     } catch (caught) {

@@ -962,6 +962,7 @@ figure[data-state='failed'] canvas {
 .ai-tool,
 .ai-thread-delete,
 .ai-error button,
+.ai-pending-clear,
 .ai-composer-send {
   padding: 3px 8px;
   border: 1px solid var(--reader-border);
@@ -976,12 +977,14 @@ figure[data-state='failed'] canvas {
 .ai-tool:hover:not(:disabled),
 .ai-thread-delete:hover,
 .ai-error button:hover,
+.ai-pending-clear:hover,
 .ai-composer-send:hover:not(:disabled) {
   background-color: color-mix(in srgb, var(--reader-ink) 8%, transparent);
 }
 
 .ai-tool:focus-visible,
 .ai-thread-delete:focus-visible,
+.ai-pending-clear:focus-visible,
 .ai-thread-target:focus-visible,
 .ai-error button:focus-visible,
 .ai-composer-input:focus-visible,
@@ -1110,8 +1113,20 @@ figure[data-state='failed'] canvas {
   line-height: 1.55;
 }
 
-.ai-pending-quote {
+.ai-pending {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 8px 0 0;
+}
+
+.ai-pending-quote {
+  flex: 1;
+  margin: 0;
+}
+
+.ai-pending-clear {
+  flex: none;
 }
 
 .ai-message-status {

@@ -333,3 +333,37 @@ it('recovers usage and threads after connectivity returns', async () => {
   await waitFor(() => expect(result.current.threads).toHaveLength(1));
   expect(result.current.error).toBeNull();
 });
+
+it('abandons the previous stream when starting a new thread', async () => {
+  let handlers: AiStreamHandlers | null = null;
+  const api = apiWith({
+    streamChat: vi.fn((_bookId: string, _body: AiChatRequest, next: AiStreamHandlers, options?: { signal?: AbortSignal }) => {
+      handlers = next;
+      return new Promise<void>((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('Aborted', 'AbortError')),
+        );
+      });
+    }),
+  });
+  const { result } = renderHook(() => useAiChat({ bookId: 'book-1', offline: false, context, api }));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+
+  act(() => {
+    void result.current.ask('问题');
+  });
+  await waitFor(() => expect(result.current.streaming).toBe(true));
+
+  act(() => {
+    result.current.newThread();
+  });
+  expect(result.current.streaming).toBe(false);
+  expect(result.current.messages).toHaveLength(0);
+
+  // A late event from the abandoned stream must not repopulate the transcript.
+  act(() => {
+    handlers?.onMeta(metaFor('ask'));
+    handlers?.onDelta('旧回答');
+  });
+  expect(result.current.messages).toHaveLength(0);
+});

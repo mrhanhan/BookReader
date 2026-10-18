@@ -23,9 +23,11 @@ export function AiComposer({
 
   function submit(): void {
     if (!canSend || trimmed === '') return;
+    const sentText = value;
     void onSend(trimmed).then((sent) => {
-      // A rejected exchange keeps the text so the reader can retry it.
-      if (sent) setValue('');
+      // A rejected exchange keeps the text so the reader can retry it; typing
+      // while the request was in flight must not be discarded.
+      if (sent) setValue((current) => (current === sentText ? '' : current));
     });
   }
 

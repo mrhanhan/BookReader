@@ -77,6 +77,7 @@ export function AiThreadList({
             <button
               type="button"
               className="ai-thread-delete"
+              aria-label={confirmingThis ? `确认删除 ${thread.title}` : `删除 ${thread.title}`}
               onClick={() => requestDelete(thread.id)}
             >
               {confirmingThis ? '确认删除？' : '删除'}
