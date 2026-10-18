@@ -1,6 +1,6 @@
 # AI 伴读（P5）实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在阅读器里加入服务端 AI 网关：选中段落即可「解释」，对当前页/章「总结」，并在同一线程里多轮「追问」；回答以 SSE 流式返回，Key 加密存库、永不下发客户端，每个用户的每日/每月 token 配额与「禁用 AI」开关都被严格执行。
 
@@ -196,7 +196,7 @@ export const aiThreadListQuerySchema; // { bookId: z.uuid() }
   - `superRefine`：`explain` 必须有 `selectedText`；`ask` 必须有 `question`；`summarize` 必须有 `scope`，且 `page` 要 `context.pageText`、`chapter` 要 `context.chapterText`；错误 path 指向缺失字段。
 - 所有 schema 都用 `z.*` 原生 API，不用 `z.record` 的宽松兜底。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -270,21 +270,21 @@ describe('AI contract', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/shared test`
 Expected: FAIL（`../ai` 不存在）
 
-- [ ] **Step 3: 实现 `packages/shared/src/ai.ts` 并导出**
+- [x] **Step 3: 实现 `packages/shared/src/ai.ts` 并导出**
 
 在 `errors.ts` 的 `ERROR_CODES` 末尾加入五个 AI 错误码；`index.ts` 增加 `export * from './ai';`。DTO 的 id/time 都是字符串，服务端负责 `toISOString()`。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/shared test`
 Expected: PASS（原有测试也全绿）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add packages/shared/src/ai.ts packages/shared/src/index.ts packages/shared/src/errors.ts packages/shared/src/__tests__/ai-schemas.test.ts
@@ -376,7 +376,7 @@ export type AiUsageRow = typeof aiUsage.$inferSelect;
 
 - 迁移 SQL 必须包含：`users` 两列及默认值 `100000`/`1000000`；`ALTER TABLE "users" ALTER COLUMN "ai_enabled" SET DEFAULT true`（只改默认值，不 UPDATE 存量行）；四张新表；`ai_messages(thread_id) ON DELETE CASCADE`；`ai_threads(user_id)`、`ai_threads(book_id)` 级联删除。Drizzle 生成的 `0005_ai.sql` 与 `drizzle/meta/0005_snapshot.json`、`_journal.json` 一并提交。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { eq } from 'drizzle-orm';
@@ -417,22 +417,22 @@ it('gives new accounts the default AI quotas', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-schema`
 Expected: FAIL（`aiThreads` 未导出）
 
-- [ ] **Step 3: 修改 schema 并生成迁移**
+- [x] **Step 3: 修改 schema 并生成迁移**
 
 Run: `pnpm --filter @bookr/server db:generate`
 打开生成的 SQL 逐条核对上表；若 Drizzle 未给 `users` 新列写默认值，手工补齐 `DEFAULT 100000` / `DEFAULT 1000000` 后再运行测试。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-schema`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/db/schema.ts apps/server/drizzle apps/server/test/ai-schema.test.ts
@@ -443,7 +443,7 @@ git commit -m "feat(server): add AI threads, messages, usage and config tables"
 ### Task 3: 配置、密钥加密与管理员端点
 
 **Files:**
-- Modify: `apps/server/src/config.ts`、`apps/server/src/app.ts`、`apps/server/src/server.ts`、`apps/server/src/runtime.ts`
+- Modify: `apps/server/src/config.ts`、`apps/server/src/app.ts`、`apps/server/src/server.ts`、`apps/server/src/runtime.ts`、`apps/server/src/admin/{routes,service}.ts`
 - Create: `apps/server/src/ai/{types,crypto,config,admin}.ts`
 - Modify: `apps/server/test/helpers.ts`（`buildTestConfig` 合并 `ai`、`AppDeps.aiClient` 默认假实现）
 - Modify: `.env.example`、`docker-compose.yml`
@@ -557,12 +557,13 @@ export function createUnavailableAiClient(): AiClient;
   - `PUT /api/admin/ai` body `{ baseUrl?: string, chatModel?: string, reasonerModel?: string, apiKey?: string(8..256) }`，至少一个字段；返回 `AiConfigView`
   - `DELETE /api/admin/ai` → 204，写 audit `ai.config.delete`
   - 全部 `[requireAuth, requireAdmin]`。
+- 管理员成员接口扩展：`MemberSummary`/`UpdateMemberInput`/`MEMBER_COLUMNS` 增加 `aiEnabled`、`aiDailyTokenLimit`、`aiMonthlyTokenLimit`；`updateMemberSchema` 增加 `aiEnabled: z.boolean().optional()`、`aiDailyTokenLimit: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()`、`aiMonthlyTokenLimit` 同理；`updateMember` 一并写入并审计（metadata 只含字段名与新值）。
 - `server.ts` 在迁移成功后 `await bootstrapAiConfig(deps)`，失败只记日志不阻止启动；`AI_FAKE_PROVIDER=1` 时启动日志 `warn` 一次「AI fake provider enabled — never use in production」。
 - 日志脱敏：`LOG_REDACT_PATHS` 增加 `req.body.apiKey`、`apiKey`、`*.apiKey`、`*.*.apiKey`。
 - `.env.example` 增加上述变量与安全说明；`docker-compose.yml` 的 server 环境透传 `AI_CONFIG_SECRET`、`AI_FAKE_PROVIDER`、`AI_API_KEY`、`AI_BASE_URL`、`AI_CHAT_MODEL`、`AI_REASONER_MODEL`、`AI_CONTEXT_TOKEN_BUDGET`、`AI_REQUEST_TIMEOUT_MS`，默认值保持关闭。
 - `buildTestConfig` 深合并 `ai`：签名改为 `export type TestConfigOverrides = Partial<Omit<AppConfig, 's3' | 'ai'>> & { s3?: Partial<AppConfig['s3']>; ai?: Partial<AppConfig['ai']> };`，测试默认 `{ fakeProvider: false, configSecret: 'test-ai-config-secret-at-least-32-chars', contextTokenBudget: 8000, requestTimeoutMs: 60000, bootstrap: null }`。
 
-- [ ] **Step 1: 写失败测试（加密与管理员）**
+- [x] **Step 1: 写失败测试（加密与管理员）**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -609,6 +610,24 @@ it('never returns the API key from the admin API and audits changes', async () =
   expect(after.json()).toMatchObject({ configured: false });
 });
 
+it('lets an administrator adjust a member AI quota and switch', async () => {
+  await resetDb();
+  const { app } = await createTestApp();
+  const admin = await seedUser('admin');
+  const member = await seedUser('member');
+  const headers = await authHeader(admin);
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: `/api/admin/members/${member.id}`,
+    headers,
+    payload: { aiEnabled: false, aiDailyTokenLimit: 500, aiMonthlyTokenLimit: 5000 },
+  });
+  expect(patched.statusCode).toBe(200);
+  expect(patched.json()).toMatchObject({
+    aiEnabled: false, aiDailyTokenLimit: 500, aiMonthlyTokenLimit: 5000,
+  });
+});
+
 it('rejects non-admin config access and unsafe base URLs', async () => {
   await resetDb();
   const { app } = await createTestApp();
@@ -627,21 +646,21 @@ it('rejects non-admin config access and unsafe base URLs', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-crypto ai-admin`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 实现加密、配置服务与管理员路由，并接入启动**
+- [x] **Step 3: 实现加密、配置服务与管理员路由，并接入启动**
 
 同时把 `AppDeps` 加 `aiClientFactory: (config: AiRuntimeConfig) => AiClient`（本任务先用 `createUnavailableAiClientFactory()`，它返回的客户端 `streamChat` 抛 `AiUpstreamError('AI client is not configured', { retryable: false })`；Task 5 实现真实/假客户端，Task 8 替换为运行时工厂）。`runtime.ts` 与 `buildTestDeps` 都提供该字段，避免后续任务反复改签名。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-crypto ai-admin config`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/config.ts apps/server/src/app.ts apps/server/src/server.ts apps/server/src/runtime.ts apps/server/src/ai apps/server/test/helpers.ts apps/server/test/ai-crypto.test.ts apps/server/test/ai-admin.test.ts apps/server/test/config.test.ts .env.example docker-compose.yml
@@ -730,7 +749,7 @@ export function assemblePrompt(input: AssemblePromptInput): AssembledPrompt;
 - 裁剪：所选上下文先 `trimAroundSelection(..., selectedText ?? '', 20000)`，再 `trimToTokenBudget(..., contextTokenBudget ?? AI_CONTEXT_TOKEN_BUDGET)`；`truncated` 为任一截断的或。历史消息内容也各自 `trimToTokenBudget` 到剩余历史预算。
 - `promptTokens = estimateMessagesTokens(messages)`；`contextChars` 是实际放进消息的上下文与选中文字字符数之和。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -832,21 +851,21 @@ it('renders a stable prompt version and locator labels', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-context`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 实现 `prompts.ts` 与 `context.ts`**
+- [x] **Step 3: 实现 `prompts.ts` 与 `context.ts`**
 
 不要在日志里打印 `assemblePrompt` 的输入或输出。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-context`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/ai/prompts.ts apps/server/src/ai/context.ts apps/server/test/ai-context.test.ts
@@ -900,7 +919,7 @@ export class FakeAiClient implements AiClient {
 - `FakeAiClient`：默认回复 `【模拟 AI 回答】已收到上下文，这是本地假提供方返回的流式内容。`；按 `chunkSize`（默认 8 字符）切片，每片之间 `await delay(delayMs ?? 5)`；最后发 `usage`，值为按字符数估算的 `{ promptTokens: ceil(所有消息字符/2), completionTokens: ceil(reply.length/2) }`；`failAfter` 到达后抛 `AiUpstreamError('Fake AI failure', { retryable: true })`。`lastRequest` 记录最近一次请求，测试用它断言上下文确实进入提示词。
 - `AI_FAKE_PROVIDER=1` 时工厂返回 `FakeAiClient`；否则返回 `new OpenAiCompatibleClient(config.baseUrl, config.apiKey, { timeoutMs: deps.config.ai.requestTimeoutMs })`。工厂的签名由 Task 3 定为 `aiClientFactory: (config: AiRuntimeConfig) => AiClient`，本任务实现两类客户端，Task 8 替换运行时的占位工厂。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { createServer } from 'node:http';
@@ -1021,21 +1040,21 @@ it('fakes deterministic chunks, usage and failures', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-gateway`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 实现 `gateway.ts` 与 `fake.ts`**
+- [x] **Step 3: 实现 `gateway.ts` 与 `fake.ts`**
 
 读取响应体使用 `response.body.getReader()` + `TextDecoder`；不要在异常消息里拼接响应体。测试中的 `serveSse` 只用于本地，不引入新依赖。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-gateway`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/ai/gateway.ts apps/server/src/ai/fake.ts apps/server/test/ai-gateway.test.ts
@@ -1102,7 +1121,7 @@ export async function releaseQuota(
 - `readQuota`：读用户当前 day/month 行；没有行则 `used=0, reserved=0`；`limit` 来自入参。
 - 数值一律过 `Number(...)` 并 `Math.max(0, ...)`；不得出现负数。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { expect, it } from 'vitest';
@@ -1183,21 +1202,21 @@ it('keeps reserved and used non-negative and releases a failed request', async (
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-quota`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 实现 `quota.ts`**
+- [x] **Step 3: 实现 `quota.ts`**
 
 `pg_advisory_xact_lock` 的 key 用 `hashtext('ai-quota:' || userId)`；事务内一次拿到锁，避免两个请求都看到同样的剩余额度。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-quota`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/ai/quota.ts apps/server/test/ai-quota.test.ts
@@ -1266,7 +1285,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AppDeps): void;
 - DTO 时间统一 `toISOString()`；`role/status/action` 原样透出；`messageCount` 用 `Number(...)`。
 - 删除线程是硬删除（消息 `ON DELETE CASCADE`）；P6 若需要历史再改为墓碑。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { eq } from 'drizzle-orm';
@@ -1367,21 +1386,21 @@ it('refuses threads for a book that is gone', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-threads`
 Expected: FAIL（路由不存在）
 
-- [ ] **Step 3: 实现仓储、服务与路由，并在 `app.ts` 注册**
+- [x] **Step 3: 实现仓储、服务与路由，并在 `app.ts` 注册**
 
 `listMessageRows` 先按 `created_at DESC, id DESC` 取 200 条再反转，保证返回最旧的 200 条且顺序稳定。`getThreadDetail` 的 `thread` DTO 的 `messageCount` 与消息条数一致。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-threads`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/ai/repo.ts apps/server/src/ai/service.ts apps/server/src/ai/routes.ts apps/server/src/app.ts apps/server/test/ai-threads.test.ts
@@ -1474,7 +1493,7 @@ app.post('/api/books/:id/ai/chat', { preHandler: requireAuth, bodyLimit: 1_048_5
 - **测试依赖**：`buildTestDeps(overrides, extra)` 与 `createTestApp(overrides, options, extra)` 接受 `extra.aiClientFactory`；默认工厂返回 `new FakeAiClient({ chunkSize: 4, delayMs: 0 })`。测试可注入捕获实例。
 - **日志**：只记录 `{ userId, threadId, action, promptTokens, completionTokens, aborted, errorName }`，绝不记录消息内容。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { setTimeout as delay } from 'node:timers/promises';
@@ -1698,21 +1717,21 @@ it('reports an upstream failure and keeps the partial answer', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/server test -- ai-chat`
 Expected: FAIL（`prepareChat` 不存在）
 
-- [ ] **Step 3: 实现 `chat.ts`、路由与运行时工厂**
+- [x] **Step 3: 实现 `chat.ts`、路由与运行时工厂**
 
 SSE 写入失败（客户端断开）只能触发 abort；`finally` 必须尝试 `raw.end()`，但不得在已断开时抛错。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/server test -- ai-chat`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/server/src/ai/chat.ts apps/server/src/ai/routes.ts apps/server/src/runtime.ts apps/server/src/app.ts apps/server/test/helpers.ts apps/server/test/ai-chat.test.ts
@@ -1783,7 +1802,7 @@ export function reflowChapterText(
   - 所有实现都接受 `maxChars ?? DEFAULT_CONTEXT_MAX_CHARS`，并返回 `truncated`。
 - `fake-engine.ts` 增加 `getTextContext: vi.fn(async (scope) => ({ scope, text: scope === 'page' ? '模拟本页正文' : '模拟本章正文', label: scope === 'page' ? '第 2 页' : '第一章', truncated: false }))`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import type { ReflowPack } from '@bookr/shared';
@@ -1931,21 +1950,21 @@ it('returns page and chapter text for the AI companion', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/reader-core test`
 Expected: FAIL（`getTextContext` 未定义）
 
-- [ ] **Step 3: 实现 `text-context.ts` 与三个引擎**
+- [x] **Step 3: 实现 `text-context.ts` 与三个引擎**
 
 PDF 的 outline 页码映射复用 `TocItem.locator`；若 toc 项不是 pdf locator 则跳过。EPUB 的 `renditionContents` 已有私有方法，直接复用。所有读取失败（页面未加载、文档已销毁）都返回空文本，不向 UI 抛错。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/reader-core test`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add packages/reader-core/src apps/web/src/features/reader/__tests__/fake-engine.ts
@@ -1956,7 +1975,7 @@ git commit -m "feat(reader-core): expose page and chapter text for AI context"
 ### Task 10: Web API 客户端与 SSE 解析
 
 **Files:**
-- Modify: `apps/web/src/api/client.ts`
+- Modify: `apps/web/src/api/client.ts`、`apps/web/src/lib/errorMessages.ts`
 - Create: `apps/web/src/api/ai.ts`、`apps/web/src/features/reader/ai/stream.ts`
 - Test: `apps/web/src/api/__tests__/ai.test.ts`、`apps/web/src/features/reader/ai/__tests__/stream.test.ts`
 
@@ -2010,7 +2029,7 @@ export async function streamAiChat(
   - 收到 `error` 帧调用 `onError` 后正常返回（不再抛）；流结束前既没有 `done` 也没有 `error` 时抛 `AiStreamProtocolError('AI 流意外结束')`。
   - AbortSignal 中止时让 `AbortError` 原样抛出，调用方据此区分「用户点停止」。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 import { afterEach, expect, it, vi } from 'vitest';
@@ -2121,24 +2140,24 @@ it('turns a pre-stream HTTP failure into an ApiError', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/web test -- ai.test stream.test`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 实现 `authorizedFetch`、SSE 解析与 API 封装**
+- [x] **Step 3: 实现 `authorizedFetch`、SSE 解析与 API 封装，并补齐 `errorMessages.ts` 的五个 AI 错误码文案**
 
 `authorizedFetch` 与 `apiFetch` 共用 401 处理，改动后必须跑现有 `api/__tests__/client.test.ts`，确认刷新/登出行为不变。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/web test -- ai.test stream.test client.test`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
-git add apps/web/src/api/client.ts apps/web/src/api/ai.ts apps/web/src/api/__tests__/ai.test.ts apps/web/src/features/reader/ai/stream.ts apps/web/src/features/reader/ai/__tests__/stream.test.ts
+git add apps/web/src/api/client.ts apps/web/src/lib/errorMessages.ts apps/web/src/api/ai.ts apps/web/src/api/__tests__/ai.test.ts apps/web/src/features/reader/ai/stream.ts apps/web/src/features/reader/ai/__tests__/stream.test.ts
 git commit -m "feat(web): add the AI API client and SSE parser"
 ```
 
@@ -2235,7 +2254,7 @@ export function AiPanel(props: AiPanelProps): JSX.Element;
   - 空状态：「选中一段文字点「解释」，或总结本页/本章」。
 - CSS 追加到 `reader.css` 的「AI 面板」段：沿用 `.reader-panel` 的纸色/边框/阴影变量；`.ai-messages` 可滚动、`overflow-wrap: anywhere`；引用块左边框用 `var(--reader-accent)`；移动端宽度 `min(360px, 100vw)`。
 
-- [ ] **Step 1: 写失败测试（hook）**
+- [x] **Step 1: 写失败测试（hook）**
 
 ```tsx
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -2403,7 +2422,7 @@ it('reports offline and aborts a running stream on stop', async () => {
 });
 ```
 
-- [ ] **Step 2: 写失败测试（面板）**
+- [x] **Step 2: 写失败测试（面板）**
 
 ```tsx
 import { render, screen, within } from '@testing-library/react';
@@ -2469,21 +2488,21 @@ it('offers summaries and explains disabled states', async () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/web test -- use-ai-chat ai-panel`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 4: 实现 hook、组件与样式**
+- [x] **Step 4: 实现 hook、组件与样式**
 
 hook 中的临时消息 id 用 `temp-${Date.now()}-${Math.random()}`；服务端 `meta` 到达后替换。所有刷新失败不得清空已有消息。
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x] **Step 5: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/web test -- use-ai-chat ai-panel`
 Expected: PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add apps/web/src/features/reader/ai apps/web/src/features/reader/reader.css
@@ -2547,7 +2566,7 @@ export interface ReaderPageProps {
   - 有 `pendingSelection` 时在输入框上方显示引用块与「移除」按钮；提交文本后调用 `controller.ask(text, pendingSelection)`，成功才调用 `onClearPending`；关闭面板不丢 pendingSelection。
   - 解释/总结按钮触发的流即时显示；面板关闭再打开时仍能看到当前消息（来自页面级 hook）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```tsx
 import { screen, waitFor } from '@testing-library/react';
@@ -2669,21 +2688,21 @@ it('shows the offline notice when the network drops', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/web test -- reader-ai`
 Expected: FAIL（按钮/面板不存在）
 
-- [ ] **Step 3: 实现菜单、快捷键、面板接入与在线状态**
+- [x] **Step 3: 实现菜单、快捷键、面板接入与在线状态**
 
 `useAiChat` 增加 `bookId` 为空时跳过加载（测试与路由保护）；`SelectionMenu` 的「解释/提问」按钮沿用 `.reader-selection-action` 样式，不新增 CSS 依赖。`test/setup.ts` 补默认处理器：`GET /api/ai/usage` 返回 `enabled: true, configured: true` 的零用量，`GET /api/books/:id/ai/threads` 返回 `{ items: [] }`，否则既有 ReaderPage 测试会因 hook 的请求触发 MSW `onUnhandledRequest: 'error'`。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/web test -- reader-ai reader-controls reader-page reader-annotations`
 Expected: PASS（既有阅读测试不回归）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/src/features/reader apps/web/src/features/reader/__tests__/reader-ai.test.tsx apps/web/src/features/reader/__tests__/reader-controls.test.tsx
@@ -2726,7 +2745,7 @@ export interface AuthContextValue {
   - `GET /api/ai/usage` → `{ enabled: true, configured: true, fakeProvider: false, model: 'deepseek-chat', daily: { used: 1000, reserved: 0, limit: 100000 }, monthly: { used: 5000, reserved: 0, limit: 1000000 } }`
   - `PATCH /api/me/ai` → 读取 body 返回 `{ enabled }`。
 
-- [ ] **Step 1: 写失败测试（追加到 `settings.test.tsx`）**
+- [x] **Step 1: 写失败测试（追加到 `settings.test.tsx`）**
 
 ```tsx
 it('shows AI usage, the privacy note and saves the AI toggle', async () => {
@@ -2785,21 +2804,21 @@ it('explains when AI is not configured', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pnpm --filter @bookr/web test -- settings`
 Expected: FAIL（AI 区不存在）
 
-- [ ] **Step 3: 实现 `refreshUser` 与设置区，补默认 MSW 处理器**
+- [x] **Step 3: 实现 `refreshUser` 与设置区，补默认 MSW 处理器**
 
 开关只在服务端成功后才反映新值；失败时保持旧值并显示错误，避免界面与服务器不一致。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pnpm --filter @bookr/web test -- settings auth`
 Expected: PASS（既有设置/登录测试不回归）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/src/app/auth.tsx apps/web/src/features/settings/SettingsPage.tsx apps/web/src/features/settings/__tests__/settings.test.tsx apps/web/test/setup.ts
@@ -2820,7 +2839,7 @@ git commit -m "feat(web): expose the AI toggle, usage and privacy note in settin
 - Consumes: 现有 `adminAuth`/`registerFreshReader`/`uploadAndRename`/`openBook`/`readerAuth`/`revealChrome`/`deleteE2EBooks`；Task 12 的 UI 文案
 - Produces: 5 个验收场景
 
-- [ ] **Step 1: 写 E2E**
+- [x] **Step 1: 写 E2E**
 
 ```ts
 import { expect, test } from '@playwright/test';
@@ -2943,17 +2962,17 @@ test('honours the settings toggle', async ({ page, request }) => {
 });
 ```
 
-- [ ] **Step 2: 运行 E2E（仅本机 Compose，且已设 `AI_FAKE_PROVIDER=1`）**
+- [x] **Step 2: 运行 E2E（仅本机 Compose，且已设 `AI_FAKE_PROVIDER=1`）**
 
 Run: `docker compose up -d --build server web && pnpm --filter @bookr/web e2e -- ai.spec.ts`
 Expected: 4 passed（解释+追问算一个测试）
 
-- [ ] **Step 3: 全量回归**
+- [x] **Step 3: 全量回归**
 
 Run: `pnpm --filter @bookr/web e2e`
 Expected: 13 passed（原 9 + AI 4），无重试
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add apps/web/e2e/ai.spec.ts apps/web/e2e/helpers.ts apps/web/e2e/sync.spec.ts apps/web/e2e/global-setup.ts
@@ -2979,9 +2998,9 @@ git commit -m "test(e2e): cover AI explain, follow-up, summary, offline and opt-
 - 路线图：05 行改为「已交付」，计划文件列表加入 `2026-10-18-05-ai-companion.md`（状态「已交付」）。
 - 本计划：把已完成任务的 checkbox 勾上；在文件末尾追加「交付记录」，写明最终 HEAD、测试数量、E2E 结果与未覆盖事项（由执行者在验证后填写）。
 
-- [ ] **Step 1: 更新 README 与路线图**
-- [ ] **Step 2: 勾选本计划并填写交付记录（数字取自最终验证）**
-- [ ] **Step 3: 提交**
+- [x] **Step 1: 更新 README 与路线图**
+- [x] **Step 2: 勾选本计划并填写交付记录（数字取自最终验证）**
+- [x] **Step 3: 提交**
 
 ```bash
 git add README.md .env.example docs/superpowers/plans
@@ -2996,3 +3015,13 @@ git commit -m "docs: document the AI companion deployment and privacy model"
 - AI 线程/消息不进入 P4 同步日志：它们是服务端权威且只能在线产生；跨设备通过 REST 读取。P6 若需要离线查看再扩展同步实体。
 - 类型一致性：`AiChatRequest`/`AiThreadDto`/`AiMessageDto`/`AiUsageDto`/`AiStream*` 全部来自 `@bookr/shared`；`AiClient`/`AiRuntimeConfig`/`QuotaSnapshot` 只在服务端内部；Web 侧 `AiApi` 注入与生产 API 同名。
 - Review Focus 的每条都有对应测试：Key/正文不泄漏（Task 3、8）、配额并发（Task 6）、客户端断开（Task 8）、上下文真实性（Task 4、8、12）、失败可恢复（Task 8、11）。
+
+---
+
+## 交付记录
+
+- 分支：`feature/p5-ai-companion`，基线 `39fc029`（main）。
+- 最终验证：`pnpm exec turbo run typecheck test --force` 12/12 通过；Server 270、Web 325、Reader-core 149、Shared 44；Python 工具测试沿用 P3。
+- E2E：13/13 通过（原有 9 + AI 4），无重试；覆盖解释+追问线程、总结本页、离线提示、设置开关。
+- 关键实现：服务端 AES-256-GCM 加密 Key、管理员配置 API、OpenAI 兼容 SSE 网关、8k token 上下文预算、按用户时区日/月配额预占与结算、线程/消息持久化与中断状态；Web 端选中菜单、AI 面板、流式渲染、乐观开关、断线恢复。
+- 已知边界：EPUB 的「本页」按当前章节处理；扫描版无文字层时解释明确说明材料不足；AI 线程/消息不进入 P4 同步日志；用户主动停止按已发生的提示词 token 计费；多 iframe EPUB 的当前 section 选择按第一个已渲染 contents。
