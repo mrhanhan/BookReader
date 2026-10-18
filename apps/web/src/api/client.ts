@@ -186,6 +186,8 @@ export async function authorizedFetch(path: string, init?: RequestInit): Promise
         // reading must survive a transport failure or a server fault; the next
         // request retries the refresh.
         if (isNetworkError(error)) throw error;
+        // A caller-initiated abort is not a session problem; keep it intact.
+        if (error instanceof DOMException && error.name === 'AbortError') throw error;
         if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
           endSession();
           throw error;

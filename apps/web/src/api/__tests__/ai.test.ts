@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { AiStreamProtocolError } from '../../features/reader/ai/stream';
 import { setTokens } from '../client';
 import { streamAiChat } from '../ai';
 
@@ -72,4 +73,55 @@ it('turns a pre-stream HTTP failure into an ApiError', async () => {
   await expect(streamAiChat('book-1', { action: 'ask', question: '为什么？' }, {
     onMeta: vi.fn(), onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
   })).rejects.toMatchObject({ status: 429, code: 'AI_QUOTA_EXCEEDED' });
+});
+
+it('rethrows AbortError when the caller stops the stream', async () => {
+  setTokens(tokens);
+  const controller = new AbortController();
+  controller.abort();
+  const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+    start(streamController) {
+      streamController.error(new DOMException('The operation was aborted.', 'AbortError'));
+    },
+  })));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(streamAiChat('book-1', { action: 'ask', question: '为什么？' }, {
+    onMeta: vi.fn(), onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+  }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/books/book-1/ai/chat',
+    expect.objectContaining({ signal: controller.signal }),
+  );
+});
+
+it('rejects when the stream ends without done or error', async () => {
+  setTokens(tokens);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(streamOf([
+    'event: meta\ndata: {"threadId":"t1","userMessageId":"u1","assistantMessageId":"a1",',
+    '"action":"ask","model":"deepseek-chat","promptVersion":"p5.1"}\n\n',
+    'event: delta\ndata: {"text":"半句"}\n\n',
+  ]), { status: 200 })));
+  const handlers = {
+    onMeta: vi.fn(), onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+  };
+
+  await expect(
+    streamAiChat('book-1', { action: 'ask', question: '为什么？' }, handlers),
+  ).rejects.toThrow(AiStreamProtocolError);
+  expect(handlers.onDelta).toHaveBeenCalledWith('半句');
+  expect(handlers.onDone).not.toHaveBeenCalled();
+  expect(handlers.onError).not.toHaveBeenCalled();
+});
+
+it('rejects a frame whose data is not valid JSON', async () => {
+  setTokens(tokens);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(streamOf([
+    'event: delta\ndata: not-json\n\n',
+  ]), { status: 200 })));
+
+  await expect(streamAiChat('book-1', { action: 'ask', question: '为什么？' }, {
+    onMeta: vi.fn(), onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+  })).rejects.toThrow(AiStreamProtocolError);
 });

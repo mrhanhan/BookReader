@@ -39,3 +39,19 @@ it('reads a byte stream incrementally and dispatches its frames', async () => {
   await readSseStream(streamOf(['event: delta\ndata: {"text":"你', '好"}\n\n']), (frame) => frames.push(frame));
   expect(frames).toEqual([{ event: 'delta', data: '{"text":"你好"}' }]);
 });
+
+it('defaults the event name to message and ignores id/retry fields', () => {
+  const frames: SseFrame[] = [];
+  const parser = createSseParser((frame) => frames.push(frame));
+  parser.push('id: 42\nretry: 1000\ndata: hello\n\n');
+  parser.flush();
+  expect(frames).toEqual([{ event: 'message', data: 'hello' }]);
+});
+
+it('does not dispatch frames without a data line', () => {
+  const frames: SseFrame[] = [];
+  const parser = createSseParser((frame) => frames.push(frame));
+  parser.push('event: ping\n\ndata: kept\n\n');
+  parser.flush();
+  expect(frames).toEqual([{ event: 'message', data: 'kept' }]);
+});

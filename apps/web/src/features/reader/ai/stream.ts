@@ -30,20 +30,15 @@ export function createSseParser(onFrame: (frame: SseFrame) => void): {
   let dataLines: string[] = [];
 
   function dispatch(): void {
-    const hasEvent = eventName !== null;
     const hasData = dataLines.length > 0;
-    if (hasEvent || hasData) {
-      const frame: SseFrame = {
-        event: eventName ?? 'message',
-        data: dataLines.join('\n'),
-      };
-      eventName = null;
-      dataLines = [];
-      onFrame(frame);
-      return;
-    }
+    const frame: SseFrame = {
+      event: eventName || 'message',
+      data: dataLines.join('\n'),
+    };
     eventName = null;
     dataLines = [];
+    // A frame without a data line carries nothing the AI protocol can use.
+    if (hasData) onFrame(frame);
   }
 
   function handleLine(line: string): void {
@@ -104,6 +99,10 @@ export async function readSseStream(
     }
     parser.push(decoder.decode());
     parser.flush();
+  } catch (error) {
+    // Stop pulling bytes once a parser or handler failure abandons the stream.
+    void reader.cancel().catch(() => undefined);
+    throw error;
   } finally {
     reader.releaseLock();
   }
