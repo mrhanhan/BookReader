@@ -1,8 +1,11 @@
 import '@testing-library/jest-dom/vitest';
 import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES } from '@bookr/shared';
 import type {
+  AnnotationColor,
+  AnnotationDto,
   AuthTokens,
   BookDto,
+  BookmarkDto,
   BookStatus,
   CategoryDto,
   Locator,
@@ -191,6 +194,10 @@ function createFixtureState() {
     trash: [trashed] as BookDto[],
     members,
     invites,
+    // Reader annotations and bookmarks start empty so Task 10's reader tests
+    // keep seeing empty lists until a test seeds or creates its own.
+    annotations: [] as AnnotationDto[],
+    bookmarks: [] as BookmarkDto[],
   };
 }
 
@@ -349,6 +356,108 @@ export const handlers = [
       },
     });
   }),
+
+  // Reader annotations: the fixture array mutates like the server tables.
+  http.get('/api/books/:id/annotations', ({ params }) =>
+    HttpResponse.json({
+      items: fixtures.annotations.filter((item) => item.bookId === params.id),
+    }),
+  ),
+  http.post('/api/books/:id/annotations', async ({ params, request }) => {
+    const input = (await request.json()) as {
+      type?: 'highlight' | 'note';
+      color?: AnnotationColor;
+      locator?: Locator;
+      selectedText?: string;
+      noteText?: string | null;
+      tags?: string[];
+    };
+    const now = new Date().toISOString();
+    const created: AnnotationDto = {
+      id: `annotation-${fixtures.annotations.length + 1}`,
+      bookId: String(params.id),
+      type: input.type ?? 'highlight',
+      color: input.color ?? 'yellow',
+      locator: input.locator as Locator,
+      selectedText: input.selectedText ?? '',
+      noteText: input.noteText ?? null,
+      tags: input.tags ?? [],
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    fixtures.annotations.unshift(created);
+    return HttpResponse.json({ annotation: created }, { status: 201 });
+  }),
+  http.patch('/api/books/:id/annotations/:annotationId', async ({ params, request }) => {
+    const input = (await request.json()) as {
+      revision?: number;
+      color?: AnnotationColor;
+      noteText?: string | null;
+      tags?: string[];
+    };
+    const found = fixtures.annotations.find(
+      (item) => item.id === params.annotationId && item.bookId === params.id,
+    );
+    if (!found) return error(404, 'NOT_FOUND', 'Annotation not found');
+
+    const conflict = input.revision !== undefined && input.revision !== found.revision;
+    if (input.color !== undefined) found.color = input.color;
+    if (input.noteText !== undefined) found.noteText = input.noteText;
+    if (input.tags !== undefined) found.tags = input.tags;
+    found.revision += 1;
+    found.updatedAt = new Date().toISOString();
+    return HttpResponse.json({ annotation: { ...found }, conflict });
+  }),
+  http.delete('/api/books/:id/annotations/:annotationId', ({ params }) => {
+    const index = fixtures.annotations.findIndex(
+      (item) => item.id === params.annotationId && item.bookId === params.id,
+    );
+    if (index === -1) return error(404, 'NOT_FOUND', 'Annotation not found');
+    fixtures.annotations.splice(index, 1);
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  // Reader bookmarks: same pattern, with an optional label.
+  http.get('/api/books/:id/bookmarks', ({ params }) =>
+    HttpResponse.json({
+      items: fixtures.bookmarks.filter((item) => item.bookId === params.id),
+    }),
+  ),
+  http.post('/api/books/:id/bookmarks', async ({ params, request }) => {
+    const input = (await request.json()) as { locator?: Locator; label?: string | null };
+    const now = new Date().toISOString();
+    const created: BookmarkDto = {
+      id: `bookmark-${fixtures.bookmarks.length + 1}`,
+      bookId: String(params.id),
+      locator: input.locator as Locator,
+      label: input.label ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    fixtures.bookmarks.unshift(created);
+    return HttpResponse.json({ bookmark: created }, { status: 201 });
+  }),
+  http.patch('/api/books/:id/bookmarks/:bookmarkId', async ({ params, request }) => {
+    const input = (await request.json()) as { label?: string | null };
+    const found = fixtures.bookmarks.find(
+      (item) => item.id === params.bookmarkId && item.bookId === params.id,
+    );
+    if (!found) return error(404, 'NOT_FOUND', 'Bookmark not found');
+
+    found.label = input.label ?? null;
+    found.updatedAt = new Date().toISOString();
+    return HttpResponse.json({ bookmark: { ...found } });
+  }),
+  http.delete('/api/books/:id/bookmarks/:bookmarkId', ({ params }) => {
+    const index = fixtures.bookmarks.findIndex(
+      (item) => item.id === params.bookmarkId && item.bookId === params.id,
+    );
+    if (index === -1) return error(404, 'NOT_FOUND', 'Bookmark not found');
+    fixtures.bookmarks.splice(index, 1);
+    return new HttpResponse(null, { status: 204 });
+  }),
+
   http.post('/api/books/:id/cover', async ({ params, request }) => {
     const found = fixtures.shelf.find((item) => item.id === params.id);
     if (!found) return error(404, 'NOT_FOUND', 'Book not found');

@@ -5,7 +5,7 @@ import { Link } from 'react-router';
 import { SAVE_STATE_LABELS } from './useReaderProgress';
 import type { ReaderSaveState } from './useReaderProgress';
 
-export type ReaderPanelName = 'toc' | 'settings';
+export type ReaderPanelName = 'toc' | 'settings' | 'annotations' | 'bookmarks';
 
 export interface ReaderChromeProps {
   book: BookDto;
@@ -96,10 +96,18 @@ export function ReaderChrome({
           >
             目录
           </button>
-          <button type="button" disabled onClick={onBookmark}>
+          <button
+            type="button"
+            aria-pressed={activePanel === 'bookmarks'}
+            onClick={onBookmark}
+          >
             书签
           </button>
-          <button type="button" disabled onClick={onNotes}>
+          <button
+            type="button"
+            aria-pressed={activePanel === 'annotations'}
+            onClick={onNotes}
+          >
             笔记
           </button>
           <button

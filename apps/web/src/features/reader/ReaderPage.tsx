@@ -1,21 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Link, useParams } from 'react-router';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { readerKindForFormat } from '@bookr/shared';
-import type { Locator, ReaderKind } from '@bookr/shared';
+import type {
+  AnnotationColor,
+  AnnotationDto,
+  BookmarkDto,
+  Locator,
+  ReaderKind,
+} from '@bookr/shared';
 import { createReaderEngine, mergeReaderSettings, percentForPage } from '@bookr/reader-core';
 import type {
   OpenReaderOptions,
   ReaderDocumentInfo,
   ReaderEngine,
+  ReaderHighlight,
+  ReaderSelection,
   ReaderSettings,
   TocItem,
 } from '@bookr/reader-core';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ApiError } from '../../api/client';
 import { useBook } from '../../api/books';
-import { fetchProgress, fetchReaderFile } from '../../api/reading';
+import {
+  annotationsQueryKey,
+  bookmarksQueryKey,
+  createAnnotation,
+  deleteAnnotation,
+  deleteBookmark,
+  fetchAnnotations,
+  fetchBookmarks,
+  fetchProgress,
+  fetchReaderFile,
+} from '../../api/reading';
 import type { ReaderFileInfo } from '../../api/reading';
+import { messageForApiError } from '../../lib/errorMessages';
+import { Toast } from '../bookshelf/Toast';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
 import { readLocalProgress, resolveInitialLocator } from './progressStore';
 import { isInteractiveTarget } from './interactions';
@@ -25,6 +46,11 @@ import { ReaderChrome } from './ReaderChrome';
 import type { ReaderPanelName } from './ReaderChrome';
 import { TocPanel } from './TocPanel';
 import { SettingsPanel } from './SettingsPanel';
+import { SelectionMenu } from './SelectionMenu';
+import { AnnotationDialog } from './AnnotationDialog';
+import { AnnotationsPanel } from './AnnotationsPanel';
+import { BookmarkDialog } from './BookmarkDialog';
+import { BookmarksPanel } from './BookmarksPanel';
 import './reader.css';
 
 const LOADING_MESSAGE = '正在展开书页…';
@@ -95,6 +121,54 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * Writes text to the clipboard. The async Clipboard API is unavailable in some
+ * hosts, so a hidden textarea plus `execCommand('copy')` is the fallback.
+ */
+async function copyText(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Permission or feature policy refused; try the legacy path.
+  }
+
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.top = '-1000px';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand?.('copy');
+    area.remove();
+  } catch {
+    // Copying is best-effort; the selection stays untouched.
+  }
+}
+
+/** Projects annotations onto the engine's highlight layer. */
+function toHighlights(annotations: AnnotationDto[]): ReaderHighlight[] {
+  return annotations.map(({ id, locator, color, noteText }) => ({
+    id,
+    locator,
+    color,
+    hasNote: Boolean(noteText),
+  }));
+}
+
+type AnnotationDialogState =
+  | { mode: 'create'; locator: Locator; selectedText: string; color: AnnotationColor }
+  | { mode: 'edit'; annotation: AnnotationDto };
+
+type BookmarkDialogState =
+  | { mode: 'create'; locator: Locator }
+  | { mode: 'edit'; bookmark: BookmarkDto };
+
 function ReaderScreen({ message, busy = false }: { message: string; busy?: boolean }) {
   return (
     <div className="reader-root" data-reader-theme="paper">
@@ -155,6 +229,30 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const [documentInfo, setDocumentInfo] = useState<ReaderDocumentInfo | null>(null);
   const [currentLocator, setCurrentLocator] = useState<Locator | null>(null);
   const [panel, setPanel] = useState<ReaderPanelName | null>(null);
+  const [selection, setSelection] = useState<ReaderSelection | null>(null);
+  const [annotationDialog, setAnnotationDialog] = useState<AnnotationDialogState | null>(null);
+  const [bookmarkDialog, setBookmarkDialog] = useState<BookmarkDialogState | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const queryClient = useQueryClient();
+  const annotationsQuery = useQuery({
+    queryKey: annotationsQueryKey(bookId ?? ''),
+    queryFn: () => fetchAnnotations(bookId ?? ''),
+    enabled: bookId !== null && status === 'ready',
+  });
+  const bookmarksQuery = useQuery({
+    queryKey: bookmarksQueryKey(bookId ?? ''),
+    queryFn: () => fetchBookmarks(bookId ?? ''),
+    enabled: bookId !== null && status === 'ready',
+  });
+  const annotations = annotationsQuery.data;
+  const bookmarks = bookmarksQuery.data;
+
+  const currentLocatorRef = useRef<Locator | null>(null);
+  currentLocatorRef.current = currentLocator;
+
+  const showToast = useCallback((message: string) => setToast(message), []);
+  const dismissToast = useCallback(() => setToast(null), []);
 
   const contentRef = useRef<HTMLDivElement | null>(null);
   const readyRef = useRef(false);
@@ -168,6 +266,10 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     setDocumentInfo(null);
     setCurrentLocator(null);
     setPanel(null);
+    setSelection(null);
+    setAnnotationDialog(null);
+    setBookmarkDialog(null);
+    setToast(null);
     readyRef.current = false;
   }, [bookId]);
 
@@ -377,6 +479,218 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     [engine],
   );
 
+  // ---- highlights, notes and bookmarks -----------------------------------
+
+  // The engine owns the visual layer; React only projects the cached items.
+  useEffect(() => {
+    if (!engine || !annotations) return;
+    engine.setHighlights(toHighlights(annotations));
+  }, [engine, annotations]);
+
+  useEffect(() => {
+    if (!engine) return;
+    return engine.on('selection', (payload) => setSelection(payload));
+  }, [engine]);
+
+  useEffect(() => {
+    if (!engine || !bookId) return;
+    return engine.on('highlightClick', ({ id }) => {
+      const list =
+        queryClient.getQueryData<AnnotationDto[]>(annotationsQueryKey(bookId)) ?? [];
+      const found = list.find((annotation) => annotation.id === id);
+      if (found) setAnnotationDialog({ mode: 'edit', annotation: found });
+    });
+  }, [bookId, engine, queryClient]);
+
+  const annotationsError = annotationsQuery.error;
+  useEffect(() => {
+    if (annotationsError) showToast(messageForApiError(annotationsError));
+  }, [annotationsError, showToast]);
+
+  const bookmarksError = bookmarksQuery.error;
+  useEffect(() => {
+    if (bookmarksError) showToast(messageForApiError(bookmarksError));
+  }, [bookmarksError, showToast]);
+
+  /** Applies an annotation change to the cache and mirrors it into the engine. */
+  const applyAnnotations = useCallback(
+    (updater: (items: AnnotationDto[]) => AnnotationDto[]) => {
+      if (!bookId) return;
+      const key = annotationsQueryKey(bookId);
+      const next = updater(queryClient.getQueryData<AnnotationDto[]>(key) ?? []);
+      queryClient.setQueryData(key, next);
+      engine?.setHighlights(toHighlights(next));
+    },
+    [bookId, engine, queryClient],
+  );
+
+  const upsertAnnotation = useCallback(
+    (annotation: AnnotationDto) => {
+      applyAnnotations((items) =>
+        items.some((item) => item.id === annotation.id)
+          ? items.map((item) => (item.id === annotation.id ? annotation : item))
+          : [annotation, ...items],
+      );
+      if (bookId) void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+    },
+    [applyAnnotations, bookId, queryClient],
+  );
+
+  const forgetAnnotation = useCallback(
+    (annotationId: string) => {
+      applyAnnotations((items) => items.filter((item) => item.id !== annotationId));
+      if (bookId) void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+    },
+    [applyAnnotations, bookId, queryClient],
+  );
+
+  const removeAnnotation = useCallback(
+    async (annotation: AnnotationDto) => {
+      if (!bookId) return;
+      // Remove optimistically so the row disappears before the round trip.
+      applyAnnotations((items) => items.filter((item) => item.id !== annotation.id));
+      try {
+        await deleteAnnotation(bookId, annotation.id);
+      } catch (error) {
+        showToast(messageForApiError(error));
+      } finally {
+        void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+      }
+    },
+    [applyAnnotations, bookId, queryClient, showToast],
+  );
+
+  const applyBookmarks = useCallback(
+    (updater: (items: BookmarkDto[]) => BookmarkDto[]) => {
+      if (!bookId) return;
+      const key = bookmarksQueryKey(bookId);
+      queryClient.setQueryData(key, updater(queryClient.getQueryData<BookmarkDto[]>(key) ?? []));
+    },
+    [bookId, queryClient],
+  );
+
+  const upsertBookmark = useCallback(
+    (bookmark: BookmarkDto) => {
+      applyBookmarks((items) =>
+        items.some((item) => item.id === bookmark.id)
+          ? items.map((item) => (item.id === bookmark.id ? bookmark : item))
+          : [bookmark, ...items],
+      );
+      if (bookId) void queryClient.invalidateQueries({ queryKey: bookmarksQueryKey(bookId) });
+    },
+    [applyBookmarks, bookId, queryClient],
+  );
+
+  const removeBookmark = useCallback(
+    async (bookmark: BookmarkDto) => {
+      if (!bookId) return;
+      applyBookmarks((items) => items.filter((item) => item.id !== bookmark.id));
+      try {
+        await deleteBookmark(bookId, bookmark.id);
+      } catch (error) {
+        showToast(messageForApiError(error));
+      } finally {
+        void queryClient.invalidateQueries({ queryKey: bookmarksQueryKey(bookId) });
+      }
+    },
+    [applyBookmarks, bookId, queryClient, showToast],
+  );
+
+  const jumpTo = useCallback(
+    (locator: Locator) => {
+      setPanel(null);
+      if (engine) ignoreRejection(() => engine.goTo(locator, { flash: true }));
+    },
+    [engine],
+  );
+
+  const createHighlight = useCallback(
+    async (color: AnnotationColor) => {
+      if (!selection || !bookId) return;
+      const { locator, text } = selection;
+      setSelection(null);
+      try {
+        const created = await createAnnotation(bookId, {
+          type: 'highlight',
+          color,
+          locator,
+          selectedText: text,
+          tags: [],
+        });
+        upsertAnnotation(created);
+      } catch (error) {
+        showToast(messageForApiError(error));
+      }
+    },
+    [bookId, selection, showToast, upsertAnnotation],
+  );
+
+  const copySelection = useCallback(async () => {
+    const text = selection?.text ?? '';
+    setSelection(null);
+    await copyText(text);
+    showToast('已复制');
+  }, [selection, showToast]);
+
+  const openNoteDialog = useCallback(
+    (color: AnnotationColor) => {
+      if (!selection) return;
+      setAnnotationDialog({
+        mode: 'create',
+        locator: selection.locator,
+        selectedText: selection.text,
+        color,
+      });
+      setSelection(null);
+    },
+    [selection],
+  );
+
+  const openBookmarkDialog = useCallback(() => {
+    let locator: Locator | null = currentLocatorRef.current;
+    if (engine) {
+      try {
+        locator = engine.currentLocator();
+      } catch {
+        // Keep the last relocated position when the engine is not ready.
+      }
+    }
+    if (!locator) {
+      showToast('还没有可用的阅读位置');
+      return;
+    }
+    setSelection(null);
+    setBookmarkDialog({ mode: 'create', locator });
+  }, [engine, showToast]);
+
+  // Outside interactions dismiss the selection menu, but never while a dialog
+  // is open (the dialog's own controls count as outside taps).
+  const dialogOpen = annotationDialog !== null || bookmarkDialog !== null;
+  useEffect(() => {
+    if (!selection || dialogOpen) return;
+
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target as { closest?: (selector: string) => Element | null } | null;
+      if (typeof target?.closest === 'function' && target.closest('.reader-selection-menu')) {
+        return;
+      }
+      setSelection(null);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setSelection(null);
+    };
+    const onScroll = (): void => setSelection(null);
+
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onScroll, true);
+    };
+  }, [selection, dialogOpen]);
+
   const changeSettings = useCallback((next: ReaderSettings) => {
     const merged = mergeReaderSettings(next);
     setSettings(merged);
@@ -429,8 +743,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           break;
         case 'b':
         case 'B':
-          // Bookmarking arrives with the annotation UI; keep the key reserved.
+          event.preventDefault();
           revealChrome();
+          openBookmarkDialog();
           break;
         case 'f':
         case 'F':
@@ -444,7 +759,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           break;
       }
     },
-    [goNext, goPrevious, revealChrome, togglePanel],
+    [goNext, goPrevious, openBookmarkDialog, revealChrome, togglePanel],
   );
 
   useEffect(() => {
@@ -627,6 +942,16 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
             </div>
           ) : null}
 
+          {selection && !dialogOpen ? (
+            <SelectionMenu
+              selection={selection}
+              onHighlight={(color) => void createHighlight(color)}
+              onNote={openNoteDialog}
+              onCopy={() => void copySelection()}
+              onDismiss={() => setSelection(null)}
+            />
+          ) : null}
+
           {status === 'ready' && chromeVisible ? (
             <ReaderChrome
               book={book}
@@ -637,8 +962,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               saveState={saveState}
               activePanel={panel}
               onTogglePanel={togglePanel}
-              onBookmark={() => {}}
-              onNotes={() => {}}
+              onBookmark={() => togglePanel('bookmarks')}
+              onNotes={() => togglePanel('annotations')}
               onFullscreen={toggleFullscreen}
               onPrevious={goPrevious}
               onNext={goNext}
@@ -664,6 +989,73 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               onClose={() => setPanel(null)}
             />
           ) : null}
+
+          {status === 'ready' && panel === 'annotations' ? (
+            <AnnotationsPanel
+              annotations={annotations ?? []}
+              onJump={(annotation) => jumpTo(annotation.locator)}
+              onEdit={(annotation) => setAnnotationDialog({ mode: 'edit', annotation })}
+              onDelete={(annotation) => void removeAnnotation(annotation)}
+              onClose={() => setPanel(null)}
+            />
+          ) : null}
+
+          {status === 'ready' && panel === 'bookmarks' ? (
+            <BookmarksPanel
+              bookmarks={bookmarks ?? []}
+              onAdd={openBookmarkDialog}
+              onJump={(bookmark) => jumpTo(bookmark.locator)}
+              onRename={(bookmark) => setBookmarkDialog({ mode: 'edit', bookmark })}
+              onDelete={(bookmark) => void removeBookmark(bookmark)}
+              onClose={() => setPanel(null)}
+            />
+          ) : null}
+
+          {status === 'ready' && annotationDialog ? (
+            <AnnotationDialog
+              key={annotationDialog.mode === 'edit' ? annotationDialog.annotation.id : 'create'}
+              open
+              mode={annotationDialog.mode}
+              bookId={bookId ?? ''}
+              initial={
+                annotationDialog.mode === 'edit' ? annotationDialog.annotation : undefined
+              }
+              draft={
+                annotationDialog.mode === 'create'
+                  ? {
+                      locator: annotationDialog.locator,
+                      selectedText: annotationDialog.selectedText,
+                      color: annotationDialog.color,
+                    }
+                  : undefined
+              }
+              onClose={() => setAnnotationDialog(null)}
+              onSaved={upsertAnnotation}
+              onDeleted={forgetAnnotation}
+              onNotice={showToast}
+            />
+          ) : null}
+
+          {status === 'ready' && bookmarkDialog && bookId ? (
+            <BookmarkDialog
+              key={bookmarkDialog.mode === 'edit' ? bookmarkDialog.bookmark.id : 'create'}
+              open
+              bookId={bookId}
+              locator={
+                bookmarkDialog.mode === 'create'
+                  ? bookmarkDialog.locator
+                  : bookmarkDialog.bookmark.locator
+              }
+              initial={
+                bookmarkDialog.mode === 'edit' ? bookmarkDialog.bookmark : undefined
+              }
+              onClose={() => setBookmarkDialog(null)}
+              onSaved={upsertBookmark}
+              onNotice={showToast}
+            />
+          ) : null}
+
+          {toast ? <Toast message={toast} onDismiss={dismissToast} /> : null}
         </>
       )}
     </div>

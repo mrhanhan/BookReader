@@ -510,6 +510,8 @@
 
 .bookr-highlight-layer > div {
   pointer-events: auto;
+  /* Light papers keep the ink visible under the translucent highlight. */
+  mix-blend-mode: multiply;
 }
 
 .bookr-highlight-layer > div[data-has-note='true']::after {
@@ -596,4 +598,233 @@
     transition: none;
     animation: none;
   }
+}
+
+/* ---- selection menu ----------------------------------------------------- */
+
+.reader-selection-menu {
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  padding: 6px 8px;
+  border: 1px solid var(--reader-border);
+  border-radius: 8px;
+  background-color: var(--reader-chrome-bg);
+  color: var(--reader-chrome-ink);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.22);
+  backdrop-filter: blur(12px);
+}
+
+.reader-selection-colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reader-selection-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgb(0 0 0 / 0.18);
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: transform 120ms ease;
+}
+
+.reader-selection-swatch:hover {
+  transform: scale(1.12);
+}
+
+.reader-selection-action {
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.reader-selection-action:hover {
+  background-color: color-mix(in srgb, var(--reader-ink) 8%, transparent);
+}
+
+.reader-selection-dismiss {
+  color: var(--reader-muted);
+  font-size: 0.95rem;
+}
+
+.reader-selection-menu button:focus-visible {
+  outline: 2px solid var(--reader-accent);
+  outline-offset: 2px;
+}
+
+/* ---- annotation and bookmark panels ------------------------------------ */
+
+.reader-panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reader-panel-add,
+.reader-panel-close {
+  padding: 3px 8px;
+  border: 1px solid var(--reader-border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.reader-panel-add:hover,
+.reader-panel-close:hover {
+  background-color: color-mix(in srgb, var(--reader-ink) 8%, transparent);
+}
+
+.reader-annotation-list,
+.reader-bookmark-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.reader-annotation {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--reader-border);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--reader-paper) 60%, transparent);
+}
+
+.reader-annotation-color {
+  flex: 0 0 4px;
+  align-self: stretch;
+  border-radius: 2px;
+}
+
+.reader-annotation-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.reader-annotation-target {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reader-annotation-selected {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--reader-muted);
+}
+
+.reader-annotation-note {
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--reader-ink);
+  white-space: pre-wrap;
+}
+
+.reader-annotation-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reader-annotation-tag {
+  padding: 1px 6px;
+  border: 1px solid var(--reader-border);
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  color: var(--reader-muted);
+}
+
+.reader-annotation-meta,
+.reader-bookmark-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--reader-muted);
+}
+
+.reader-annotation-actions,
+.reader-bookmark-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.reader-annotation-actions button,
+.reader-bookmark-actions button {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--reader-accent);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.reader-annotation-actions button:hover,
+.reader-bookmark-actions button:hover {
+  background-color: color-mix(in srgb, var(--reader-accent) 12%, transparent);
+}
+
+.reader-annotation-actions button:focus-visible,
+.reader-bookmark-actions button:focus-visible,
+.reader-annotation-target:focus-visible,
+.reader-bookmark-target:focus-visible,
+.reader-panel-add:focus-visible {
+  outline: 2px solid var(--reader-accent);
+  outline-offset: 2px;
+}
+
+.reader-bookmark {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--reader-border);
+  border-radius: 6px;
+}
+
+.reader-bookmark-target {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--reader-ink);
+  font-family: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reader-bookmark-target:hover {
+  color: var(--reader-accent);
 }
