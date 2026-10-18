@@ -59,8 +59,19 @@ function defaultReaderSettings(): ReaderSettings {
   };
 }
 
-/** Baseline reader settings, matching the server-side defaults. */
-export const DEFAULT_READER_SETTINGS: ReaderSettings = defaultReaderSettings();
+function deepFreezeSettings(settings: ReaderSettings): ReaderSettings {
+  Object.freeze(settings.pdf.cropAdjust);
+  Object.freeze(settings.pdf);
+  Object.freeze(settings.epub);
+  return Object.freeze(settings);
+}
+
+/**
+ * Baseline reader settings, matching the server-side defaults. Deep-frozen so
+ * direct consumers cannot mutate the shared constant; `mergeReaderSettings`
+ * always returns a fresh, mutable object instead.
+ */
+export const DEFAULT_READER_SETTINGS: ReaderSettings = deepFreezeSettings(defaultReaderSettings());
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_READER_SETTINGS, mergeReaderSettings } from '../settings';
+import {
+  DEFAULT_READER_SETTINGS,
+  HIGHLIGHT_HEX,
+  READER_THEME_COLORS,
+  mergeReaderSettings,
+} from '../settings';
 
 describe('reader settings', () => {
   it('merges nested sections without losing sibling defaults', () => {
@@ -44,6 +49,26 @@ describe('reader settings', () => {
       },
     });
     expect(mergeReaderSettings(undefined)).toEqual(DEFAULT_READER_SETTINGS);
+    expect(Object.isFrozen(DEFAULT_READER_SETTINGS)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_READER_SETTINGS.pdf)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_READER_SETTINGS.pdf.cropAdjust)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_READER_SETTINGS.epub)).toBe(true);
+  });
+
+  it('pins the theme and highlight hex values', () => {
+    expect(READER_THEME_COLORS).toEqual({
+      paper: { background: '#F6F1E7', foreground: '#2B2620' },
+      sepia: { background: '#F2E4C9', foreground: '#3A2E20' },
+      green: { background: '#E4EBDD', foreground: '#2C3327' },
+      dark: { background: '#1C1A17', foreground: '#E6DECF' },
+    });
+    expect(HIGHLIGHT_HEX).toEqual({
+      yellow: '#E8C56B',
+      green: '#9BBF8A',
+      blue: '#8FB4C9',
+      pink: '#D9A6A0',
+      purple: '#B3A0C6',
+    });
   });
 
   it('never throws on arbitrary input and falls back per field', () => {
