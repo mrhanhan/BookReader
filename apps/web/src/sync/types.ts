@@ -77,4 +77,6 @@ export interface CachedShelfBook {
   format: string;
   coverUrl: string | null;
   updatedAt: string;
+  /** Whether a reflow pack exists, so the offline reader can offer the switch. */
+  reflowAvailable: boolean;
 }

@@ -148,6 +148,7 @@ it('opens a downloaded book on a cold offline start using the shelf snapshot', a
     format: 'pdf',
     coverUrl: null,
     updatedAt: new Date().toISOString(),
+    reflowAvailable: false,
   });
 
   const { engine } = renderReader(session);
@@ -159,4 +160,52 @@ it('opens a downloaded book on a cold offline start using the shelf snapshot', a
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
   expect(engine.open.mock.calls[0]?.[0]).toBe(cachedUrl);
   expect(await screen.findByText('离线')).toBeInTheDocument();
+  // The snapshot says this book has no pack, so reflow stays disabled.
+  expect(await screen.findByRole('button', { name: '重排' })).toBeDisabled();
+});
+
+it('offers the reflow switch offline when the snapshot remembers a pack', async () => {
+  setOnline(false);
+  let reflowRequests = 0;
+  server.use(
+    http.get(`/api/books/${BOOK}`, () => HttpResponse.error()),
+    http.get(`/api/books/${BOOK}/reflow`, () => {
+      reflowRequests += 1;
+      return HttpResponse.json({
+        url: 'https://files.test/pack.bookr.json',
+        schemaVersion: 1,
+        pageCount: 300,
+        expiresIn: 3600,
+      });
+    }),
+  );
+
+  const session = createSession();
+  await cacheBook(session);
+  await session.db.shelf.put({
+    id: BOOK,
+    userId: USER,
+    title: '深入理解计算机系统',
+    author: 'Randal E. Bryant',
+    format: 'pdf',
+    coverUrl: null,
+    updatedAt: new Date().toISOString(),
+    reflowAvailable: true,
+  });
+
+  const { engine } = renderReader(session);
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  const reflowButton = await screen.findByRole('button', { name: '重排' });
+  expect(reflowButton).toBeEnabled();
+  expect(reflowButton).toHaveAttribute(
+    'title',
+    '离线时仅可阅读原版，连接网络后可切换重排',
+  );
+
+  await userEvent.click(reflowButton);
+  expect(
+    await screen.findByText('离线时仅可阅读原版，连接网络后可切换重排'),
+  ).toBeInTheDocument();
+  expect(reflowRequests).toBe(0);
 });

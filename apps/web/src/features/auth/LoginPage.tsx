@@ -12,7 +12,7 @@ interface FieldErrors {
 }
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, sessionNotice } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -58,6 +58,14 @@ export function LoginPage() {
       }
     >
       <form className="flex flex-col gap-4" onSubmit={handleSubmit} noValidate>
+        {sessionNotice ? (
+          <p
+            role="status"
+            className="rounded-md border border-highlight/30 bg-highlight/10 px-3 py-2 text-sm text-highlight"
+          >
+            {sessionNotice}
+          </p>
+        ) : null}
         {formError ? (
           <p
             role="alert"

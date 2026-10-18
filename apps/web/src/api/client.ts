@@ -34,6 +34,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * True when the request never reached the API: offline, DNS failure, TLS or a
+ * dropped connection. `fetch` rejects before a response is available, while an
+ * `ApiError` always means the server answered.
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (error instanceof ApiError) return false;
+  if (error instanceof DOMException && error.name === 'AbortError') return false;
+  return error instanceof TypeError || error instanceof DOMException;
+}
+
 function storage(): Storage | null {
   try {
     return typeof localStorage === 'undefined' ? null : localStorage;
@@ -171,7 +182,14 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
         tokens = await refreshOnce(latest.refreshToken);
         response = await fetch(apiUrl(path), buildRequest(init, tokens.accessToken));
       } catch (error) {
-        endSession();
+        // Only an explicit rejection from the API ends the session. Offline
+        // reading must survive a transport failure or a server fault; the next
+        // request retries the refresh.
+        if (isNetworkError(error)) throw error;
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          endSession();
+          throw error;
+        }
         throw error instanceof ApiError ? error : await errorFromResponse(response);
       }
     } else {

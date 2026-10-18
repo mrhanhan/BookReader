@@ -16,6 +16,8 @@ export function shelfSnapshotOf(book: BookDto, userId: string): CachedShelfBook 
     format: book.format,
     coverUrl: book.coverUrl,
     updatedAt: book.updatedAt,
+    // Kept so the offline reader can still offer the reflow switch.
+    reflowAvailable: book.reflowAvailable,
   };
 }
 
@@ -43,7 +45,8 @@ export function bookFromShelfSnapshot(row: CachedShelfBook): BookDto {
     uploadedBy: { id: '', displayName: '本机缓存' },
     conversionStatus: 'none',
     conversionError: null,
-    reflowAvailable: false,
+    // Snapshots written before this field existed read as "no pack".
+    reflowAvailable: row.reflowAvailable === true,
     reflowSchemaVersion: null,
     reflowPageCount: null,
     createdAt: row.updatedAt,

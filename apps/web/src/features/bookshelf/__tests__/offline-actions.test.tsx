@@ -10,7 +10,7 @@ import type { OfflineSession } from '../../../offline/offlineContext';
 import { OfflineProvider, createOfflineSession } from '../../../offline/offlineContext';
 import { createMemoryStore } from '../../../offline/fileStore';
 import { createSyncDb } from '../../../sync/db';
-import { renderWithProviders, server } from '../../../../test/setup';
+import { renderWithProviders, book, server } from '../../../../test/setup';
 
 const USER = 'user-reader';
 const BOOK = 'book-three-body';
@@ -168,10 +168,41 @@ it('writes the shelf snapshot after a successful load', async () => {
     'coverUrl',
     'format',
     'id',
+    'reflowAvailable',
     'title',
     'updatedAt',
     'userId',
   ]);
+});
+
+it('remembers reflow availability in the shelf snapshot', async () => {
+  const session = createSession();
+  server.use(
+    http.get('/api/books', () =>
+      HttpResponse.json({
+        items: [
+          book({
+            id: 'book-reflowable',
+            title: '可重排的书',
+            format: 'pdf',
+            reflowAvailable: true,
+            reflowSchemaVersion: 1,
+            reflowPageCount: 300,
+          }),
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 24,
+      }),
+    ),
+  );
+
+  renderShelf(session);
+
+  expect(await screen.findByText('可重排的书')).toBeInTheDocument();
+  await waitFor(async () => {
+    expect((await session.db.shelf.get('book-reflowable'))?.reflowAvailable).toBe(true);
+  });
 });
 
 it('renders the cached shelf on a cold offline start', async () => {
@@ -184,6 +215,7 @@ it('renders the cached shelf on a cold offline start', async () => {
     format: 'epub',
     coverUrl: null,
     updatedAt: new Date().toISOString(),
+    reflowAvailable: false,
   });
   await session.cache.cacheFromUrl(USER, BOOK, 'book', 'https://files.test/cached.epub');
   server.use(http.get('/api/books', () => HttpResponse.error()));
