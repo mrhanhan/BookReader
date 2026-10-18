@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -92,6 +92,13 @@ it('migrates the legacy global settings into the account and clears the key', as
     READER_SETTINGS_KEY,
     JSON.stringify({ theme: 'sepia', epub: { fontSize: 21 } }),
   );
+  // A finished sync proves this open saw the server before migrating; the
+  // fake engine records it just like the real engine does after a full run.
+  const syncNow = syncEngine.syncNow.bind(syncEngine);
+  syncEngine.syncNow = async (reason?: string) => {
+    await syncNow(reason);
+    await repo.setLastSyncedAt(USER, Date.now());
+  };
 
   const engine = renderReader();
 
@@ -109,6 +116,36 @@ it('migrates the legacy global settings into the account and clears the key', as
   expect(
     repo.outbox.filter((row) => row.entityType === 'reader_settings'),
   ).toHaveLength(1);
+  await waitFor(() => expect(localStorage.getItem(READER_SETTINGS_KEY)).toBeNull());
+});
+
+it('keeps legacy settings in memory until a sync completes before migrating', async () => {
+  localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify({ theme: 'sepia' }));
+
+  const engine = renderReader();
+
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+  // The old preference is usable immediately, but the open's sync never
+  // completed (the fake engine leaves lastSyncedAt unset), so it must not be
+  // written: a stale local document could beat a newer one from the server.
+  expect(engine.open.mock.calls[0]?.[2]).toMatchObject({ theme: 'sepia' });
+  expect(repo.settingsRows.get(USER)).toBeUndefined();
+  expect(repo.outbox.filter((row) => row.entityType === 'reader_settings')).toHaveLength(0);
+  expect(localStorage.getItem(READER_SETTINGS_KEY)).not.toBeNull();
+
+  act(() => {
+    syncEngine.setState({
+      status: 'synced',
+      pending: 0,
+      lastSyncedAt: Date.now(),
+      conflicts: 0,
+    });
+  });
+
+  await waitFor(() => {
+    expect(repo.settingsRows.get(USER)?.settings).toMatchObject({ theme: 'sepia' });
+  });
+  expect(repo.outbox.filter((row) => row.entityType === 'reader_settings')).toHaveLength(1);
   await waitFor(() => expect(localStorage.getItem(READER_SETTINGS_KEY)).toBeNull());
 });
 

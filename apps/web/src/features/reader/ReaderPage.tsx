@@ -8,6 +8,7 @@ import type {
   AnnotationColor,
   AnnotationDto,
   BookmarkDto,
+  BookDto,
   Locator,
   ReaderKind,
   SyncEntityType,
@@ -47,7 +48,7 @@ import {
   resolveBookSource,
 } from '../../offline/bookSource';
 import { useOfflineSession } from '../../offline/offlineContext';
-import { bookFromShelfSnapshot } from '../../offline/shelfSnapshot';
+import { bookFromShelfSnapshot, shelfSnapshotOf } from '../../offline/shelfSnapshot';
 import { useSync } from '../../sync/SyncProvider';
 import { Toast } from '../bookshelf/Toast';
 import {
@@ -244,7 +245,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Local progress is namespaced per account; never read or write it before
   // the signed-in user is known.
   const userId = user?.id ?? null;
-  const { repo, requestSync, waitForSync, subscribeConflicts } = useSync();
+  const { repo, requestSync, waitForSync, subscribeConflicts, state: syncState } = useSync();
   const { db, cache } = useOfflineSession();
   const bookQuery = useBook(id ?? null);
   // Cold-start offline: the library API is unreachable, so the metadata
@@ -270,6 +271,20 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   );
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  // The open effect runs once per book/account; reading the metadata through a
+  // ref lets it snapshot a title that was refreshed after the effect started.
+  const bookRef = useRef<BookDto | null>(book);
+  bookRef.current = book;
+
+  // A legacy settings entry may only migrate after a sync actually completed.
+  // While offline (or after a timed-out first sync) it stays an in-memory
+  // preference; this marker retries the write from the next successful sync.
+  const [pendingSettingsMigration, setPendingSettingsMigration] = useState<{
+    userId: string;
+    /** Sync timestamp seen when the open gave up waiting; null means none. */
+    syncedAt: number | null;
+  } | null>(null);
 
   // The prop is read through a ref so a new factory identity never rebuilds the
   // engine (and therefore never reopens the book).
@@ -336,23 +351,31 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // A failed reflow open falls back to the original exactly once per switch.
   const reflowFallbackRef = useRef(false);
 
+  // The settings writer reads the account through a ref: depending on the id
+  // directly would change `changeSettings` (and through it the engine-open
+  // effect) on every account switch, reopening the book with the old account's
+  // settings before the new ones are loaded.
+  const userIdRef = useRef<string | null>(userId);
+  userIdRef.current = userId;
+
   const changeSettings = useCallback(
     (next: ReaderSettings) => {
       const merged = mergeReaderSettings(next);
       settingsRef.current = merged;
       setSettings(merged);
       engine?.setSettings(merged);
-      if (!userId) return;
+      const currentUserId = userIdRef.current;
+      if (!currentUserId) return;
 
       // The repository row is the source of truth; the outbox entry it writes
       // is what carries the change to other devices. A failed local write must
       // never break reading, and the next change retries with the newer value.
       void repo
-        .saveSettings(userId, { ...merged })
+        .saveSettings(currentUserId, { ...merged })
         .then(() => requestSync('settings'))
         .catch(() => undefined);
     },
-    [engine, repo, requestSync, userId],
+    [engine, repo, requestSync],
   );
 
   /**
@@ -569,6 +592,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
     void (async () => {
       try {
+        // The timestamp before this open's sync is the baseline for deciding
+        // whether that sync actually completed (or merely timed out).
+        const syncedBefore = await repo.getLastSyncedAt(userId).catch(() => null);
         const [resolved] = await Promise.all([
           resolveBookSource({
             cache,
@@ -582,6 +608,18 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           waitForSync(FIRST_SYNC_WAIT_MS),
         ]);
         if (cancelled) return;
+        const syncedAfter = await repo.getLastSyncedAt(userId).catch(() => null);
+
+        // A successful online open holds authoritative metadata, so keep a
+        // shelf snapshot for this book. Without it a cached book whose shelf
+        // row was never written (or was pruned) would be listed offline as an
+        // unknown book that the reader then cannot open.
+        const openedBook = bookRef.current;
+        if (!resolved.offline && openedBook !== null && openedBook.id === bookId) {
+          void db.shelf
+            .put(shelfSnapshotOf(openedBook, userId))
+            .catch(() => undefined);
+        }
 
         const storedSettings = await repo.settingsFor(userId).catch(() => null);
         if (cancelled) return;
@@ -592,22 +630,30 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           // The account row wins; a legacy entry left behind by a failed
           // migration must not leak into another account on this browser.
           clearLegacyReaderSettings();
+          setPendingSettingsMigration(null);
         } else {
-          // First open after the upgrade: adopt the old global document for
-          // this account, persist it there and push it on the next sync.
+          // First open after the upgrade: adopt the old global document as the
+          // in-memory preference. It is persisted only when the first sync
+          // actually completed; otherwise a timed-out open could push a stale
+          // local document over a newer one another device just wrote.
           const legacy = readLegacyReaderSettings();
           if (legacy !== null) {
             loadedSettings = legacy;
-            // Persist in the background so a slow or blocked local store never
-            // delays opening the book. The global entry is dropped only after
-            // the account row landed, so a failure retries on the next open.
-            void repo
-              .saveSettings(userId, { ...legacy })
-              .then(() => {
-                clearLegacyReaderSettings();
-                requestSync('settings');
-              })
-              .catch(() => undefined);
+            const syncCompleted = syncedAfter !== null && syncedAfter !== syncedBefore;
+            if (syncCompleted) {
+              // Persist in the background so a slow or blocked local store never
+              // delays the book. The global entry is dropped only after the
+              // account row landed, so a failure retries on the next open.
+              void repo
+                .saveSettings(userId, { ...legacy })
+                .then(() => {
+                  clearLegacyReaderSettings();
+                  requestSync('settings');
+                })
+                .catch(() => undefined);
+            } else {
+              setPendingSettingsMigration({ userId, syncedAt: syncedAfter });
+            }
           }
         }
         if (cancelled) return;
@@ -631,7 +677,46 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId, cache, repo, requestSync, userId, waitForSync, wantsReflow]);
+  }, [bookId, cache, db, repo, requestSync, userId, waitForSync, wantsReflow]);
+
+  // A deferred legacy migration retries after any sync that completed later
+  // than the one observed at open time. The recorded timestamp is the floor:
+  // a persisted value from an earlier session must not count as success now.
+  const deferredSyncAt = syncState.lastSyncedAt;
+  useEffect(() => {
+    if (pendingSettingsMigration === null) return;
+    const { userId: pendingUser, syncedAt } = pendingSettingsMigration;
+    if (deferredSyncAt === null || deferredSyncAt === syncedAt) return;
+
+    let cancelled = false;
+    void (async () => {
+      const row = await repo.settingsFor(pendingUser).catch(() => null);
+      if (cancelled) return;
+      if (row !== null) {
+        setPendingSettingsMigration(null);
+        return;
+      }
+      const legacy = readLegacyReaderSettings();
+      if (legacy === null) {
+        setPendingSettingsMigration(null);
+        return;
+      }
+
+      try {
+        await repo.saveSettings(pendingUser, { ...legacy });
+        clearLegacyReaderSettings();
+        requestSync('settings');
+      } catch {
+        // Keep the marker so the next successful sync retries.
+        return;
+      }
+      if (!cancelled) setPendingSettingsMigration(null);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deferredSyncAt, pendingSettingsMigration, repo, requestSync]);
 
   const initialLocator = source?.initialLocator;
 
