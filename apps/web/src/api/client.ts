@@ -160,12 +160,12 @@ function endSession(): void {
 }
 
 /**
- * Fetches a JSON API endpoint with the bearer token, refreshing it once on a
- * 401 and retrying the original request. Concurrent 401s share a single
- * refresh; only a genuine refresh failure clears the session and sends the
- * browser to `/login`.
+ * Fetches an API endpoint with the bearer token, refreshing it once on a 401
+ * and retrying the original request. Concurrent 401s share a single refresh;
+ * only a genuine refresh failure clears the session and sends the browser to
+ * `/login`. The successful response body is left unread for streaming callers.
  */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function authorizedFetch(path: string, init?: RequestInit): Promise<Response> {
   let tokens = getTokens();
   let response = await fetch(apiUrl(path), buildRequest(init, tokens?.accessToken ?? null));
 
@@ -204,6 +204,12 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   if (!response.ok) throw await errorFromResponse(response);
+  return response;
+}
+
+/** Fetches a JSON API endpoint through the same auth and refresh handling. */
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await authorizedFetch(path, init);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
