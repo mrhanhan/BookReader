@@ -270,12 +270,27 @@ export class PdfReaderEngine implements ReaderEngine {
     if (!this.pdf) {
       throw new Error('Reader is not open');
     }
-    if (locator.kind !== 'pdf') {
+    // Reflow locators carry their source page; the original view can honour
+    // that page even though it has no block geometry to restore.
+    let normalized: PdfLocator;
+    if (locator.kind === 'reflow') {
+      normalized = {
+        kind: 'pdf',
+        page: clamp(
+          Math.floor(locator.sourcePage),
+          1,
+          Math.max(1, this.pageCount),
+        ),
+        percent: locator.percent,
+      };
+    } else if (locator.kind === 'pdf') {
+      normalized = locator;
+    } else {
       throw new Error('The PDF reader cannot open a non-PDF locator');
     }
 
     const count = Math.max(1, this.pageCount);
-    const page = clamp(Math.floor(locator.page), 1, count);
+    const page = clamp(Math.floor(normalized.page), 1, count);
     this.currentPage = page;
 
     if (this.mode === 'continuous') {
@@ -289,7 +304,7 @@ export class PdfReaderEngine implements ReaderEngine {
           pageTop,
           pageHeight: slot.outer.offsetHeight,
           viewportHeight: host.clientHeight,
-          rectY: locator.rect?.y,
+          rectY: normalized.rect?.y,
           cropTop: this.crop.top,
           cropBottom: this.crop.bottom,
         });
@@ -303,7 +318,7 @@ export class PdfReaderEngine implements ReaderEngine {
     }
 
     if (options.flash) {
-      this.flash(page, locator.rect);
+      this.flash(page, normalized.rect);
     }
     this.emitRelocated(this.currentLocator());
   }

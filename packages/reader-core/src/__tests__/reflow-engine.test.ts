@@ -1,8 +1,9 @@
-import type { Locator, ReflowBlock, ReflowPack } from '@bookr/shared';
+import type { Locator, ReflowBlock, ReflowLocator, ReflowPack } from '@bookr/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { ReflowReaderEngine } from '../reflow/engine';
 import { renderReflowDocument } from '../reflow/render';
 import { DEFAULT_READER_SETTINGS } from '../settings';
+import type { ReaderHighlight, ReaderSelection } from '../types';
 
 function heading(id: string, level: number, y: number): ReflowBlock {
   return {
@@ -161,6 +162,8 @@ async function openWith(pack: ReflowPack): Promise<{
   host: HTMLElement;
 }> {
   const container = document.createElement('div');
+  // Selections must be rooted in the document tree for jsdom to accept them.
+  document.body.append(container);
   const engine = new ReflowReaderEngine({ fetchPack: async () => pack });
   await engine.open('https://fake-s3.local/pack.json', container, DEFAULT_READER_SETTINGS);
   const host = container.querySelector('.bookr-reflow-scroll') as HTMLElement;
@@ -566,5 +569,278 @@ describe('reflow engine', () => {
     await engine.destroy();
     await engine.destroy();
     expect(container.childElementCount).toBe(0);
+  });
+});
+
+function addImageBlock(pack: ReflowPack): void {
+  pack.pages[0]!.blocks.push({
+    id: 'p1-img',
+    type: 'image',
+    rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
+  });
+}
+
+function visualFigure(container: HTMLElement): HTMLElement {
+  const figure = container.querySelector('.bookr-reflow-visual');
+  if (!(figure instanceof HTMLElement)) {
+    throw new Error('missing visual block');
+  }
+  return figure;
+}
+
+function selectRange(startNode: Node, startOffset: number, endNode: Node, endOffset: number): Range {
+  const selection = window.getSelection();
+  if (!selection) {
+    throw new Error('jsdom has no document selection');
+  }
+  selection.removeAllRanges();
+  const range = document.createRange();
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, endOffset);
+  selection.addRange(range);
+  return range;
+}
+
+describe('reflow selection', () => {
+  it('emits a cross-block selection after the 60ms debounce', async () => {
+    const { engine, container } = await openWith(makePack());
+    const first = blockElement(container, 'p1-b1', 1);
+    const second = blockElement(container, 'p1-b2', 1);
+    const events: Array<ReaderSelection | null> = [];
+    engine.on('selection', (payload) => events.push(payload));
+
+    vi.useFakeTimers();
+    try {
+      const range = selectRange(first.firstChild as Node, 2, second.firstChild as Node, 2);
+      document.dispatchEvent(new Event('selectionchange'));
+
+      // Nothing is emitted before the debounce elapses.
+      expect(events).toHaveLength(0);
+      vi.advanceTimersByTime(59);
+      expect(events).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+
+      expect(events).toHaveLength(1);
+      const payload = events[0];
+      expect(payload).not.toBeNull();
+      expect(payload?.text).toBe(range.toString().trim());
+      expect(payload?.locator).toMatchObject({
+        kind: 'reflow',
+        sourcePage: 1,
+        blockId: 'p1-b1',
+        charRange: [2, (first.textContent as string).length],
+      });
+      expect((payload?.locator as ReflowLocator).ranges).toEqual([
+        { blockId: 'p1-b1', charRange: [2, (first.textContent as string).length] },
+        { blockId: 'p1-b2', charRange: [0, 2] },
+      ]);
+      expect(payload?.rect).toEqual(expect.objectContaining({ left: expect.any(Number) }));
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      vi.useRealTimers();
+      await engine.destroy();
+    }
+  });
+
+  it('emits null when the selection falls outside the reflow root', async () => {
+    const { engine } = await openWith(makePack());
+    const outside = document.createElement('p');
+    outside.textContent = '外部文字';
+    document.body.append(outside);
+    const events: Array<ReaderSelection | null> = [];
+    engine.on('selection', (payload) => events.push(payload));
+
+    vi.useFakeTimers();
+    try {
+      selectRange(outside.firstChild as Node, 0, outside.firstChild as Node, 2);
+      document.dispatchEvent(new Event('selectionchange'));
+      vi.advanceTimersByTime(60);
+
+      expect(events).toEqual([null]);
+    } finally {
+      window.getSelection()?.removeAllRanges();
+      outside.remove();
+      vi.useRealTimers();
+      await engine.destroy();
+    }
+  });
+});
+
+describe('reflow highlights', () => {
+  it('wraps highlighted ranges and removes the marks again', async () => {
+    const { engine, container } = await openWith(makePack());
+    const block = blockElement(container, 'p1-b1', 1);
+    const text = block.textContent as string;
+
+    engine.setHighlights([{
+      id: 'h1',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p1-b1', charRange: [0, 2] },
+      color: 'yellow',
+      hasNote: true,
+    }]);
+
+    let marks = block.querySelectorAll('mark.bookr-reflow-mark');
+    expect(marks).toHaveLength(1);
+    expect(marks[0]?.getAttribute('data-highlight-id')).toBe('h1');
+    expect(marks[0]?.classList.contains('has-note')).toBe(true);
+    expect(marks[0]?.textContent).toBe(text.slice(0, 2));
+    expect(block.textContent).toBe(text);
+
+    engine.setHighlights([]);
+
+    marks = block.querySelectorAll('mark');
+    expect(marks).toHaveLength(0);
+    expect(block.textContent).toBe(text);
+
+    await engine.destroy();
+  });
+
+  it('reports a click on a highlight mark', async () => {
+    const { engine, container } = await openWith(makePack());
+    const block = blockElement(container, 'p1-b2', 1);
+    const clicks: string[] = [];
+    engine.on('highlightClick', ({ id }) => clicks.push(id));
+
+    engine.setHighlights([{
+      id: 'h2',
+      locator: { kind: 'reflow', sourcePage: 1, percent: 0, blockId: 'p1-b2', charRange: [0, 1] },
+      color: 'pink',
+      hasNote: false,
+    }]);
+
+    const mark = block.querySelector('[data-highlight-id]') as HTMLElement;
+    mark.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(clicks).toEqual(['h2']);
+    await engine.destroy();
+  });
+});
+
+describe('reflow visual blocks', () => {
+  it('paints every visual block once and destroys the painter', async () => {
+    const pack = makePack();
+    addImageBlock(pack);
+    const paint = vi.fn(
+      async (_page: number, _rect: unknown, _canvas: HTMLCanvasElement) => {},
+    );
+    const load = vi.fn(async () => {});
+    const destroy = vi.fn(async () => {});
+    const painter = { load, paint, destroy };
+    const container = document.createElement('div');
+    const engine = new ReflowReaderEngine({
+      fetchPack: async () => pack,
+      painterFactory: () => painter,
+    });
+
+    await engine.open('https://fake-s3.local/pack.json', container, DEFAULT_READER_SETTINGS, {
+      sourcePdfUrl: 'https://files.test/book.pdf',
+    });
+
+    const figure = visualFigure(container);
+    const canvas = figure.querySelector('canvas');
+    expect(load).toHaveBeenCalledWith('https://files.test/book.pdf');
+    expect(paint).toHaveBeenCalledTimes(1);
+    expect(paint.mock.calls[0]?.[0]).toBe(1);
+    expect(paint.mock.calls[0]?.[2]).toBe(canvas);
+
+    await engine.destroy();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the original-page note when painting fails', async () => {
+    const pack = makePack();
+    addImageBlock(pack);
+    const container = document.createElement('div');
+    const engine = new ReflowReaderEngine({
+      fetchPack: async () => pack,
+      painterFactory: () => ({
+        load: async () => {},
+        paint: async () => {
+          throw new Error('render failed');
+        },
+        destroy: async () => {},
+      }),
+    });
+
+    await expect(engine.open(
+      'https://fake-s3.local/pack.json',
+      container,
+      DEFAULT_READER_SETTINGS,
+      { sourcePdfUrl: 'https://files.test/book.pdf' },
+    )).resolves.toMatchObject({ kind: 'reflow' });
+
+    const figure = visualFigure(container);
+    await vi.waitFor(() => {
+      expect(figure.querySelector('canvas')?.style.display).toBe('none');
+    });
+    expect(figure.textContent).toContain('原文图像暂不可用，可切回原版查看');
+    expect(figure.querySelectorAll('.bookr-reflow-visual-note')).toHaveLength(1);
+
+    await engine.destroy();
+  });
+
+  it('shows the note immediately without a source PDF URL', async () => {
+    const pack = makePack();
+    addImageBlock(pack);
+    const container = document.createElement('div');
+    const engine = new ReflowReaderEngine({ fetchPack: async () => pack });
+
+    await engine.open('https://fake-s3.local/pack.json', container, DEFAULT_READER_SETTINGS);
+
+    const figure = visualFigure(container);
+    expect(figure.textContent).toContain('原文图像暂不可用，可切回原版查看');
+    expect(figure.querySelectorAll('.bookr-reflow-visual-note')).toHaveLength(1);
+
+    await engine.destroy();
+  });
+
+  it('observes figures and disconnects on destroy', async () => {
+    const pack = makePack();
+    addImageBlock(pack);
+    const observed: Element[] = [];
+    const disconnect = vi.fn();
+    class FakeObserver {
+      constructor(
+        readonly callback: IntersectionObserverCallback,
+        readonly options?: IntersectionObserverInit,
+      ) {}
+
+      observe = (target: Element): void => {
+        observed.push(target);
+      };
+
+      unobserve = (): void => {};
+
+      disconnect = disconnect;
+
+      takeRecords = (): IntersectionObserverEntry[] => [];
+    }
+    vi.stubGlobal('IntersectionObserver', FakeObserver);
+
+    const destroyPainter = vi.fn(async () => {});
+    const container = document.createElement('div');
+    const engine = new ReflowReaderEngine({
+      fetchPack: async () => pack,
+      painterFactory: () => ({
+        load: async () => {},
+        paint: async () => {},
+        destroy: destroyPainter,
+      }),
+    });
+
+    try {
+      await engine.open('https://fake-s3.local/pack.json', container, DEFAULT_READER_SETTINGS, {
+        sourcePdfUrl: 'https://files.test/book.pdf',
+      });
+
+      const figure = visualFigure(container);
+      expect(observed).toEqual([figure]);
+
+      await engine.destroy();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect(destroyPainter).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

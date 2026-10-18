@@ -191,3 +191,26 @@ it('keeps opening when one page of the spread fails to render', async () => {
     await engine.destroy();
   }
 });
+
+it('maps a reflow locator onto its source page', async () => {
+  const { engine, container } = await openReader('single');
+  try {
+    await engine.goTo({ kind: 'reflow', sourcePage: 5, percent: 0.5 });
+
+    expect(engine.currentLocator()).toMatchObject({ kind: 'pdf', page: 5 });
+    expect(renderedPageNumbers(container)).toEqual(['5']);
+  } finally {
+    await engine.destroy();
+  }
+});
+
+it('clamps a reflow locator page into the document', async () => {
+  const { engine } = await openReader('single');
+  try {
+    await engine.goTo({ kind: 'reflow', sourcePage: 99, percent: 1 });
+
+    expect(engine.currentLocator()).toMatchObject({ kind: 'pdf', page: mock.pageCount });
+  } finally {
+    await engine.destroy();
+  }
+});

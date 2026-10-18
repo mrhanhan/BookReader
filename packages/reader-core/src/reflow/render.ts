@@ -1,6 +1,15 @@
-import type { ReflowBlock, ReflowPack } from '@bookr/shared';
+import type { LocatorRect, ReflowBlock, ReflowPack } from '@bookr/shared';
 
 import type { ReaderSettings } from '../types';
+
+/** One visual block, together with the source region it stands in for. */
+export interface RenderedVisualBlock {
+  element: HTMLElement;
+  /** Source PDF page number. */
+  page: number;
+  /** Normalized region of the source page this block covers. */
+  rect: LocatorRect;
+}
 
 /** The DOM produced for one reflow pack. */
 export interface RenderedReflowDocument {
@@ -10,6 +19,8 @@ export interface RenderedReflowDocument {
   article: HTMLElement;
   /** Every rendered block, keyed by its pack block id. */
   blockElements: Map<string, HTMLElement>;
+  /** Visual placeholders in document order, for original-page painting. */
+  visualBlocks: RenderedVisualBlock[];
   /** Blocks dropped because their id or rect was unusable. */
   skippedBlocks: number;
 }
@@ -105,6 +116,7 @@ export function renderReflowDocument(
   host.append(article);
 
   const blockElements = new Map<string, HTMLElement>();
+  const visualBlocks: RenderedVisualBlock[] = [];
   let skippedBlocks = 0;
 
   for (const page of pack.pages) {
@@ -129,6 +141,9 @@ export function renderReflowDocument(
 
       setBlockAttributes(element, block, page.page);
       article.append(element);
+      if (VISUAL_TYPES.has(block.type)) {
+        visualBlocks.push({ element, page: page.page, rect: block.rect });
+      }
       // Ids only have to be unique within a page; keep the first occurrence so
       // lookups stay deterministic, matching the pack index.
       if (!blockElements.has(block.id)) {
@@ -138,7 +153,7 @@ export function renderReflowDocument(
   }
 
   container.append(host);
-  return { host, article, blockElements, skippedBlocks };
+  return { host, article, blockElements, visualBlocks, skippedBlocks };
 }
 
 /**
