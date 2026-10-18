@@ -29,8 +29,9 @@ it('gives new accounts the default AI quotas', async () => {
   await resetDb();
   const user = await seedUser('member');
   const [row] = await testDb.select({
+    aiEnabled: users.aiEnabled,
     daily: users.aiDailyTokenLimit,
     monthly: users.aiMonthlyTokenLimit,
   }).from(users).where(eq(users.id, user.id));
-  expect(row).toEqual({ daily: 100_000, monthly: 1_000_000 });
+  expect(row).toEqual({ aiEnabled: true, daily: 100_000, monthly: 1_000_000 });
 });
