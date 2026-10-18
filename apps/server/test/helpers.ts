@@ -18,6 +18,7 @@ import { newRefreshToken, signAccessToken } from '../src/auth/tokens';
 import { FakeConverter } from '../src/books/conversion';
 import { runMetadataJob } from '../src/books/metadata';
 import { InProcessMetadataRunner } from '../src/books/metadata-runner';
+import { cleanupExpiredReflowUploads } from '../src/books/reflow';
 import { cleanupTrash } from '../src/books/service';
 import { DEFAULT_CORS_ORIGINS, type AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
@@ -31,6 +32,7 @@ import {
   invites,
   libraries,
   readingProgress,
+  reflowUploads,
   uploadSessions,
   users,
   type AnnotationRow,
@@ -341,6 +343,19 @@ export async function expireSession(uploadId: string, msAgo: number): Promise<vo
 /** Runs the expired-session sweep against the shared test dependencies. */
 export async function cleanupExpiredUploadsForTest(): Promise<number> {
   return cleanupExpiredUploads(await buildTestDeps());
+}
+
+/** Backdates a reflow upload session so completion and cleanup see it as stale. */
+export async function expireReflowSession(uploadId: string, msAgo: number): Promise<void> {
+  await testDb
+    .update(reflowUploads)
+    .set({ expiresAt: new Date(Date.now() - msAgo) })
+    .where(eq(reflowUploads.id, uploadId));
+}
+
+/** Runs the expired reflow-session sweep against the shared test dependencies. */
+export async function cleanupExpiredReflowUploadsForTest(): Promise<number> {
+  return cleanupExpiredReflowUploads(await buildTestDeps());
 }
 
 /** Runs metadata extraction for one book against the shared test dependencies. */

@@ -168,6 +168,33 @@ export const uploadSessions = pgTable('upload_sessions', {
   completedAt: timestamp('completed_at', { withTimezone: true }),
 });
 
+/** Lifecycle of a presigned reflow pack upload session. */
+export type ReflowUploadStatus = 'created' | 'completed' | 'failed' | 'expired';
+
+export const reflowUploads = pgTable(
+  'reflow_uploads',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    bookId: uuid('book_id')
+      .notNull()
+      .references(() => books.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    objectKey: text('object_key').notNull(),
+    size: bigint('size', { mode: 'number' }).notNull(),
+    sha256: text('sha256').notNull(),
+    status: text('status')
+      .$type<ReflowUploadStatus>()
+      .notNull()
+      .default('created'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [index('reflow_uploads_status_expires_idx').on(table.status, table.expiresAt)],
+);
+
 export const jobs = pgTable(
   'jobs',
   {

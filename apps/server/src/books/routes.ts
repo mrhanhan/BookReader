@@ -1,4 +1,9 @@
-import { ERROR_CODES, listBooksQuerySchema, updateBookSchema } from '@bookr/shared';
+import {
+  ERROR_CODES,
+  listBooksQuerySchema,
+  reflowUploadCreateSchema,
+  updateBookSchema,
+} from '@bookr/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../app';
@@ -6,6 +11,12 @@ import { makeRequireAuth } from '../auth/guards';
 import { AppError } from '../errors';
 import { retryConversion } from './conversion';
 import { getReaderFile } from './reader-file';
+import {
+  completeReflowUpload,
+  createReflowUpload,
+  deleteReflowPack,
+  getReflowFile,
+} from './reflow';
 import {
   assertCanManageBook,
   getBook,
@@ -67,6 +78,34 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.get('/api/trash', { preHandler: requireAuth }, async (request) => {
     return { items: await listTrash(deps, request.user!.id) };
+  });
+
+  // Reflow packs are shared with every member like the book itself, but only
+  // the uploader or an admin may replace or remove one.
+  app.post('/api/books/:id/reflow/uploads', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = bookIdParamsSchema.parse(request.params);
+    const input = reflowUploadCreateSchema.parse(request.body);
+    return reply.status(201).send(await createReflowUpload(deps, request.user!, id, input));
+  });
+
+  app.post(
+    '/api/books/:id/reflow/uploads/:uploadId/complete',
+    { preHandler: requireAuth },
+    async (request) => {
+      const params = z.object({ id: z.uuid(), uploadId: z.uuid() }).parse(request.params);
+      return completeReflowUpload(deps, request.user!, params.id, params.uploadId);
+    },
+  );
+
+  app.get('/api/books/:id/reflow', { preHandler: requireAuth }, async (request) => {
+    const { id } = bookIdParamsSchema.parse(request.params);
+    return getReflowFile(deps, id);
+  });
+
+  app.delete('/api/books/:id/reflow', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = bookIdParamsSchema.parse(request.params);
+    await deleteReflowPack(deps, request.user!, id);
+    return reply.status(204).send();
   });
 
   // The permission check runs in `onRequest`, before the multipart body is

@@ -1,4 +1,5 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { cleanupExpiredReflowUploads } from './books/reflow';
 import { cleanupTrash } from './books/service';
 import type { AppDeps } from './app';
 import { books, jobs } from './db/schema';
@@ -82,8 +83,11 @@ export function startDailyCleanup(deps: AppDeps): () => void {
     inFlight = true;
     try {
       const uploads = await cleanupExpiredUploads(deps);
+      const reflowUploads = await cleanupExpiredReflowUploads(deps);
       const purged = await cleanupTrash(deps);
-      console.log(`[cleanup] expired ${uploads} upload sessions and purged ${purged} trashed books`);
+      console.log(
+        `[cleanup] expired ${uploads} upload sessions, ${reflowUploads} reflow upload sessions and purged ${purged} trashed books`,
+      );
     } catch (error) {
       console.error(`[cleanup] daily sweep failed with ${errorName(error)}`);
     } finally {
