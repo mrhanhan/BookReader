@@ -19,7 +19,7 @@ export const REFLOW_PACK_SIZE_MESSAGE = `重排包不能超过 ${MAX_REFLOW_PACK
 /** Completion failures carry a machine-readable reason; show one line per case. */
 const REFLOW_INVALID_REASONS: Record<string, string> = {
   'pack/invalid': '重排包格式无效，请重新生成',
-  'pack/source-mismatch': '重排包与这本书不匹配',
+  'pack/source-mismatch': '重排包与当前图书的源文件不匹配',
   'pack/size': '重排包大小不符，请重新生成',
   'pack/missing': '上传未完成，请重试',
 };
@@ -48,10 +48,11 @@ export function fetchReflowFile(bookId: string): Promise<ReflowFileInfo> {
 export function createReflowUpload(
   bookId: string,
   input: { size: number; sha256: string },
+  signal?: AbortSignal,
 ): Promise<CreateReflowUploadResponse> {
   return apiFetch<CreateReflowUploadResponse>(
     `/api/books/${encodeURIComponent(bookId)}/reflow/uploads`,
-    { method: 'POST', body: JSON.stringify(input) },
+    { method: 'POST', body: JSON.stringify(input), signal },
   );
 }
 
@@ -59,10 +60,11 @@ export function createReflowUpload(
 export function completeReflowUpload(
   bookId: string,
   uploadId: string,
+  signal?: AbortSignal,
 ): Promise<CompleteReflowUploadResponse> {
   return apiFetch<CompleteReflowUploadResponse>(
     `/api/books/${encodeURIComponent(bookId)}/reflow/uploads/${encodeURIComponent(uploadId)}/complete`,
-    { method: 'POST' },
+    { method: 'POST', signal },
   );
 }
 
@@ -110,6 +112,7 @@ export interface ReflowUploadDeps {
   create: (
     bookId: string,
     input: { size: number; sha256: string },
+    signal?: AbortSignal,
   ) => Promise<CreateReflowUploadResponse>;
   post: (
     target: PresignedUploadTarget,
@@ -117,7 +120,11 @@ export interface ReflowUploadDeps {
     onProgress: (percent: number) => void,
     signal?: AbortSignal,
   ) => Promise<void>;
-  complete: (bookId: string, uploadId: string) => Promise<CompleteReflowUploadResponse>;
+  complete: (
+    bookId: string,
+    uploadId: string,
+    signal?: AbortSignal,
+  ) => Promise<CompleteReflowUploadResponse>;
 }
 
 export interface UploadReflowPackOptions {
@@ -129,9 +136,10 @@ export interface UploadReflowPackOptions {
 function defaultDeps(): ReflowUploadDeps {
   return {
     hash: readPackSourceHash,
-    create: createReflowUpload,
+    create: (bookId, input, signal) => createReflowUpload(bookId, input, signal),
     post: postWithProgress,
-    complete: completeReflowUpload,
+    complete: (bookId, uploadId, signal) =>
+      completeReflowUpload(bookId, uploadId, signal),
   };
 }
 
@@ -167,7 +175,7 @@ export async function uploadReflowPack(
   const sha256 = await deps.hash(file, signal);
   throwIfAborted(signal);
 
-  const created = await deps.create(bookId, { size: file.size, sha256 });
+  const created = await deps.create(bookId, { size: file.size, sha256 }, signal);
   throwIfAborted(signal);
 
   const reportProgress = (percent: number) => {
@@ -176,7 +184,11 @@ export async function uploadReflowPack(
   await deps.post(created.upload, file, reportProgress, signal);
   throwIfAborted(signal);
 
-  const completed = await deps.complete(bookId, created.uploadId);
+  // The signal also covers completion so an abort in the attach window cannot
+  // leave the caller reporting success after the dialog has moved on.
+  const completed = await deps.complete(bookId, created.uploadId, signal);
+  throwIfAborted(signal);
+
   options.onProgress?.(100);
   return completed;
 }

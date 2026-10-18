@@ -31,7 +31,8 @@ export function BookshelfPage() {
   const { user } = useAuth();
   const [filters, setFilters] = useState<ShelfFilters>(DEFAULT_FILTERS);
   const [view, setView] = useState<ShelfView>(readShelfView);
-  const [editingBook, setEditingBook] = useState<BookDto | null>(null);
+  const [editingBookId, setEditingBookId] = useState<string | null>(null);
+  const [editSnapshot, setEditSnapshot] = useState<BookDto | null>(null);
   const [deletingBook, setDeletingBook] = useState<BookDto | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -59,6 +60,16 @@ export function BookshelfPage() {
     } catch {
       // Persisting the preference is best-effort.
     }
+  }
+
+  function openEditDialog(book: BookDto) {
+    setEditSnapshot(book);
+    setEditingBookId(book.id);
+  }
+
+  function closeEditDialog() {
+    setEditingBookId(null);
+    setEditSnapshot(null);
   }
 
   function closeDeleteDialog() {
@@ -100,6 +111,12 @@ export function BookshelfPage() {
   const books = booksQuery.data?.items ?? [];
   const total = booksQuery.data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
+
+  // Prefer the refetched shelf entry so a reflow upload/removal is visible when
+  // the dialog is reopened; the snapshot only covers a book filtered off-page.
+  const editingBook =
+    (editingBookId ? books.find((item) => item.id === editingBookId) : undefined) ??
+    (editSnapshot && editSnapshot.id === editingBookId ? editSnapshot : null);
 
   // Deleting the last book on a trailing page leaves the shelf past its end.
   useEffect(() => {
@@ -203,7 +220,7 @@ export function BookshelfPage() {
               book={book}
               view={view}
               canManage={Boolean(user && (user.role === 'admin' || book.uploadedBy.id === user.id))}
-              onEdit={setEditingBook}
+              onEdit={openEditDialog}
               onDelete={(selected) => {
                 setDeleteError(null);
                 setDeletingBook(selected);
@@ -243,7 +260,7 @@ export function BookshelfPage() {
         <EditBookDialog
           key={editingBook.id}
           book={editingBook}
-          onClose={() => setEditingBook(null)}
+          onClose={closeEditDialog}
         />
       ) : null}
 

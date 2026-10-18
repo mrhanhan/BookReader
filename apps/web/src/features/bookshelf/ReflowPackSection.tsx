@@ -34,12 +34,16 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+const NETWORK_ERROR_MESSAGE = '网络连接失败，请检查网络后重试';
+
 /**
- * Server errors are localized by code/reason; local validation and network
- * failures keep their own message so the user can act on them.
+ * Server errors are localized by code/reason; local validation and upload
+ * failures keep their own message. `fetch` reports an unreachable API as a
+ * bare `TypeError`, which must not leak "Failed to fetch" to the reader.
  */
 function errorMessageFor(error: unknown): string {
   if (error instanceof ApiError) return reflowPackErrorMessage(error);
+  if (error instanceof TypeError) return NETWORK_ERROR_MESSAGE;
   if (error instanceof Error && error.message) return error.message;
   return '操作失败，请稍后重试';
 }

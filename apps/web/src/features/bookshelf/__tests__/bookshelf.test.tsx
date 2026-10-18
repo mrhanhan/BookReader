@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -208,6 +208,56 @@ it('marks PDF books that have a reflow pack', async () => {
     '[data-testid="book-card"]',
   ) as HTMLElement;
   expect(within(withoutPack).queryByText('可重排')).toBeNull();
+});
+
+it('shows the fresh reflow state when the edit dialog is reopened', async () => {
+  const shelf: BookDto[] = [
+    book({
+      id: 'book-reflow-remove',
+      title: '带重排包的 PDF',
+      format: 'pdf',
+      uploadedBy: { id: 'user-reader', displayName: '读者' },
+      reflowAvailable: true,
+      reflowSchemaVersion: 1,
+      reflowPageCount: 300,
+    }),
+  ];
+  server.use(
+    http.get('/api/books', () =>
+      HttpResponse.json({ items: [...shelf], total: 1, page: 1, pageSize: 24 }),
+    ),
+    http.delete('/api/books/:id/reflow', () => {
+      shelf[0] = {
+        ...shelf[0]!,
+        reflowAvailable: false,
+        reflowSchemaVersion: null,
+        reflowPageCount: null,
+      };
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  await userEvent.click(
+    await screen.findByRole('button', { name: '编辑《带重排包的 PDF》' }),
+  );
+  expect(await screen.findByText(/300 页/)).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: '移除重排包' }));
+  await userEvent.click(screen.getByRole('button', { name: '确认移除' }));
+  await waitFor(() => expect(screen.getByText('尚未上传重排包')).toBeInTheDocument());
+
+  // Close and reopen: the shelf refetched after removal, so the dialog must
+  // derive the book from the list instead of a stale opening snapshot.
+  await userEvent.click(screen.getByRole('button', { name: '取消' }));
+  await userEvent.click(
+    await screen.findByRole('button', { name: '编辑《带重排包的 PDF》' }),
+  );
+
+  expect(await screen.findByText('尚未上传重排包')).toBeInTheDocument();
+  expect(screen.queryByText(/300 页/)).toBeNull();
 });
 
 it('lets a member create a category while editing a book', async () => {

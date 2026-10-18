@@ -221,6 +221,23 @@ it('shows the 422 message when the pack does not match the book', async () => {
   );
 });
 
+it('shows a network message when the API cannot be reached', async () => {
+  const create = vi.fn(async () => {
+    throw new TypeError('Failed to fetch');
+  });
+  const upload = vi.fn((file: File, onProgress: (n: number) => void) =>
+    uploadReflowPack('book-csapp', file, { onProgress, deps: { create } }),
+  );
+
+  render(<ReflowPackSection book={sectionBook()} upload={upload} />);
+  await userEvent.upload(screen.getByLabelText('选择重排包'), packFile());
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    '网络连接失败，请检查网络后重试',
+  );
+  expect(screen.queryByText(/Failed to fetch/)).toBeNull();
+});
+
 it('renders nothing for non-PDF books', () => {
   const { container } = render(
     <ReflowPackSection book={book({ id: 'book-epub', title: '三体', format: 'epub' })} />,
@@ -240,7 +257,7 @@ describe('reflowPackErrorMessage', () => {
       reflowPackErrorMessage(
         new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/source-mismatch' }),
       ),
-    ).toBe('重排包与这本书不匹配');
+    ).toBe('重排包与当前图书的源文件不匹配');
     expect(
       reflowPackErrorMessage(new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/size' })),
     ).toBe('重排包大小不符，请重新生成');
@@ -300,7 +317,7 @@ describe('uploadReflowPack', () => {
     });
 
     expect(calls).toEqual(['create', 'post', 'complete']);
-    expect(complete).toHaveBeenCalledWith('book-csapp', 'upload-1');
+    expect(complete).toHaveBeenCalledWith('book-csapp', 'upload-1', undefined);
     expect(result.book.reflowPageCount).toBe(300);
   });
 
@@ -343,6 +360,37 @@ describe('uploadReflowPack', () => {
     );
 
     expect(deps.create).not.toHaveBeenCalled();
+  });
+
+  it('stops the pipeline when the upload is aborted during completion', async () => {
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    const complete = vi.fn(async () => {
+      // The request is already in flight when the user closes the dialog; a
+      // fake that ignores the signal must not let the pipeline report success.
+      controller.abort();
+      return completeResponse();
+    });
+
+    await expect(
+      uploadReflowPack('book-csapp', packFile(), {
+        signal: controller.signal,
+        onProgress,
+        deps: {
+          hash: async () => SOURCE_SHA,
+          create: async () => ({
+            uploadId: 'upload-1',
+            upload: { url: 'https://files.test/reflow', fields: {} },
+            expiresAt: '2026-01-01T00:00:00.000Z',
+          }),
+          post: async () => undefined,
+          complete,
+        },
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(onProgress).not.toHaveBeenCalledWith(100);
   });
 
   it('surfaces a completion ApiError unchanged', async () => {
