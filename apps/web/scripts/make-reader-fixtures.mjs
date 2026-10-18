@@ -1,14 +1,17 @@
 /**
  * Generates the deterministic fixtures the reader acceptance tests upload.
  *
- *   e2e/fixtures/reader.pdf  - 300 US-Letter pages with selectable text
- *   e2e/fixtures/reader.epub - minimal EPUB 3 with two chapters
+ *   e2e/fixtures/reader.pdf         - 300 US-Letter pages with selectable text
+ *   e2e/fixtures/reader.epub        - minimal EPUB 3 with two chapters
+ *   e2e/fixtures/reader.bookr.json  - reflow pack for reader.pdf
  *
- * Both files are git-ignored and rebuilt by `e2e/global-setup.ts` before each
+ * All files are git-ignored and rebuilt by `e2e/global-setup.ts` before each
  * Playwright run, so they are never stale. Metadata dates are pinned and the
  * zip entries are written in a fixed order, making byte-for-byte output stable
- * (the library's sha256 dedupe depends on it).
+ * (the library's sha256 dedupe depends on it). The reflow pack hashes the PDF
+ * bytes exactly as written to disk, so it always matches the uploaded book.
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -164,8 +167,61 @@ async function makeEpub() {
   });
 }
 
+/**
+ * The reflow pack mirrors reader.pdf page for page: one paragraph naming each
+ * page, page 1's unique phrase, and a TOC entry pointing at page 3. Every
+ * value is pinned so the JSON is byte-for-byte stable across runs.
+ */
+function makeReflowPack(sha256) {
+  const pages = Array.from({ length: PAGE_COUNT }, (_, index) => {
+    const page = index + 1;
+    const blocks = [
+      {
+        id: `p${page}-b0`,
+        type: 'paragraph',
+        text: `Bookr reader fixture - page ${page}`,
+        rect: { x: 0.11, y: 0.07, w: 0.55, h: 0.04 },
+      },
+    ];
+    if (page === 1) {
+      blocks.push({
+        id: 'p1-b1',
+        type: 'paragraph',
+        text: 'The quick brown fox jumps over the lazy dog',
+        rect: { x: 0.11, y: 0.12, w: 0.7, h: 0.04 },
+      });
+    }
+    return { page, width: US_LETTER[0], height: US_LETTER[1], blocks };
+  });
+
+  return {
+    schemaVersion: 1,
+    source: { sha256, pageCount: PAGE_COUNT },
+    generatedAt: '2024-01-01T00:00:00.000Z',
+    tool: { name: 'bookr-preprocess', version: 'e2e' },
+    quality: {
+      pages: PAGE_COUNT,
+      textBlocks: PAGE_COUNT + 1,
+      fallbackPages: [],
+      ocrPages: [],
+      avgConfidence: null,
+      warnings: [],
+    },
+    toc: [{ label: '第 3 页', page: 3, level: 1 }],
+    pages,
+  };
+}
+
 mkdirSync(fixturesDir, { recursive: true });
-writeFileSync(join(fixturesDir, 'reader.pdf'), await makePdf());
+const pdfBytes = await makePdf();
+writeFileSync(join(fixturesDir, 'reader.pdf'), pdfBytes);
+const sha256 = createHash('sha256').update(pdfBytes).digest('hex');
 writeFileSync(join(fixturesDir, 'reader.epub'), await makeEpub());
+// The pack must be written from the exact bytes the server will hash: the
+// create-upload call declares this sha256 and the server compares it to the book.
+writeFileSync(
+  join(fixturesDir, 'reader.bookr.json'),
+  JSON.stringify(makeReflowPack(sha256), null, 2),
+);
 
 console.log(`Wrote reader fixtures to ${fixturesDir}`);
