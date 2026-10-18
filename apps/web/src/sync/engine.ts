@@ -12,7 +12,11 @@ export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'error';
 /** Where an applied server change came from; a push echo is our own write. */
 export type AppliedSource = 'push' | 'pull' | 'stream';
 
-/** The latest server change written to the local store. */
+/**
+ * Diagnostic record of the latest server change written to the local store.
+ * Nothing consumes it for navigation: the reader aligns progress once when it
+ * opens instead of following changes live.
+ */
 export interface AppliedChange {
   entityType: SyncEntityType;
   entityId: string;
@@ -35,8 +39,8 @@ export interface SyncState {
   lastSyncedAt: number | null;
   conflicts: number;
   /**
-   * Set when the engine applies a server change to the local store. Open views
-   * (the reader's progress) compare this to what they already followed.
+   * Diagnostic marker for the latest applied change; retained for status and
+   * debugging only, not for driving any view.
    */
   lastApplied?: AppliedChange;
   /** Set when the engine resolves a conflict, so views can describe it. */

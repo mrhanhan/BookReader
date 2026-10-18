@@ -239,6 +239,35 @@ describe('SyncProvider', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['books'] });
   });
 
+  it('resolves the first-sync wait immediately when the engine starts offline', async () => {
+    setTokens(tokens);
+    // A real engine starts offline in its final state and never publishes a
+    // change, so the provider must resolve the gate from the initial state.
+    const offlineEngine: SyncEngine = {
+      start: vi.fn(),
+      stop: vi.fn(async () => undefined),
+      syncNow: vi.fn(async () => undefined),
+      getState: () => ({ status: 'offline', pending: 0, lastSyncedAt: null, conflicts: 0 }),
+      subscribe: () => () => undefined,
+    };
+
+    const handle: { current: ProbeHandle | null } = { current: null };
+    renderWithProviders(
+      <SyncProvider createRepo={() => repo} createEngine={() => offlineEngine}>
+        <Probe
+          onReady={(next) => {
+            handle.current = next;
+          }}
+        />
+      </SyncProvider>,
+    );
+
+    await waitFor(() => expect(offlineEngine.start).toHaveBeenCalled());
+    const startedAt = Date.now();
+    await handle.current?.sync.waitForFirstSync(1_500);
+    expect(Date.now() - startedAt).toBeLessThan(100);
+  });
+
   it('opens the event stream through the browser EventSource', async () => {
     setTokens(tokens);
     const urls: string[] = [];

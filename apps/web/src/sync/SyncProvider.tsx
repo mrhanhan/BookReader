@@ -158,7 +158,13 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
         previousConflicts = next.conflicts;
       }
     });
-    setState(engine.getState());
+    const initial = engine.getState();
+    setState(initial);
+    // An offline engine starts in its final state and may never publish a
+    // change, so waiting for a notification would burn the whole timeout.
+    if (initial.status === 'offline') {
+      gate.resolve();
+    }
     engine.start();
 
     return () => {
