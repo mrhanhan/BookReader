@@ -1,8 +1,8 @@
 import { ERROR_CODES, type Role } from '@bookr/shared';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyRequest, preHandlerHookHandler } from 'fastify';
 import type { AppDeps } from '../app';
-import { users } from '../db/schema';
+import { devices, users } from '../db/schema';
 import { AppError } from '../errors';
 import { verifyAccessToken } from './tokens';
 
@@ -64,6 +64,29 @@ export function makeRequireAuth(deps: AppDeps): preHandlerHookHandler {
 
     if (!user || !user.isActive) {
       throw unauthorized();
+    }
+
+    // Access tokens are bound to the device session that minted them, so an
+    // administrator revoking a user's devices also invalidates their access
+    // tokens instead of waiting out the 15-minute lifetime.
+    if (claims.deviceId !== undefined) {
+      if (!UUID_RE.test(claims.deviceId)) {
+        throw unauthorized();
+      }
+      const [device] = await deps.db
+        .select({ id: devices.id })
+        .from(devices)
+        .where(
+          and(
+            eq(devices.id, claims.deviceId),
+            eq(devices.userId, user.id),
+            isNull(devices.revokedAt),
+          ),
+        )
+        .limit(1);
+      if (!device) {
+        throw unauthorized();
+      }
     }
 
     request.user = { id: user.id, role: user.role };

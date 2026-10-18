@@ -95,7 +95,7 @@ export async function registerUser(deps: AppDeps, input: RegisterInput): Promise
   const passwordHash = await hashPassword(input.password);
   const refresh = newRefreshToken();
 
-  const userId = await deps.db.transaction(async (tx) => {
+  const session = await deps.db.transaction(async (tx) => {
     const [invite] = await tx
       .select()
       .from(invites)
@@ -129,14 +129,20 @@ export async function registerUser(deps: AppDeps, input: RegisterInput): Promise
       throw new Error('User insert returned no row');
     }
 
-    await tx.insert(devices).values({
-      userId: created.id,
-      name: input.deviceName ?? null,
-      platform: input.platform ?? null,
-      refreshTokenHash: refresh.hash,
-      refreshExpiresAt: refresh.expiresAt,
-      lastSeenAt: now,
-    });
+    const [device] = await tx
+      .insert(devices)
+      .values({
+        userId: created.id,
+        name: input.deviceName ?? null,
+        platform: input.platform ?? null,
+        refreshTokenHash: refresh.hash,
+        refreshExpiresAt: refresh.expiresAt,
+        lastSeenAt: now,
+      })
+      .returning({ id: devices.id });
+    if (!device) {
+      throw new Error('Device insert returned no row');
+    }
     await tx
       .update(invites)
       .set({ usedBy: created.id, usedAt: now })
@@ -148,11 +154,11 @@ export async function registerUser(deps: AppDeps, input: RegisterInput): Promise
       metadata: { username: created.username },
     });
 
-    return created.id;
+    return { userId: created.id, deviceId: device.id };
   });
 
   const accessToken = await signAccessToken(
-    { sub: userId, role: 'member' },
+    { sub: session.userId, role: 'member', deviceId: session.deviceId },
     deps.config.jwtSecret,
   );
   return tokensFor(accessToken, refresh.token);
@@ -190,14 +196,20 @@ export async function loginUser(
 
   const refresh = newRefreshToken();
   const now = deps.clock.now();
-  await deps.db.insert(devices).values({
-    userId: user.id,
-    name: deviceName ?? null,
-    platform: platform ?? null,
-    refreshTokenHash: refresh.hash,
-    refreshExpiresAt: refresh.expiresAt,
-    lastSeenAt: now,
-  });
+  const [device] = await deps.db
+    .insert(devices)
+    .values({
+      userId: user.id,
+      name: deviceName ?? null,
+      platform: platform ?? null,
+      refreshTokenHash: refresh.hash,
+      refreshExpiresAt: refresh.expiresAt,
+      lastSeenAt: now,
+    })
+    .returning({ id: devices.id });
+  if (!device) {
+    throw new Error('Device insert returned no row');
+  }
   await deps.db.insert(auditLogs).values({
     userId: user.id,
     action: 'auth.login',
@@ -206,7 +218,7 @@ export async function loginUser(
   });
 
   const accessToken = await signAccessToken(
-    { sub: user.id, role: user.role },
+    { sub: user.id, role: user.role, deviceId: device.id },
     deps.config.jwtSecret,
   );
   return tokensFor(accessToken, refresh.token);
@@ -270,7 +282,7 @@ export async function refreshSession(
   });
 
   const accessToken = await signAccessToken(
-    { sub: session.userId, role: session.role },
+    { sub: session.userId, role: session.role, deviceId: session.deviceId },
     deps.config.jwtSecret,
   );
   return { ...tokensFor(accessToken, next.token), username: session.username };

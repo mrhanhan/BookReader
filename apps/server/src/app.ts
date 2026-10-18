@@ -3,6 +3,7 @@ import multipart from '@fastify/multipart';
 import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
+import { registerAdminRoutes } from './admin/routes';
 import { registerAuthRoutes } from './auth/routes';
 import type { Converter } from './books/conversion';
 import { registerBookRoutes } from './books/routes';
@@ -130,6 +131,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.get('/healthz', async () => ({ status: 'ok' }));
 
   registerAuthRoutes(app, deps);
+  registerAdminRoutes(app, deps);
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
   registerCategoryRoutes(app, deps);
