@@ -30,15 +30,20 @@ function wait(ms: number): Promise<void> {
  */
 export class FakeAiClient implements AiClient {
   readonly name = 'fake' as const;
-  lastRequest: AiStreamRequest | null = null;
   private readonly options: FakeAiOptions;
+  private last: AiStreamRequest | null = null;
 
   constructor(options: FakeAiOptions = {}) {
     this.options = options;
   }
 
+  /** The most recent request, so tests can assert the prompt contents. */
+  get lastRequest(): AiStreamRequest | null {
+    return this.last;
+  }
+
   async *streamChat(request: AiStreamRequest): AsyncIterable<AiStreamEvent> {
-    this.lastRequest = request;
+    this.last = request;
 
     const { reply, chunkSize, delayMs = DEFAULT_DELAY_MS, failAfter } = this.options;
     const text = typeof reply === 'function' ? reply(request) : (reply ?? DEFAULT_REPLY);
