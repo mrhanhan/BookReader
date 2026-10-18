@@ -127,6 +127,19 @@ it('streams an explanation, persists both messages and supports a follow-up', as
   const followUpEvents = parseFrames(await followUp.text());
   expect(followUpEvents.at(-1)!.event).toBe('done');
   expect(await testDb.select().from(aiMessages)).toHaveLength(4);
+
+  // Exactly-once settlement: the persisted counters equal the two reported usages.
+  const doneUsages = [events, followUpEvents]
+    .map((list) => list.find((event) => event.event === 'done')!.data.usage as {
+      promptTokens: number;
+      completionTokens: number;
+    });
+  const expectedPrompt = doneUsages.reduce((sum, item) => sum + item.promptTokens, 0);
+  const expectedCompletion = doneUsages.reduce((sum, item) => sum + item.completionTokens, 0);
+  const day = (await testDb.select().from(aiUsage)).find((row) => row.period === 'day')!;
+  expect(day.promptTokens).toBe(expectedPrompt);
+  expect(day.completionTokens).toBe(expectedCompletion);
+  expect(day.reservedTokens).toBe(0);
   const replay = fake.lastRequest!.messages.map((message) => message.content).join('\n');
   expect(replay).toContain('再展开一点');
   expect(replay).toContain('模拟 AI 回答');
