@@ -1,6 +1,13 @@
 import '@testing-library/jest-dom/vitest';
 import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES } from '@bookr/shared';
-import type { AuthTokens, BookDto, BookStatus, CategoryDto, MeDto } from '@bookr/shared';
+import type {
+  AuthTokens,
+  BookDto,
+  BookStatus,
+  CategoryDto,
+  Locator,
+  MeDto,
+} from '@bookr/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '@testing-library/react';
 import type { RenderResult } from '@testing-library/react';
@@ -318,6 +325,29 @@ export const handlers = [
     found.conversionError = null;
     found.updatedAt = new Date().toISOString();
     return HttpResponse.json({ queued: true }, { status: 202 });
+  }),
+  // Reader file URLs follow the fixture format; MOBI/AZW3 fixtures use EPUB.
+  http.get('/api/books/:id/file', ({ params }) => {
+    const found = fixtures.shelf.find((item) => item.id === params.id);
+    if (!found) return error(404, 'NOT_FOUND', 'Book not found');
+    const format = found.format === 'pdf' ? 'pdf' : 'epub';
+    return HttpResponse.json({
+      url: format === 'pdf' ? 'https://files.test/book.pdf' : 'https://files.test/book.epub',
+      format,
+      expiresIn: 3600,
+    });
+  }),
+  http.get('/api/books/:id/progress', () => HttpResponse.json({ progress: null })),
+  http.put('/api/books/:id/progress', async ({ params, request }) => {
+    const body = (await request.json()) as { locator: Locator };
+    return HttpResponse.json({
+      progress: {
+        bookId: params.id,
+        locator: body.locator,
+        percent: body.locator.percent,
+        updatedAt: new Date().toISOString(),
+      },
+    });
   }),
   http.post('/api/books/:id/cover', async ({ params, request }) => {
     const found = fixtures.shelf.find((item) => item.id === params.id);

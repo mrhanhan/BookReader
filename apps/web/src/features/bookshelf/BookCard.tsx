@@ -1,5 +1,6 @@
 import type { BookDto } from '@bookr/shared';
 import { Button, cn } from '@bookr/ui';
+import { Link } from 'react-router';
 import { formatDate } from '../../lib/format';
 import type { ShelfView } from './FilterBar';
 import {
@@ -159,26 +160,35 @@ export function BookCard({
           </span>
         </div>
 
-        {canManage ? (
-          <div className="flex items-center gap-2 pt-0.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`编辑《${book.title}》`}
-              onClick={() => onEdit(book)}
-            >
-              编辑
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={`删除《${book.title}》`}
-              onClick={() => onDelete(book)}
-            >
-              删除
-            </Button>
-          </div>
-        ) : null}
+        <div className="flex items-center gap-2 pt-0.5">
+          <Link
+            to={`/books/${book.id}/read`}
+            aria-label={`阅读《${book.title}》`}
+            className="rounded-md px-2 py-1 text-sm text-accent transition hover:bg-accent/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            阅读
+          </Link>
+          {canManage ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`编辑《${book.title}》`}
+                onClick={() => onEdit(book)}
+              >
+                编辑
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={`删除《${book.title}》`}
+                onClick={() => onDelete(book)}
+              >
+                删除
+              </Button>
+            </>
+          ) : null}
+        </div>
       </div>
     </article>
   );

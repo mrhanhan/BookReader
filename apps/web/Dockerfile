@@ -14,10 +14,12 @@ COPY apps/server/package.json ./apps/server/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/ui/package.json ./packages/ui/
+COPY packages/reader-core/package.json ./packages/reader-core/
 RUN pnpm install --frozen-lockfile
 
 COPY packages/shared ./packages/shared
 COPY packages/ui ./packages/ui
+COPY packages/reader-core ./packages/reader-core
 COPY apps/web ./apps/web
 RUN pnpm --filter @bookr/web build
 

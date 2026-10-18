@@ -1,12 +1,12 @@
-import { createBrowserRouter, Navigate, Outlet, useLocation } from 'react-router';
+import { createBrowserRouter, Navigate, Outlet, useLocation, useParams } from 'react-router';
 import type { RouteObject } from 'react-router';
 import type { ReactNode } from 'react';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RegisterPage } from '../features/auth/RegisterPage';
 import { MembersPage } from '../features/admin/MembersPage';
 import { BookshelfPage } from '../features/bookshelf/BookshelfPage';
-import { BookPlaceholderPage } from '../features/bookshelf/BookPlaceholderPage';
 import { TrashPage } from '../features/bookshelf/TrashPage';
+import { ReaderPage } from '../features/reader/ReaderPage';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './auth';
 
@@ -52,6 +52,12 @@ function RequireAdmin({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** The shelf's book links still point at `/books/:id`; send them to the reader. */
+function BookRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={id ? `/books/${id}/read` : '/'} replace />;
+}
+
 /** Route table shared by the browser router and `createMemoryRouter` in tests. */
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
@@ -59,11 +65,13 @@ export const routes: RouteObject[] = [
   {
     element: <RequireAuth />,
     children: [
+      // The reader owns the whole viewport, so it sits outside `AppLayout`.
+      { path: 'books/:id/read', element: <ReaderPage /> },
       {
         element: <AppLayout />,
         children: [
           { index: true, element: <BookshelfPage /> },
-          { path: 'books/:id', element: <BookPlaceholderPage /> },
+          { path: 'books/:id', element: <BookRedirect /> },
           { path: 'trash', element: <TrashPage /> },
           { path: 'admin', element: <Navigate to="/admin/members" replace /> },
           {
