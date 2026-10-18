@@ -1,10 +1,17 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { MAX_REFLOW_PACK_BYTES } from '@bookr/shared';
 import type { BookDto, CompleteReflowUploadResponse } from '@bookr/shared';
 import { Button, cn } from '@bookr/ui';
-import { deleteReflowPack, uploadReflowPack } from '../../api/reflow';
-import { messageForApiError } from '../../lib/errorMessages';
+import { ApiError } from '../../api/client';
+import {
+  MAX_REFLOW_PACK_MB,
+  REFLOW_PACK_EXTENSION_MESSAGE,
+  REFLOW_PACK_SIZE_MESSAGE,
+  deleteReflowPack,
+  reflowPackErrorMessage,
+  uploadReflowPack,
+} from '../../api/reflow';
 
 export interface ReflowPackSectionProps {
   book: BookDto;
@@ -17,6 +24,24 @@ export interface ReflowPackSectionProps {
   ) => Promise<CompleteReflowUploadResponse>;
   /** Injectable removal; defaults to the real DELETE request. */
   remove?: () => Promise<void>;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
+}
+
+/**
+ * Server errors are localized by code/reason; local validation and network
+ * failures keep their own message so the user can act on them.
+ */
+function errorMessageFor(error: unknown): string {
+  if (error instanceof ApiError) return reflowPackErrorMessage(error);
+  if (error instanceof Error && error.message) return error.message;
+  return '操作失败，请稍后重试';
 }
 
 /**
@@ -36,14 +61,30 @@ export function ReflowPackSection({
   const [error, setError] = useState<string | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const activeUpload = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
 
   // The edit dialog keeps its own snapshot of the book, so reflect any newer
   // object the parent passes in (for example after a refetch).
   useEffect(() => setCurrent(book), [book]);
 
+  // Closing the dialog aborts whatever is still in flight and parks setState.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      activeUpload.current?.abort();
+    };
+  }, []);
+
   if (book.format !== 'pdf') return null;
 
   const busy = progress !== null || removing;
+
+  function cancelUpload() {
+    activeUpload.current?.abort();
+    setProgress(null);
+  }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -55,25 +96,42 @@ export function ReflowPackSection({
     setConfirmingRemove(false);
 
     if (!file.name.toLowerCase().endsWith('.json')) {
-      setError('仅支持 .bookr.json 重排包');
+      setError(REFLOW_PACK_EXTENSION_MESSAGE);
       return;
     }
     if (file.size > MAX_REFLOW_PACK_BYTES) {
-      setError('重排包不能超过 32 MB');
+      setError(REFLOW_PACK_SIZE_MESSAGE);
       return;
     }
 
+    const controller = new AbortController();
+    activeUpload.current = controller;
     setProgress(0);
+
+    const reportProgress = (percent: number) => {
+      if (mounted.current && !controller.signal.aborted) setProgress(percent);
+    };
+
     try {
       const result = await (upload
-        ? upload(file, setProgress)
-        : uploadReflowPack(book.id, file, { onProgress: setProgress }));
+        ? upload(file, reportProgress)
+        : uploadReflowPack(book.id, file, {
+            onProgress: reportProgress,
+            signal: controller.signal,
+          }));
+      if (!mounted.current || controller.signal.aborted) return;
       setCurrent(result.book);
       onChanged?.(result.book);
     } catch (failure) {
-      setError(messageForApiError(failure));
+      if (!mounted.current || controller.signal.aborted || isAbortError(failure)) return;
+      setError(errorMessageFor(failure));
     } finally {
-      setProgress(null);
+      // A cancelled upload may already have been replaced by a new one; only
+      // the controller that still owns the slot may clear its progress.
+      if (activeUpload.current === controller) {
+        activeUpload.current = null;
+        if (mounted.current) setProgress(null);
+      }
     }
   }
 
@@ -82,6 +140,7 @@ export function ReflowPackSection({
     setRemoving(true);
     try {
       await (remove ?? (() => deleteReflowPack(book.id)))();
+      if (!mounted.current) return;
       const next: BookDto = {
         ...current,
         reflowAvailable: false,
@@ -92,9 +151,10 @@ export function ReflowPackSection({
       setConfirmingRemove(false);
       onChanged?.(next);
     } catch (failure) {
-      setError(messageForApiError(failure));
+      if (!mounted.current) return;
+      setError(errorMessageFor(failure));
     } finally {
-      setRemoving(false);
+      if (mounted.current) setRemoving(false);
     }
   }
 
@@ -159,13 +219,18 @@ export function ReflowPackSection({
       </div>
 
       <p className="text-xs text-muted">
-        上传预处理器生成的 .bookr.json 重排包，不超过 32 MB。
+        上传预处理器生成的 .bookr.json 重排包，不超过 {MAX_REFLOW_PACK_MB} MB。
       </p>
 
       {progress !== null ? (
-        <p role="status" className="text-xs text-muted">
-          上传中 {progress}%
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p role="status" className="text-xs text-muted">
+            上传中 {progress}%
+          </p>
+          <Button variant="ghost" size="sm" onClick={cancelUpload}>
+            取消上传
+          </Button>
+        </div>
       ) : null}
 
       {error ? (

@@ -1,11 +1,43 @@
+import { MAX_REFLOW_PACK_BYTES } from '@bookr/shared';
 import type {
   CompleteReflowUploadResponse,
   CreateReflowUploadResponse,
   PresignedUploadTarget,
   ReflowFileInfo,
 } from '@bookr/shared';
-import { apiFetch } from './client';
+import { ApiError, apiFetch } from './client';
+import { messageForApiError } from '../lib/errorMessages';
 import { postWithProgress } from '../lib/upload';
+
+/** The 32 MiB server limit, in whole megabytes for display. */
+export const MAX_REFLOW_PACK_MB = Math.round(MAX_REFLOW_PACK_BYTES / 1024 / 1024);
+
+/** Copy shared by the section and the pipeline's own defence-in-depth guards. */
+export const REFLOW_PACK_EXTENSION_MESSAGE = '仅支持 .bookr.json 重排包';
+export const REFLOW_PACK_SIZE_MESSAGE = `重排包不能超过 ${MAX_REFLOW_PACK_MB} MB`;
+
+/** Completion failures carry a machine-readable reason; show one line per case. */
+const REFLOW_INVALID_REASONS: Record<string, string> = {
+  'pack/invalid': '重排包格式无效，请重新生成',
+  'pack/source-mismatch': '重排包与这本书不匹配',
+  'pack/size': '重排包大小不符，请重新生成',
+  'pack/missing': '上传未完成，请重试',
+};
+
+/**
+ * Localizes a reflow failure. `REFLOW_INVALID` is broad on the wire, so its
+ * `details.reason` distinguishes a malformed pack from a pack that belongs to
+ * another book; anything unrecognised keeps the generic code message.
+ */
+export function reflowPackErrorMessage(error: ApiError): string {
+  if (error.code === 'REFLOW_INVALID') {
+    const reason = error.details?.reason;
+    if (typeof reason === 'string' && REFLOW_INVALID_REASONS[reason]) {
+      return REFLOW_INVALID_REASONS[reason];
+    }
+  }
+  return messageForApiError(error);
+}
 
 /** Signed download details for the stored pack of a PDF book. */
 export function fetchReflowFile(bookId: string): Promise<ReflowFileInfo> {
@@ -122,6 +154,15 @@ export async function uploadReflowPack(
   const deps: ReflowUploadDeps = { ...defaultDeps(), ...options.deps };
   const { signal } = options;
   throwIfAborted(signal);
+
+  // The UI validates before starting, but the pipeline must not create a
+  // session for a file it can never complete.
+  if (!file.name.toLowerCase().endsWith('.json')) {
+    throw new Error(REFLOW_PACK_EXTENSION_MESSAGE);
+  }
+  if (file.size > MAX_REFLOW_PACK_BYTES) {
+    throw new Error(REFLOW_PACK_SIZE_MESSAGE);
+  }
 
   const sha256 = await deps.hash(file, signal);
   throwIfAborted(signal);

@@ -66,7 +66,10 @@ export function useBook(id: string | null) {
 }
 
 /** A shelf change must refresh the filtered pages, the single-book cache and trash. */
-function invalidateBookQueries(queryClient: QueryClient, bookId?: string): Promise<void> {
+export function invalidateBookQueries(
+  queryClient: QueryClient,
+  bookId?: string,
+): Promise<void> {
   const tasks: Promise<unknown>[] = [
     queryClient.invalidateQueries({ queryKey: BOOKS_QUERY_KEY }),
     queryClient.invalidateQueries({ queryKey: TRASH_QUERY_KEY }),

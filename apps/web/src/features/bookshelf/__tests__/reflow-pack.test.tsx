@@ -1,14 +1,15 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_REFLOW_PACK_BYTES } from '@bookr/shared';
 import type { CompleteReflowUploadResponse } from '@bookr/shared';
 import { ApiError } from '../../../api/client';
-import { uploadReflowPack } from '../../../api/reflow';
+import { reflowPackErrorMessage, uploadReflowPack } from '../../../api/reflow';
 import { ReflowPackSection } from '../ReflowPackSection';
 import { book } from '../../../../test/setup';
 
 const PACK_SUMMARY = { schemaVersion: 1, pageCount: 300, blockCount: 2400, fallbackPages: [] };
+const SOURCE_SHA = 'c'.repeat(64);
 
 function completeResponse(overrides: Partial<CompleteReflowUploadResponse['book']> = {}) {
   return {
@@ -24,6 +25,16 @@ function completeResponse(overrides: Partial<CompleteReflowUploadResponse['book'
   };
 }
 
+function packFile(): File {
+  return new File(
+    [JSON.stringify({ schemaVersion: 1, source: { sha256: SOURCE_SHA } })],
+    'book.bookr.json',
+    { type: 'application/json' },
+  );
+}
+
+const sectionBook = () => book({ id: 'book-csapp', title: '深入理解计算机系统' });
+
 it('uploads a pack and reports page count', async () => {
   const onChanged = vi.fn();
   const upload = vi.fn(async (_file: File, onProgress: (n: number) => void) => {
@@ -31,36 +42,52 @@ it('uploads a pack and reports page count', async () => {
     return completeResponse();
   });
 
-  render(
-    <ReflowPackSection
-      book={book({ id: 'book-csapp', title: '深入理解计算机系统' })}
-      onChanged={onChanged}
-      upload={upload}
-    />,
-  );
+  render(<ReflowPackSection book={sectionBook()} onChanged={onChanged} upload={upload} />);
 
   expect(screen.getByText('尚未上传重排包')).toBeInTheDocument();
 
-  await userEvent.upload(
-    screen.getByLabelText('选择重排包'),
-    new File(['{}'], 'book.bookr.json', { type: 'application/json' }),
-  );
+  await userEvent.upload(screen.getByLabelText('选择重排包'), packFile());
 
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
   expect(screen.getByText(/300 页/)).toBeInTheDocument();
   expect(screen.getByText(/schema v1/)).toBeInTheDocument();
+  expect(upload).toHaveBeenCalledWith(expect.any(File), expect.any(Function));
+});
+
+it('shows upload progress and aborts a cancelled upload', async () => {
+  let resolveUpload: ((value: CompleteReflowUploadResponse) => void) | undefined;
+  const upload = vi.fn(
+    (_file: File, onProgress: (n: number) => void) =>
+      new Promise<CompleteReflowUploadResponse>((resolve) => {
+        onProgress(50);
+        resolveUpload = resolve;
+      }),
+  );
+  const onChanged = vi.fn();
+
+  render(<ReflowPackSection book={sectionBook()} onChanged={onChanged} upload={upload} />);
+  await userEvent.upload(screen.getByLabelText('选择重排包'), packFile());
+
+  expect(await screen.findByText('上传中 50%')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: '取消上传' }));
+  expect(screen.queryByText('上传中 50%')).toBeNull();
+
+  // A result that arrives after cancellation must be ignored.
+  await act(async () => {
+    resolveUpload?.(completeResponse());
+  });
+  expect(onChanged).not.toHaveBeenCalled();
+  expect(screen.queryByText(/300 页/)).toBeNull();
 });
 
 it('rejects non-JSON and oversized files without calling upload', async () => {
   const upload = vi.fn();
-  render(<ReflowPackSection book={book({ id: 'book-csapp', title: '书' })} upload={upload} />);
+  render(<ReflowPackSection book={sectionBook()} upload={upload} />);
 
   const input = screen.getByLabelText('选择重排包');
-  await userEvent.upload(
-    input,
-    new File(['{}'], 'notes.txt', { type: 'text/plain' }),
-    { applyAccept: false },
-  );
+  await userEvent.upload(input, new File(['{}'], 'notes.txt', { type: 'text/plain' }), {
+    applyAccept: false,
+  });
   expect(await screen.findByText('仅支持 .bookr.json 重排包')).toBeInTheDocument();
 
   const oversized = new File(['{}'], 'book.bookr.json', { type: 'application/json' });
@@ -69,6 +96,51 @@ it('rejects non-JSON and oversized files without calling upload', async () => {
   expect(await screen.findByText('重排包不能超过 32 MB')).toBeInTheDocument();
 
   expect(upload).not.toHaveBeenCalled();
+});
+
+it('shows the local pack error without creating a session', async () => {
+  const create = vi.fn();
+  const post = vi.fn();
+  const complete = vi.fn();
+  const upload = vi.fn((file: File, onProgress: (n: number) => void) =>
+    uploadReflowPack('book-csapp', file, {
+      onProgress,
+      deps: { create, post, complete },
+    }),
+  );
+
+  render(<ReflowPackSection book={sectionBook()} upload={upload} />);
+  const input = screen.getByLabelText('选择重排包');
+
+  await userEvent.upload(
+    input,
+    new File(['not json'], 'broken.bookr.json', { type: 'application/json' }),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole('alert')).toHaveTextContent('重排包不是有效的 JSON 文件'),
+  );
+
+  await userEvent.upload(
+    input,
+    new File(['{"schemaVersion":1}'], 'missing.bookr.json', { type: 'application/json' }),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole('alert')).toHaveTextContent('重排包缺少有效的 source.sha256'),
+  );
+
+  await userEvent.upload(
+    input,
+    new File(['{"source":{"sha256":"abc"}}'], 'invalid.bookr.json', {
+      type: 'application/json',
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.getByRole('alert')).toHaveTextContent('重排包缺少有效的 source.sha256'),
+  );
+
+  expect(create).not.toHaveBeenCalled();
+  expect(post).not.toHaveBeenCalled();
+  expect(complete).not.toHaveBeenCalled();
 });
 
 it('removes an existing pack after confirmation', async () => {
@@ -109,31 +181,98 @@ it('removes an existing pack after confirmation', async () => {
   );
 });
 
-it('shows the 422 message when the pack does not match the book', async () => {
-  const upload = vi.fn(async () => {
-    throw new ApiError(422, 'REFLOW_INVALID', 'The reflow pack is not valid for this book');
-  });
+it('leaves the pack alone when removal is cancelled', async () => {
+  const remove = vi.fn(async () => undefined);
 
-  render(<ReflowPackSection book={book({ id: 'book-csapp', title: '书' })} upload={upload} />);
-
-  await userEvent.upload(
-    screen.getByLabelText('选择重排包'),
-    new File(['{}'], 'book.bookr.json', { type: 'application/json' }),
+  render(
+    <ReflowPackSection
+      book={book({
+        id: 'book-csapp',
+        title: '书',
+        reflowAvailable: true,
+        reflowSchemaVersion: 1,
+        reflowPageCount: 300,
+      })}
+      remove={remove}
+    />,
   );
 
-  expect(await screen.findByRole('alert')).toHaveTextContent('重排包与这本书不匹配');
+  await userEvent.click(screen.getByRole('button', { name: '移除重排包' }));
+  await userEvent.click(screen.getByRole('button', { name: '取消' }));
+
+  expect(remove).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: '移除重排包' })).toBeInTheDocument();
+  expect(screen.getByText(/300 页/)).toBeInTheDocument();
+});
+
+it('shows the 422 message when the pack does not match the book', async () => {
+  const upload = vi.fn(async () => {
+    throw new ApiError(422, 'REFLOW_INVALID', 'The reflow pack is not valid', {
+      reason: 'pack/invalid',
+    });
+  });
+
+  render(<ReflowPackSection book={sectionBook()} upload={upload} />);
+
+  await userEvent.upload(screen.getByLabelText('选择重排包'), packFile());
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    '重排包格式无效，请重新生成',
+  );
+});
+
+it('renders nothing for non-PDF books', () => {
+  const { container } = render(
+    <ReflowPackSection book={book({ id: 'book-epub', title: '三体', format: 'epub' })} />,
+  );
+
+  expect(container).toBeEmptyDOMElement();
+});
+
+describe('reflowPackErrorMessage', () => {
+  it('maps every REFLOW_INVALID reason and falls back for unknown ones', () => {
+    expect(
+      reflowPackErrorMessage(
+        new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/invalid' }),
+      ),
+    ).toBe('重排包格式无效，请重新生成');
+    expect(
+      reflowPackErrorMessage(
+        new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/source-mismatch' }),
+      ),
+    ).toBe('重排包与这本书不匹配');
+    expect(
+      reflowPackErrorMessage(new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/size' })),
+    ).toBe('重排包大小不符，请重新生成');
+    expect(
+      reflowPackErrorMessage(
+        new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/missing' }),
+      ),
+    ).toBe('上传未完成，请重试');
+    expect(
+      reflowPackErrorMessage(
+        new ApiError(422, 'REFLOW_INVALID', 'x', { reason: 'pack/unknown' }),
+      ),
+    ).toBe('重排包与这本书不匹配');
+  });
+
+  it('keeps the generic code message for other failures', () => {
+    expect(reflowPackErrorMessage(new ApiError(500, 'INTERNAL', 'boom'))).toBe(
+      '服务器出了点问题，请稍后重试',
+    );
+  });
 });
 
 describe('uploadReflowPack', () => {
-  const sourceSha = 'c'.repeat(64);
-
-  function packFile(): File {
-    return new File(
-      [JSON.stringify({ schemaVersion: 1, source: { sha256: sourceSha } })],
-      'book.bookr.json',
-      { type: 'application/json' },
-    );
-  }
+  const pipelineDeps = () => ({
+    create: vi.fn(async () => {
+      throw new Error('create must not run');
+    }),
+    post: vi.fn(async () => undefined),
+    complete: vi.fn(async () => {
+      throw new Error('complete must not run');
+    }),
+  });
 
   it('declares the embedded source hash and runs the pipeline in order', async () => {
     const calls: string[] = [];
@@ -141,7 +280,7 @@ describe('uploadReflowPack', () => {
     const create = vi.fn(async (bookId: string, input: { size: number; sha256: string }) => {
       calls.push('create');
       expect(bookId).toBe('book-csapp');
-      expect(input).toEqual({ size: file.size, sha256: sourceSha });
+      expect(input).toEqual({ size: file.size, sha256: SOURCE_SHA });
       return {
         uploadId: 'upload-1',
         upload: { url: 'https://files.test/reflow', fields: { key: 'reflow-key' } },
@@ -165,11 +304,52 @@ describe('uploadReflowPack', () => {
     expect(result.book.reflowPageCount).toBe(300);
   });
 
+  it('rejects malformed packs and invalid source hashes before creating a session', async () => {
+    const deps = pipelineDeps();
+
+    await expect(
+      uploadReflowPack(
+        'book-csapp',
+        new File(['not json'], 'broken.bookr.json', { type: 'application/json' }),
+        { deps },
+      ),
+    ).rejects.toThrow('重排包不是有效的 JSON 文件');
+
+    await expect(
+      uploadReflowPack(
+        'book-csapp',
+        new File(['{"schemaVersion":1}'], 'missing.bookr.json', {
+          type: 'application/json',
+        }),
+        { deps },
+      ),
+    ).rejects.toThrow('重排包缺少有效的 source.sha256');
+
+    expect(deps.create).not.toHaveBeenCalled();
+    expect(deps.post).not.toHaveBeenCalled();
+    expect(deps.complete).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-JSON names and oversized files before reading them', async () => {
+    const deps = pipelineDeps();
+    const oversized = new File(['{}'], 'book.bookr.json', { type: 'application/json' });
+    Object.defineProperty(oversized, 'size', { value: MAX_REFLOW_PACK_BYTES + 1 });
+
+    await expect(
+      uploadReflowPack('book-csapp', new File(['{}'], 'book.pdf'), { deps }),
+    ).rejects.toThrow('仅支持 .bookr.json 重排包');
+    await expect(uploadReflowPack('book-csapp', oversized, { deps })).rejects.toThrow(
+      '重排包不能超过 32 MB',
+    );
+
+    expect(deps.create).not.toHaveBeenCalled();
+  });
+
   it('surfaces a completion ApiError unchanged', async () => {
     const failure = new ApiError(422, 'REFLOW_INVALID', 'The reflow pack is not valid');
     const options = {
       deps: {
-        hash: async () => sourceSha,
+        hash: async () => SOURCE_SHA,
         create: async () => ({
           uploadId: 'upload-1',
           upload: { url: 'https://files.test/reflow', fields: {} },

@@ -4,7 +4,12 @@ import type { BookDto, BookStatus, UpdateBookInput } from '@bookr/shared';
 import { Button, Dialog, Input, cn } from '@bookr/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCategories, useCreateCategory } from '../../api/categories';
-import { useRetryConversion, useUpdateBook, useUploadCover } from '../../api/books';
+import {
+  invalidateBookQueries,
+  useRetryConversion,
+  useUpdateBook,
+  useUploadCover,
+} from '../../api/books';
 import { messageForApiError } from '../../lib/errorMessages';
 import { CONVERSION_LABELS, STATUS_LABELS, canRetryConversion } from './labels';
 import { ReflowPackSection } from './ReflowPackSection';
@@ -214,9 +219,7 @@ export function EditBookDialog({ book, onClose }: EditBookDialogProps) {
         {book.format === 'pdf' ? (
           <ReflowPackSection
             book={book}
-            onChanged={() =>
-              void queryClient.invalidateQueries({ queryKey: ['book', book.id] })
-            }
+            onChanged={(next) => void invalidateBookQueries(queryClient, next.id)}
           />
         ) : null}
 
