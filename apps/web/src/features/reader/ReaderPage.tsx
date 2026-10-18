@@ -23,6 +23,7 @@ import type {
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ApiError } from '../../api/client';
 import { useBook } from '../../api/books';
+import { useAuth } from '../../app/auth';
 import {
   annotationsQueryKey,
   bookmarksQueryKey,
@@ -193,6 +194,10 @@ function ReaderScreen({ message, busy = false }: { message: string; busy?: boole
  */
 export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPageProps) {
   const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
+  // Local progress is namespaced per account; never read or write it before
+  // the signed-in user is known.
+  const userId = user?.id ?? null;
   const bookQuery = useBook(id ?? null);
   const book = bookQuery.data;
   const bookId = book?.id ?? null;
@@ -292,9 +297,10 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Fetch the signed URL and the saved progress in parallel, then compute the
   // one position the reader should open at. Only the file request is fatal: a
   // progress failure must fall back to this device's cache instead of blocking
-  // the book.
+  // the book. Progress belongs to the signed-in account, so nothing is queried
+  // until that account is known.
   useEffect(() => {
-    if (!bookId) return;
+    if (!bookId || !userId) return;
     let cancelled = false;
 
     void (async () => {
@@ -306,7 +312,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         if (cancelled) return;
         setSource({
           file,
-          initialLocator: resolveInitialLocator(progress, readLocalProgress(bookId)),
+          initialLocator: resolveInitialLocator(progress, readLocalProgress(userId, bookId)),
         });
       } catch (error) {
         if (cancelled) return;
@@ -317,12 +323,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId]);
+  }, [bookId, userId]);
 
   const initialLocator = source?.initialLocator;
 
   // Autosave must subscribe before `open` so the first relocation is captured.
   const { percent, saveState } = useReaderProgress({
+    userId: userId ?? '',
     bookId: bookId ?? '',
     engine,
     initialLocator,

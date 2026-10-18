@@ -5,6 +5,7 @@ import { expect, it } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { routes } from '../../../app/router';
 import { setTokens } from '../../../api/client';
+import { readLocalProgress, writeLocalProgress } from '../../reader/progressStore';
 import { renderWithProviders, server } from '../../../../test/setup';
 
 it('redirects an unauthenticated visitor from / to /login', async () => {
@@ -55,9 +56,17 @@ it('clears cached queries when logging out', async () => {
   // Wait until the stored session has been verified and the app shell is up.
   await screen.findByRole('button', { name: '退出登录' });
   queryClient.setQueryData(['books'], [{ id: 'cached-book' }]);
+  writeLocalProgress(
+    'user-reader',
+    'cached-book',
+    { kind: 'pdf', page: 4, percent: 0.3 },
+    Date.now(),
+  );
 
   await userEvent.click(screen.getByRole('button', { name: '退出登录' }));
 
   await waitFor(() => expect(queryClient.getQueryData(['books'])).toBeUndefined());
+  // The next account must not inherit this browser's cached position.
+  expect(readLocalProgress('user-reader', 'cached-book')).toBeNull();
   expect(router.state.location.pathname).toBe('/login');
 });

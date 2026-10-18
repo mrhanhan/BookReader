@@ -19,6 +19,8 @@ export const SAVE_STATE_LABELS: Record<ReaderSaveState, string> = {
 };
 
 export interface UseReaderProgressOptions {
+  /** Signed-in account; the local cache is namespaced per user. */
+  userId: string;
   bookId: string;
   /** Null until the book kind is known; the hook subscribes as soon as it exists. */
   engine: ReaderEngine | null;
@@ -45,6 +47,7 @@ function clampPercent(value: number): number {
  * Network and storage failures only change the visible sync label.
  */
 export function useReaderProgress({
+  userId,
   bookId,
   engine,
   initialLocator,
@@ -64,16 +67,16 @@ export function useReaderProgress({
     locatorRef.current = initialLocator ?? null;
     dirtyRef.current = false;
     setPercent(clampPercent(initialLocator?.percent ?? 0));
-  }, [bookId, initialLocator]);
+  }, [userId, bookId, initialLocator]);
 
   useEffect(() => {
-    if (!engine || !bookId) return;
+    if (!engine || !bookId || !userId) return;
     const generation = ++generationRef.current;
 
     const writeLocal = (locator: Locator): void => {
       const now = Date.now();
       lastLocalWriteRef.current = now;
-      writeLocalProgress(bookId, locator, now);
+      writeLocalProgress(userId, bookId, locator, now);
     };
 
     const record = (locator: Locator): void => {
@@ -148,7 +151,7 @@ export function useReaderProgress({
       generationRef.current += 1;
       void flush();
     };
-  }, [bookId, engine]);
+  }, [bookId, engine, userId]);
 
   return { percent, saveState };
 }

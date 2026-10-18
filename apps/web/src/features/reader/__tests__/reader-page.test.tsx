@@ -1,11 +1,13 @@
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import type { ReaderEngine } from '@bookr/reader-core';
-import type { ReaderKind } from '@bookr/shared';
+import type { MeDto, ReaderKind } from '@bookr/shared';
 import { ReaderPage } from '../ReaderPage';
 import { writeLocalProgress } from '../progressStore';
+import { useAuth } from '../../../app/auth';
 import { setTokens } from '../../../api/client';
 import { renderWithProviders, server } from '../../../../test/setup';
 
@@ -89,7 +91,12 @@ it('opens the file at the saved locator and shows the reading chrome', async () 
 
 it('opens from the local cache when the progress request fails', async () => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
-  writeLocalProgress('book-csapp', { kind: 'pdf', page: 6, percent: 0.55 }, Date.now());
+  writeLocalProgress(
+    'user-reader',
+    'book-csapp',
+    { kind: 'pdf', page: 6, percent: 0.55 },
+    Date.now(),
+  );
   server.use(
     http.get('/api/books/book-csapp/file', () =>
       HttpResponse.json({
@@ -200,4 +207,102 @@ it('shows the file error and does not open the engine when the file request fail
 
   expect(await screen.findByText('找不到这本书的文件')).toBeInTheDocument();
   expect(engine.open).not.toHaveBeenCalled();
+});
+
+it('does not open a second account at the first account cached position', async () => {
+  setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+
+  const accountA: MeDto = {
+    id: 'user-reader',
+    username: 'reader',
+    displayName: '读者',
+    role: 'member',
+    timezone: 'Asia/Shanghai',
+    aiEnabled: false,
+    uploadUsedBytes: 0,
+    uploadQuotaBytes: 1024 * 1024 * 1024,
+    libraryUsedBytes: 0,
+    libraryQuotaBytes: 10 * 1024 * 1024 * 1024,
+  };
+  const accountB: MeDto = {
+    ...accountA,
+    id: 'user-second',
+    username: 'second-reader',
+    displayName: '第二读者',
+  };
+
+  let activeUser = accountA;
+  server.use(
+    http.get('/api/auth/me', () => HttpResponse.json(activeUser)),
+    http.get('/api/books/book-csapp/file', () =>
+      HttpResponse.json({
+        url: 'https://files.test/book.pdf',
+        format: 'pdf',
+        expiresIn: 3600,
+      }),
+    ),
+    http.get('/api/books/book-csapp/progress', () =>
+      HttpResponse.json({ progress: null }),
+    ),
+  );
+
+  // Account A has cached page 7 on this browser; account B has none.
+  writeLocalProgress(
+    'user-reader',
+    'book-csapp',
+    { kind: 'pdf', page: 7, percent: 0.6 },
+    Date.now(),
+  );
+
+  const engine = fakeEngine();
+  const factory = vi.fn(() => engine as unknown as ReaderEngine);
+
+  function AccountSwitcher() {
+    const { login } = useAuth();
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          void login({ username: 'reader', password: 'correct-password' });
+        }}
+      >
+        切换账号
+      </button>
+    );
+  }
+
+  const router = createMemoryRouter(
+    [
+      {
+        path: '/books/:id/read',
+        element: (
+          <>
+            <ReaderPage engineFactory={factory} />
+            <AccountSwitcher />
+          </>
+        ),
+      },
+    ],
+    { initialEntries: ['/books/book-csapp/read'] },
+  );
+  renderWithProviders(<RouterProvider router={router} />);
+
+  await waitFor(() =>
+    expect(engine.open).toHaveBeenCalledWith(
+      'https://files.test/book.pdf',
+      expect.any(HTMLElement),
+      expect.anything(),
+      expect.objectContaining({ initialLocator: { kind: 'pdf', page: 7, percent: 0.6 } }),
+    ),
+  );
+
+  activeUser = accountB;
+  await userEvent.click(screen.getByRole('button', { name: '切换账号' }));
+
+  await waitFor(() => expect(engine.open.mock.calls.length).toBeGreaterThanOrEqual(2));
+  const lastOptions = engine.open.mock.calls.at(-1)?.[3] as {
+    initialLocator?: unknown;
+  };
+  // B has no cached or server position, so A's page 7 must not be reused.
+  expect(lastOptions.initialLocator).toBeUndefined();
 });

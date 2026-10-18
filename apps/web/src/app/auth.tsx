@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { clearTokens, getTokens, setSessionEndedHandler } from '../api/client';
 import { fetchCurrentUser, login as loginRequest, logout as logoutRequest, register as registerRequest } from '../api/auth';
 import type { LoginInput, RegisterInput } from '../api/auth';
+import { clearReaderProgressCache } from '../features/reader/progressStore';
 
 export interface AuthContextValue {
   user: MeDto | null;
@@ -25,7 +26,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // A refresh failure ends the session inside the API client; route that
     // cleanup through this provider's query client rather than a second cache.
-    setSessionEndedHandler(() => queryClient.clear());
+    // Reader positions are account-scoped, so they are dropped here too: a
+    // failed refresh must not leave the previous account's cache behind.
+    setSessionEndedHandler(() => {
+      queryClient.clear();
+      clearReaderProgressCache();
+    });
     return () => setSessionEndedHandler(null);
   }, [queryClient]);
 
@@ -44,6 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           clearTokens();
           queryClient.clear();
+          clearReaderProgressCache();
           setUser(null);
         }
       })
@@ -59,8 +66,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (input: LoginInput) => {
       const me = await loginRequest(input);
-      // A different account may be signing in on a shared browser.
+      // A different account may be signing in on a shared browser; neither the
+      // query cache nor the reading-position cache may cross that boundary.
       queryClient.clear();
+      clearReaderProgressCache();
       setUser(me);
     },
     [queryClient],
@@ -70,6 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (input: RegisterInput) => {
       const me = await registerRequest(input);
       queryClient.clear();
+      clearReaderProgressCache();
       setUser(me);
     },
     [queryClient],
@@ -78,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await logoutRequest();
     queryClient.clear();
+    clearReaderProgressCache();
     setUser(null);
   }, [queryClient]);
 
