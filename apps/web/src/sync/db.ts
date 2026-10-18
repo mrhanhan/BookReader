@@ -24,7 +24,7 @@ export class BookrDb extends Dexie {
   settings!: Table<LocalSettingsRow, string>;
   outbox!: Table<OutboxRow, string>;
   meta!: Table<SyncMetaRow, string>;
-  offlineBooks!: Table<OfflineBookRow, string>;
+  offlineBooks!: Table<OfflineBookRow, [string, string]>;
   shelf!: Table<CachedShelfBook, string>;
 
   constructor(name = 'bookr-sync') {
@@ -38,6 +38,17 @@ export class BookrDb extends Dexie {
       meta: 'key',
       offlineBooks: 'bookId, userId, pinned, lastReadAt',
       shelf: 'id, userId, updatedAt',
+    });
+
+    // Cache rows became per-user: the same book may be pinned for one account
+    // and evicted for another on a shared device. Dexie cannot change a primary
+    // key in place, so version 2 drops the table (cache rows are rebuildable)
+    // and version 3 recreates it with the compound key.
+    this.version(2).stores({
+      offlineBooks: null,
+    });
+    this.version(3).stores({
+      offlineBooks: '[userId+bookId], userId, bookId, pinned, lastReadAt',
     });
   }
 }

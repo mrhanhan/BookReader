@@ -154,17 +154,55 @@ describe('CacheManager LRU', () => {
     }
     // The reflow file is cached later but must still be evicted with the book.
     await cacheBook('book-0', 'reflow');
+    const objectUrl = await manager.cachedUrl(USER, 'book-0', 'book');
 
     const evicted = await manager.enforceLru(USER);
 
     expect(evicted).toEqual(['book-0']);
     expect(await store.has(cacheKey(USER, 'book-0', 'book'))).toBe(false);
     expect(await store.has(cacheKey(USER, 'book-0', 'reflow'))).toBe(false);
-    expect(await db.offlineBooks.get('book-0')).toBeUndefined();
+    expect(revokeObjectUrl).toHaveBeenCalledWith(objectUrl);
+    expect(await db.offlineBooks.get([USER, 'book-0'])).toBeUndefined();
     expect(await db.offlineBooks.count()).toBe(OFFLINE_RECENT_LIMIT);
-    expect((await db.offlineBooks.get('book-1'))?.bookId).toBe('book-1');
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bookId).toBe('book-1');
     // Eviction is cache-only: everything the reader wrote is still there.
     expect(await readingDataCounts()).toEqual(before);
+  });
+
+  it('drops an unpinned placeholder instead of letting it use an LRU slot', async () => {
+    for (let index = 0; index < OFFLINE_RECENT_LIMIT; index += 1) {
+      await cacheBook(`book-${index}`);
+    }
+
+    clock += 1;
+    await manager.pin(USER, 'book-new');
+    // The zero-byte placeholder must not compete with the five real books.
+    expect(await manager.enforceLru(USER)).toEqual([]);
+
+    await manager.unpin(USER, 'book-new');
+
+    expect(await db.offlineBooks.get([USER, 'book-new'])).toBeUndefined();
+    expect(await manager.enforceLru(USER)).toEqual([]);
+    for (let index = 0; index < OFFLINE_RECENT_LIMIT; index += 1) {
+      expect(await store.has(cacheKey(USER, `book-${index}`, 'book'))).toBe(true);
+    }
+  });
+
+  it('evicts each user independently for the same book id', async () => {
+    for (let index = 0; index < OFFLINE_RECENT_LIMIT + 1; index += 1) {
+      await cacheBook(`book-${index}`);
+    }
+    clock += 1;
+    const otherUrl = 'https://files.test/other-book-0';
+    payloads.set(otherUrl, new Blob(['other']));
+    await manager.cacheFromUrl(OTHER_USER, 'book-0', 'book', otherUrl);
+
+    const evicted = await manager.enforceLru(USER);
+
+    expect(evicted).toEqual(['book-0']);
+    expect(await db.offlineBooks.get([USER, 'book-0'])).toBeUndefined();
+    expect((await db.offlineBooks.get([OTHER_USER, 'book-0']))?.userId).toBe(OTHER_USER);
+    expect(await store.has(cacheKey(OTHER_USER, 'book-0', 'book'))).toBe(true);
   });
 
   it('never evicts a pinned book or the book being read', async () => {
@@ -179,7 +217,7 @@ describe('CacheManager LRU', () => {
     expect(await store.has(cacheKey(USER, 'book-0', 'book'))).toBe(true);
     expect(await store.has(cacheKey(USER, 'book-1', 'book'))).toBe(true);
     expect(await store.has(cacheKey(USER, 'book-2', 'book'))).toBe(false);
-    expect(await db.offlineBooks.get('book-2')).toBeUndefined();
+    expect(await db.offlineBooks.get([USER, 'book-2'])).toBeUndefined();
 
     const remaining = (await db.offlineBooks.toArray()).map((row) => row.bookId).sort();
     expect(remaining).toEqual([
@@ -234,8 +272,8 @@ describe('CacheManager eviction safety', () => {
 
     expect(cleared).toEqual(['book-0']);
     expect(await store.has(cacheKey(USER, 'book-0', 'book'))).toBe(false);
-    expect(await db.offlineBooks.get('book-0')).toBeUndefined();
-    expect((await db.offlineBooks.get('book-1'))?.pinned).toBe(true);
+    expect(await db.offlineBooks.get([USER, 'book-0'])).toBeUndefined();
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.pinned).toBe(true);
     expect(await readingDataCounts()).toEqual(before);
     expect(before).toEqual([1, 1, 1, 1]);
   });
@@ -243,6 +281,7 @@ describe('CacheManager eviction safety', () => {
   it('removing one book deletes only its files and cache row', async () => {
     await seedReadingData();
     const before = await readingDataCounts();
+    expect(before).toEqual([1, 1, 1, 1]);
     await cacheBook('book-0');
     await cacheBook('book-1');
 
@@ -251,9 +290,43 @@ describe('CacheManager eviction safety', () => {
     expect(await store.has(cacheKey(USER, 'book-0', 'book'))).toBe(false);
     expect(await store.has(cacheKey(USER, 'book-0', 'reflow'))).toBe(false);
     expect(await store.has(cacheKey(USER, 'book-1', 'book'))).toBe(true);
-    expect(await db.offlineBooks.get('book-0')).toBeUndefined();
-    expect(await db.offlineBooks.get('book-1')).toBeDefined();
+    expect(await db.offlineBooks.get([USER, 'book-0'])).toBeUndefined();
+    expect(await db.offlineBooks.get([USER, 'book-1'])).toBeDefined();
     expect(await readingDataCounts()).toEqual(before);
+  });
+
+  it('clearUnpinned keeps the requested book even when it is unpinned', async () => {
+    await cacheBook('book-0');
+    await cacheBook('book-1');
+    await cacheBook('book-2');
+
+    const cleared = await manager.clearUnpinned(USER, 'book-1');
+
+    expect(cleared).toEqual(['book-0', 'book-2']);
+    expect(await db.offlineBooks.get([USER, 'book-1'])).toBeDefined();
+    expect(await store.has(cacheKey(USER, 'book-1', 'book'))).toBe(true);
+    expect(await store.has(cacheKey(USER, 'book-0', 'book'))).toBe(false);
+    expect(await store.has(cacheKey(USER, 'book-2', 'book'))).toBe(false);
+  });
+
+  it('keeps cache rows independent for two users with the same book id', async () => {
+    const sharedUrl = 'https://files.test/shared';
+    payloads.set(sharedUrl, new Blob(['1234']));
+    clock += 1;
+    await manager.cacheFromUrl(USER, 'book-1', 'book', sharedUrl);
+    clock += 1;
+    await manager.cacheFromUrl(OTHER_USER, 'book-1', 'book', sharedUrl);
+
+    expect(await db.offlineBooks.count()).toBe(2);
+    await manager.pin(USER, 'book-1');
+    expect(await manager.isPinned(USER, 'book-1')).toBe(true);
+    expect(await manager.isPinned(OTHER_USER, 'book-1')).toBe(false);
+
+    await manager.remove(USER, 'book-1');
+
+    expect(await store.has(cacheKey(USER, 'book-1', 'book'))).toBe(false);
+    expect(await store.has(cacheKey(OTHER_USER, 'book-1', 'book'))).toBe(true);
+    expect((await db.offlineBooks.get([OTHER_USER, 'book-1']))?.userId).toBe(OTHER_USER);
   });
 
   it('never clears another user’s files', async () => {
@@ -267,7 +340,7 @@ describe('CacheManager eviction safety', () => {
 
     expect(cleared).toEqual(['book-0']);
     expect(await store.has(cacheKey(OTHER_USER, 'book-9', 'book'))).toBe(true);
-    expect((await db.offlineBooks.get('book-9'))?.userId).toBe(OTHER_USER);
+    expect((await db.offlineBooks.get([OTHER_USER, 'book-9']))?.userId).toBe(OTHER_USER);
   });
 });
 
@@ -284,8 +357,40 @@ describe('CacheManager bytes and usage', () => {
       await manager.cacheFromUrl(USER, 'book-1', 'reflow', 'https://files.test/book-1/reflow'),
     ).toBe(5);
 
-    expect((await db.offlineBooks.get('book-1'))?.bytes).toBe(15);
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bytes).toBe(15);
     expect((await manager.usage(USER)).bytes).toBe(15);
+  });
+
+  it('accumulates bytes when book and reflow are cached in parallel', async () => {
+    const bookUrl = 'https://files.test/parallel/book';
+    const reflowUrl = 'https://files.test/parallel/reflow';
+    payloads.set(bookUrl, new Blob(['1234567890']));
+    payloads.set(reflowUrl, new Blob(['12345']));
+    clock += 1;
+
+    const sizes = await Promise.all([
+      manager.cacheFromUrl(USER, 'book-1', 'book', bookUrl),
+      manager.cacheFromUrl(USER, 'book-1', 'reflow', reflowUrl),
+    ]);
+
+    expect(sizes.sort((left, right) => left - right)).toEqual([5, 10]);
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bytes).toBe(15);
+    expect((await manager.usage(USER)).bytes).toBe(15);
+  });
+
+  it('keeps a pin that races the first download', async () => {
+    const url = 'https://files.test/raced/book';
+    payloads.set(url, new Blob(['1234']));
+
+    await Promise.all([
+      manager.cacheFromUrl(USER, 'book-1', 'book', url),
+      manager.pin(USER, 'book-1'),
+    ]);
+
+    expect(await db.offlineBooks.get([USER, 'book-1'])).toMatchObject({
+      pinned: true,
+      bytes: 4,
+    });
   });
 
   it('replaces the old size when a file is cached again', async () => {
@@ -298,7 +403,7 @@ describe('CacheManager bytes and usage', () => {
       await manager.cacheFromUrl(USER, 'book-1', 'book', 'https://files.test/book-1/book'),
     ).toBe(3);
 
-    expect((await db.offlineBooks.get('book-1'))?.bytes).toBe(3);
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.bytes).toBe(3);
     expect((await manager.usage(USER)).bytes).toBe(3);
   });
 
@@ -342,6 +447,19 @@ describe('CacheManager object URLs', () => {
     expect(revokeObjectUrl).toHaveBeenCalledWith(first);
   });
 
+  it('shares one in-flight object URL between concurrent callers', async () => {
+    await cacheBook('book-0');
+
+    const [first, second] = await Promise.all([
+      manager.cachedUrl(USER, 'book-0', 'book'),
+      manager.cachedUrl(USER, 'book-0', 'book'),
+    ]);
+
+    expect(first).not.toBeNull();
+    expect(second).toBe(first);
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+  });
+
   it('revokes every object URL from revokeUrls', async () => {
     await cacheBook('book-0');
     await cacheBook('book-1');
@@ -374,7 +492,7 @@ describe('CacheManager pinning and downloads', () => {
 
     await manager.pin(USER, 'book-1');
     expect(await manager.isPinned(USER, 'book-1')).toBe(true);
-    expect((await db.offlineBooks.get('book-1'))?.pinned).toBe(true);
+    expect((await db.offlineBooks.get([USER, 'book-1']))?.pinned).toBe(true);
 
     await manager.unpin(USER, 'book-1');
     expect(await manager.isPinned(USER, 'book-1')).toBe(false);
@@ -384,7 +502,7 @@ describe('CacheManager pinning and downloads', () => {
     await manager.pin(USER, 'book-1');
     await cacheBook('book-1');
 
-    const row = await db.offlineBooks.get('book-1');
+    const row = await db.offlineBooks.get([USER, 'book-1']);
     expect(row).toMatchObject({ pinned: true, bytes: 4 });
   });
 
@@ -394,6 +512,6 @@ describe('CacheManager pinning and downloads', () => {
     ).rejects.toThrow(/HTTP 404/);
 
     expect(await store.has(cacheKey(USER, 'book-1', 'book'))).toBe(false);
-    expect(await db.offlineBooks.get('book-1')).toBeUndefined();
+    expect(await db.offlineBooks.get([USER, 'book-1'])).toBeUndefined();
   });
 });

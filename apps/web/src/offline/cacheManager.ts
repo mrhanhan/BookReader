@@ -77,6 +77,27 @@ export function createCacheManager(deps: {
   const now = deps.now ?? (() => Date.now());
   const doFetch = deps.fetchImpl ?? globalThis.fetch;
   const urls = new Map<string, ObjectUrl>();
+  const pendingUrls = new Map<string, Promise<string | null>>();
+  const rowLocks = new Map<string, Promise<unknown>>();
+
+  /**
+   * Serializes read-modify-write cycles on one cache row. Without it the book
+   * and reflow downloads (or a pin racing a download) would each read the same
+   * old row and the last writer would win, losing bytes or the pinned flag.
+   */
+  function withRowLock<T>(userId: string, bookId: string, action: () => Promise<T>): Promise<T> {
+    const lockKey = `${userId}/${bookId}`;
+    const previous = rowLocks.get(lockKey) ?? Promise.resolve();
+    // Run the action whether the previous update resolved or failed.
+    const next = previous.then(action, action);
+    rowLocks.set(lockKey, next);
+
+    const release = (): void => {
+      if (rowLocks.get(lockKey) === next) rowLocks.delete(lockKey);
+    };
+    void next.then(release, release);
+    return next;
+  }
 
   function revokeUrl(key: string): void {
     const cached = urls.get(key);
@@ -85,17 +106,23 @@ export function createCacheManager(deps: {
     cached.revoke();
   }
 
-  /** Cache rows are keyed by book, so a row owned by another user is invisible. */
+  /** Cache rows are keyed by user and book so accounts never share one row. */
   async function rowFor(userId: string, bookId: string): Promise<OfflineBookRow | null> {
-    const row = await db.offlineBooks.get(bookId);
-    return row && row.userId === userId ? row : null;
+    return (await db.offlineBooks.get([userId, bookId])) ?? null;
   }
 
   async function rowsFor(userId: string): Promise<OfflineBookRow[]> {
     return db.offlineBooks.where('userId').equals(userId).toArray();
   }
 
-  async function removeCachedBook(userId: string, bookId: string): Promise<void> {
+  async function hasCachedFiles(userId: string, bookId: string): Promise<boolean> {
+    for (const kind of CACHE_KINDS) {
+      if (await store.has(cacheKey(userId, bookId, kind))) return true;
+    }
+    return false;
+  }
+
+  async function deleteCachedBook(userId: string, bookId: string): Promise<void> {
     for (const kind of CACHE_KINDS) {
       const key = cacheKey(userId, bookId, kind);
       await store.delete(key);
@@ -104,8 +131,11 @@ export function createCacheManager(deps: {
 
     // Only the cache row is removed here. Annotations, bookmarks, progress and
     // outbox rows must survive eviction so reading data is never lost.
-    const row = await rowFor(userId, bookId);
-    if (row) await db.offlineBooks.delete(row.bookId);
+    await db.offlineBooks.delete([userId, bookId]);
+  }
+
+  function removeCachedBook(userId: string, bookId: string): Promise<void> {
+    return withRowLock(userId, bookId, () => deleteCachedBook(userId, bookId));
   }
 
   async function evict(userId: string, rows: OfflineBookRow[]): Promise<string[]> {
@@ -136,15 +166,17 @@ export function createCacheManager(deps: {
       revokeUrl(key);
       await store.put(key, blob);
 
-      const current = await rowFor(userId, bookId);
-      const timestamp = now();
-      await db.offlineBooks.put({
-        bookId,
-        userId,
-        pinned: current?.pinned ?? false,
-        lastReadAt: current?.lastReadAt ?? timestamp,
-        cachedAt: timestamp,
-        bytes: Math.max(0, (current?.bytes ?? 0) - (previous?.size ?? 0) + blob.size),
+      await withRowLock(userId, bookId, async () => {
+        const row = await rowFor(userId, bookId);
+        const timestamp = now();
+        await db.offlineBooks.put({
+          bookId,
+          userId,
+          pinned: row?.pinned ?? false,
+          lastReadAt: row?.lastReadAt ?? timestamp,
+          cachedAt: timestamp,
+          bytes: Math.max(0, (row?.bytes ?? 0) - (previous?.size ?? 0) + blob.size),
+        });
       });
 
       return blob.size;
@@ -155,43 +187,71 @@ export function createCacheManager(deps: {
       const existing = urls.get(key);
       if (existing) return existing.url;
 
-      const blob = await store.get(key);
-      if (!blob) return null;
+      // Two readers can ask for the same book at once; share one in-flight
+      // object URL instead of creating a second handle for the same bytes.
+      const pending = pendingUrls.get(key);
+      if (pending) return pending;
 
-      const created = await createObjectUrl(blob);
-      urls.set(key, created);
-      return created.url;
+      const task = (async (): Promise<string | null> => {
+        const blob = await store.get(key);
+        if (!blob) return null;
+
+        const created = await createObjectUrl(blob);
+        urls.set(key, created);
+        return created.url;
+      })();
+      pendingUrls.set(key, task);
+
+      try {
+        return await task;
+      } finally {
+        if (pendingUrls.get(key) === task) pendingUrls.delete(key);
+      }
     },
 
     async touch(userId, bookId) {
-      const row = await rowFor(userId, bookId);
-      if (!row) return;
-      await db.offlineBooks.put({ ...row, lastReadAt: now() });
+      await withRowLock(userId, bookId, async () => {
+        const row = await rowFor(userId, bookId);
+        if (!row) return;
+        await db.offlineBooks.put({ ...row, lastReadAt: now() });
+      });
     },
 
     async pin(userId, bookId) {
-      const row = await rowFor(userId, bookId);
-      if (row) {
-        if (!row.pinned) await db.offlineBooks.put({ ...row, pinned: true });
-        return;
-      }
+      await withRowLock(userId, bookId, async () => {
+        const row = await rowFor(userId, bookId);
+        if (row) {
+          if (!row.pinned) await db.offlineBooks.put({ ...row, pinned: true });
+          return;
+        }
 
-      // Pinning before the download finishes still has to be observable, so a
-      // placeholder row records the intent until the bytes land.
-      const timestamp = now();
-      await db.offlineBooks.put({
-        bookId,
-        userId,
-        pinned: true,
-        lastReadAt: timestamp,
-        cachedAt: timestamp,
-        bytes: 0,
+        // Pinning before the download finishes still has to be observable, so a
+        // placeholder row records the intent until the bytes land.
+        const timestamp = now();
+        await db.offlineBooks.put({
+          bookId,
+          userId,
+          pinned: true,
+          lastReadAt: timestamp,
+          cachedAt: timestamp,
+          bytes: 0,
+        });
       });
     },
 
     async unpin(userId, bookId) {
-      const row = await rowFor(userId, bookId);
-      if (row?.pinned) await db.offlineBooks.put({ ...row, pinned: false });
+      await withRowLock(userId, bookId, async () => {
+        const row = await rowFor(userId, bookId);
+        if (!row) return;
+
+        // An unpinned placeholder without files is not a cached book; keeping
+        // it would consume one of the recent five LRU slots.
+        if (row.bytes === 0 && !(await hasCachedFiles(userId, bookId))) {
+          await db.offlineBooks.delete([userId, bookId]);
+          return;
+        }
+        if (row.pinned) await db.offlineBooks.put({ ...row, pinned: false });
+      });
     },
 
     async isPinned(userId, bookId) {
@@ -205,7 +265,8 @@ export function createCacheManager(deps: {
     async enforceLru(userId, keepBookId) {
       const rows = await rowsFor(userId);
       const candidates = rows
-        .filter((row) => !row.pinned && row.bookId !== keepBookId)
+        // Placeholder rows carry no bytes; they are not real cache entries.
+        .filter((row) => !row.pinned && row.bookId !== keepBookId && row.bytes > 0)
         .sort(byLeastRecentlyRead);
 
       // Pinned books and the book currently being read sit outside the recent
