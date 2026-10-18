@@ -1,0 +1,17 @@
+# Build artifacts and dependencies are produced inside the image.
+**/node_modules
+**/dist
+**/coverage
+**/.turbo
+**/*.log
+
+# Local-only state and secrets.
+.git
+.env
+.superpowers
+.claude
+backups
+
+# Not needed for the server/web images.
+apps/web/e2e
+docs

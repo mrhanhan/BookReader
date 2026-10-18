@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:test:reset": "tsx src/db/migrate.ts --test",
+    "db:migrate": "tsx src/db/migrate-cli.ts",
+    "db:test:reset": "tsx src/db/migrate-cli.ts --test",
     "admin:create": "tsx src/cli/create-admin.ts"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "form-data": "^4.0.6",
     "pdf-lib": "^1.17.1",
     "pngjs": "^7.0.0",
+    "tsup": "^9.0.0",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

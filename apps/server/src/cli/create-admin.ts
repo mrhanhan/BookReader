@@ -1,11 +1,9 @@
-import { newId, registerSchema } from '@bookr/shared';
+import { registerSchema } from '@bookr/shared';
 import { z } from 'zod';
 import { createAdmin } from '../auth/service';
-import { CalibreConverter } from '../books/conversion';
 import { loadConfig } from '../config';
-import { closeDb, createDb } from '../db/client';
-import { FakeJobQueue } from '../jobs/fake';
-import { FakeStorage } from '../storage/fake';
+import { closeDb } from '../db/client';
+import { createDeps } from '../runtime';
 
 const credentialsSchema = z.object({
   username: registerSchema.shape.username,
@@ -31,27 +29,16 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig();
-  const db = createDb(config.databaseUrl);
+  const deps = createDeps(config);
   try {
-    const { userId } = await createAdmin(
-      {
-        config,
-        db,
-        storage: new FakeStorage(),
-        clock: { now: () => new Date() },
-        ids: { newId },
-        jobs: new FakeJobQueue(),
-        converter: new CalibreConverter(),
-      },
-      {
-        username: credentials.data.username,
-        password: credentials.data.password,
-        displayName: process.env.ADMIN_DISPLAY_NAME ?? credentials.data.username,
-      },
-    );
+    const { userId } = await createAdmin(deps, {
+      username: credentials.data.username,
+      password: credentials.data.password,
+      displayName: process.env.ADMIN_DISPLAY_NAME ?? credentials.data.username,
+    });
     console.log(userId);
   } finally {
-    await closeDb(db);
+    await closeDb(deps.db);
   }
 }
 

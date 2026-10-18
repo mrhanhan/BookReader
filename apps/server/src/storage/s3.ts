@@ -1,4 +1,5 @@
 import {
+  CreateBucketCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -31,6 +32,45 @@ function toBuffer(body: unknown): Buffer {
   throw new Error('S3 response body is not a byte stream');
 }
 
+function createClient(config: AppConfig['s3']): S3Client {
+  return new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: config.accessKey,
+      secretAccessKey: config.secretKey,
+    },
+  });
+}
+
+/** True when a bucket creation lost a race with another owner of the same bucket. */
+function isAlreadyOwned(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const name = (error as { name?: unknown }).name;
+  return name === 'BucketAlreadyOwnedByYou' || name === 'BucketAlreadyExists';
+}
+
+/**
+ * Creates the configured bucket when it does not exist yet. MinIO (and S3)
+ * answer a create for an existing bucket with an "already owned" error, which
+ * means the deployment is ready; every other failure is fatal at startup.
+ */
+export async function ensureBucket(config: AppConfig['s3']): Promise<void> {
+  const client = createClient(config);
+  try {
+    await client.send(new CreateBucketCommand({ Bucket: config.bucket }));
+  } catch (error) {
+    if (!isAlreadyOwned(error)) {
+      throw error;
+    }
+  } finally {
+    client.destroy();
+  }
+}
+
 /** S3-compatible object storage; `forcePathStyle` targets MinIO. */
 export class S3Storage implements StorageService {
   private readonly client: S3Client;
@@ -38,15 +78,7 @@ export class S3Storage implements StorageService {
 
   constructor(config: AppConfig['s3']) {
     this.bucket = config.bucket;
-    this.client = new S3Client({
-      endpoint: config.endpoint,
-      region: config.region,
-      forcePathStyle: true,
-      credentials: {
-        accessKeyId: config.accessKey,
-        secretAccessKey: config.secretKey,
-      },
-    });
+    this.client = createClient(config);
   }
 
   async presignPut(key: string, contentType: string, expiresInSeconds: number): Promise<string> {
