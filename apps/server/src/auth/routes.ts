@@ -1,9 +1,10 @@
 import { ERROR_CODES, loginSchema, refreshSchema, registerSchema, type MeDto } from '@bookr/shared';
 import { and, eq, gt, sql } from 'drizzle-orm';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { AppDeps, Clock } from '../app';
 import { books, uploadSessions, users } from '../db/schema';
 import { AppError } from '../errors';
+import { deviceInfoOf } from './device';
 import { makeRequireAuth } from './guards';
 import { loginUser, logoutSession, refreshSession, registerUser } from './service';
 
@@ -103,11 +104,6 @@ class LoginRateLimiter {
   }
 }
 
-function deviceNameOf(request: FastifyRequest): string | undefined {
-  const userAgent = request.headers['user-agent'];
-  return typeof userAgent === 'string' ? userAgent.slice(0, 200) : undefined;
-}
-
 function bytesOf(value: string | number | null | undefined): number {
   return value === null || value === undefined ? 0 : Number(value);
 }
@@ -121,9 +117,11 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.post('/api/auth/register', async (request, reply) => {
     const input = registerSchema.parse(request.body);
+    const device = deviceInfoOf(request);
     const tokens = await registerUser(deps, {
       ...input,
-      deviceName: deviceNameOf(request),
+      deviceName: device.name,
+      platform: device.platform,
     });
     return reply.status(201).send(tokens);
   });
@@ -134,7 +132,8 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
 
     limiter.assertAllowed(key);
     try {
-      const tokens = await loginUser(deps, input, deviceNameOf(request));
+      const device = deviceInfoOf(request);
+      const tokens = await loginUser(deps, input, device.name, device.platform);
       limiter.clear(key);
       return tokens;
     } catch (error) {
