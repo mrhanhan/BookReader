@@ -3,7 +3,7 @@ import type { Locator } from '@bookr/shared';
 import type { ReaderEngine } from '@bookr/reader-core';
 import { useSync } from '../../sync/SyncProvider';
 import type { SyncState } from '../../sync/engine';
-import { locatorsEqual, writeLocalProgress } from './progressStore';
+import { locatorsEqual, writeLegacyProgress, writeLocalProgress } from './progressStore';
 
 /** The local cache is written at most once per this interval (leading + trailing). */
 export const LOCAL_WRITE_INTERVAL_MS = 5_000;
@@ -56,9 +56,11 @@ export function saveStateFor(state: SyncState): ReaderSaveState {
 /**
  * Persists reading progress locally without ever blocking the reader.
  *
- * Every write lands in Dexie and its outbox (at most once per five seconds),
- * and the sync engine delivers it. The twenty-five-second tick, page hide and
- * unmount only request a sync; they never call the HTTP endpoint directly.
+ * Every write lands in Dexie and its outbox (at most once per five seconds)
+ * and is mirrored synchronously into the legacy localStorage buffer, so a
+ * reload or crash immediately after the last event still finds the position.
+ * The twenty-five-second tick, page hide and unmount request a sync; they
+ * never call the HTTP endpoint directly.
  */
 export function useReaderProgress({
   userId,
@@ -96,6 +98,10 @@ export function useReaderProgress({
 
     const write = (locator: Locator): Promise<boolean> => {
       const now = Date.now();
+      // Flush the synchronous buffer before the async transaction starts: a
+      // reload right after this event cannot await IndexedDB, but it can read
+      // this entry during the next open.
+      writeLegacyProgress(userId, bookId, locator, now);
       return writeLocalProgress(repo, userId, bookId, locator, now).then((saved) => {
         // A failed write leaves the throttle open so the next event retries.
         if (saved) {
@@ -140,7 +146,13 @@ export function useReaderProgress({
 
     const unsubscribe = engine.on('relocated', ({ locator }) => record(locator));
 
-    /** Writes the latest position (if any) and lets the engine push the outbox. */
+    /**
+     * Writes the latest position (if any) and lets the engine push the outbox.
+     * `write` flushes the synchronous legacy buffer before its first `await`,
+     * so the last position survives a `pagehide` that tears the page down
+     * before the Dexie transaction commits. The sync request does not wait for
+     * that transaction either.
+     */
     const handOff = (): void => {
       const locator = locatorRef.current;
       if (!locator || !dirtyRef.current) return;
@@ -157,8 +169,8 @@ export function useReaderProgress({
         if (latest === null || locatorsEqual(latest, locator)) {
           dirtyRef.current = false;
         }
-        requestSync('progress');
       });
+      requestSync('progress');
     };
 
     const interval = setInterval(handOff, SYNC_REQUEST_INTERVAL_MS);

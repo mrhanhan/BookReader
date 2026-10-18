@@ -3,6 +3,7 @@ import {
   PROGRESS_KEY_PREFIX,
   clearReaderProgressCache,
   readLocalProgress,
+  writeLegacyProgress,
   writeLocalProgress,
 } from '../progressStore';
 import { createMemoryRepository } from '../../../../test/memory-repository';
@@ -91,6 +92,56 @@ it('uses the row a concurrent sync wrote during the legacy migration', async () 
   expect(resolved?.locator).toEqual(pulled);
   expect(resolved?.savedAt).toBe(pulledAt);
   expect(localStorage.getItem(legacyKey)).toBeNull();
+});
+
+it('writes the synchronous buffer under the per-account key', () => {
+  writeLegacyProgress('user-a', 'b', pdf, 1_700_000_000_123);
+
+  expect(JSON.parse(localStorage.getItem(`${PROGRESS_KEY_PREFIX}user-a.b`) ?? 'null')).toEqual({
+    locator: pdf,
+    savedAt: 1_700_000_000_123,
+  });
+});
+
+it('uses a newer legacy buffer and writes it back to Dexie without queueing a sync', async () => {
+  const legacyKey = `${PROGRESS_KEY_PREFIX}user-a.b`;
+  const storedAt = 1_700_000_000_000;
+  const bufferedAt = storedAt + 4_000;
+  const buffered = { ...pdf, page: 8, percent: 0.9 };
+  repo.seedProgress('user-a', 'b', { ...pdf, page: 2, percent: 0.2 }, storedAt);
+  localStorage.setItem(legacyKey, JSON.stringify({ locator: buffered, savedAt: bufferedAt }));
+
+  const resolved = await readLocalProgress(repo, 'user-a', 'b');
+
+  expect(resolved).toEqual({ locator: buffered, savedAt: bufferedAt });
+  expect(localStorage.getItem(legacyKey)).toBeNull();
+
+  const stored = await repo.progressFor('user-a', 'b');
+  expect(stored?.locator).toEqual(buffered);
+  expect(stored?.clientUpdatedAt).toBe(new Date(bufferedAt).toISOString());
+  expect(stored?.dirty).toBe(false);
+  expect(await repo.pendingCount('user-a')).toBe(0);
+});
+
+it('keeps the Dexie row aligned by the first pull over an older legacy buffer', async () => {
+  const legacyKey = `${PROGRESS_KEY_PREFIX}user-a.b`;
+  const pulled = { ...pdf, page: 9, percent: 0.8 };
+  const pulledAt = Date.parse('2026-05-01T00:00:00.000Z');
+  repo.seedProgress('user-a', 'b', pulled, pulledAt);
+  localStorage.setItem(
+    legacyKey,
+    JSON.stringify({ locator: { ...pdf, page: 3 }, savedAt: pulledAt - 10_000 }),
+  );
+
+  const resolved = await readLocalProgress(repo, 'user-a', 'b');
+
+  expect(resolved).toEqual({ locator: pulled, savedAt: pulledAt });
+  expect(localStorage.getItem(legacyKey)).toBeNull();
+
+  const stored = await repo.progressFor('user-a', 'b');
+  expect(stored?.locator).toEqual(pulled);
+  expect(stored?.dirty).toBe(false);
+  expect(await repo.pendingCount('user-a')).toBe(0);
 });
 
 it('clears every account and book while keeping unrelated storage', () => {

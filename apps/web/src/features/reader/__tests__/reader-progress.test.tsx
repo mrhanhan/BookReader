@@ -156,7 +156,7 @@ it('migrates a legacy localStorage position once', async () => {
   expect(await screen.findByRole('button', { name: '目录' })).toBeInTheDocument();
 });
 
-it('does not queue the position the book was opened at', async () => {
+it('does not queue or buffer the position the book was opened at', async () => {
   repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR);
   const engine = renderReader();
 
@@ -173,6 +173,71 @@ it('does not queue the position the book was opened at', async () => {
 
   await waitFor(() => expect(repo.outbox).toHaveLength(0));
   expect((await repo.progressFor(USER, BOOK_ID))?.locator).toEqual(OPEN_LOCATOR);
+
+  // The synchronous buffer follows the same rule: the first relocation may
+  // not seed a position that the open-time alignment already provided.
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  expect(localStorage.getItem(`${PROGRESS_KEY_PREFIX}${USER}.${BOOK_ID}`)).toBeNull();
+});
+
+it('flushes the throttled position to the legacy buffer synchronously on page hide', async () => {
+  repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR);
+  const engine = renderReader();
+  await waitFor(() => expect(engine.open).toHaveBeenCalled());
+
+  const legacyKey = `${PROGRESS_KEY_PREFIX}${USER}.${BOOK_ID}`;
+  const save = vi.spyOn(repo, 'saveProgress');
+  const first: Locator = { kind: 'pdf', page: 7, percent: 0.66 };
+  act(() => engine.emit('relocated', { locator: first, percent: first.percent }));
+
+  // The leading write mirrors the position immediately...
+  expect(JSON.parse(localStorage.getItem(legacyKey) ?? 'null')).toMatchObject({ locator: first });
+  // ...and its resolution opens the five-second throttle window.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  // A second event inside the window only schedules a trailing Dexie write.
+  localStorage.removeItem(legacyKey);
+  const second: Locator = { kind: 'pdf', page: 11, percent: 0.9 };
+  act(() => engine.emit('relocated', { locator: second, percent: second.percent }));
+  expect(localStorage.getItem(legacyKey)).toBeNull();
+
+  // Hold the Dexie transaction open: page hide must not wait for it.
+  save.mockReturnValue(new Promise(() => {}));
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+  });
+
+  expect(JSON.parse(localStorage.getItem(legacyKey) ?? 'null')).toMatchObject({ locator: second });
+  save.mockRestore();
+});
+
+it('opens a reload at the newer legacy buffer and writes it back to Dexie', async () => {
+  const legacyKey = `${PROGRESS_KEY_PREFIX}${USER}.${BOOK_ID}`;
+  const storedAt = Date.parse('2026-01-01T00:00:00.000Z');
+  const buffered: Locator = { kind: 'pdf', page: 9, percent: 0.82 };
+  repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR, storedAt);
+  localStorage.setItem(legacyKey, JSON.stringify({ locator: buffered, savedAt: storedAt + 1_000 }));
+
+  const engine = renderReader();
+
+  await waitFor(() =>
+    expect(engine.open).toHaveBeenCalledWith(
+      'https://files.test/book.pdf',
+      expect.any(HTMLElement),
+      expect.anything(),
+      expect.objectContaining({ initialLocator: buffered }),
+    ),
+  );
+
+  expect(localStorage.getItem(legacyKey)).toBeNull();
+  const stored = await repo.progressFor(USER, BOOK_ID);
+  expect(stored?.locator).toEqual(buffered);
+  expect(stored?.dirty).toBe(false);
+  expect(repo.outbox.filter((row) => row.entityType === 'reading_progress')).toHaveLength(0);
 });
 
 it('does not overwrite progress applied from the server before the first write', async () => {

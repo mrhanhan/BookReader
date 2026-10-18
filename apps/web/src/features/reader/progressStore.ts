@@ -51,8 +51,13 @@ function keyFor(userId: string, bookId: string): string {
   return `${PROGRESS_KEY_PREFIX}${userId}.${bookId}`;
 }
 
-/** Reads the pre-Dexie cache entry, treating corrupt data as "no cache". */
-function readLegacyProgress(userId: string, bookId: string): LocalProgress | null {
+/**
+ * Reads the legacy cache entry, treating corrupt data as "no cache". The same
+ * key doubles as a synchronous last-position buffer: Dexie writes are async,
+ * so `pagehide` cannot await them, but it can always flush this entry before
+ * the page goes away.
+ */
+export function readLegacyProgress(userId: string, bookId: string): LocalProgress | null {
   const raw = storage()?.getItem(keyFor(userId, bookId));
   if (!raw) return null;
 
@@ -74,9 +79,51 @@ function readLegacyProgress(userId: string, bookId: string): LocalProgress | nul
 }
 
 /**
- * Reads this device's cached position for one account. A position that only
- * exists in the old localStorage cache is migrated into Dexie without creating
- * a sync entry, then the legacy key is dropped so migration happens once.
+ * Writes the last-known position synchronously. `pagehide` and a crash can
+ * tear the page down before an IndexedDB transaction commits, so this buffer
+ * is the only write the reader can guarantee at that moment. Storage failures
+ * are ignored: reading must continue even when the browser blocks storage.
+ */
+export function writeLegacyProgress(
+  userId: string,
+  bookId: string,
+  locator: Locator,
+  savedAt: number,
+): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(keyFor(userId, bookId), JSON.stringify({ locator, savedAt }));
+  } catch {
+    // Quota or a blocked storage; the Dexie write still runs.
+  }
+}
+
+function forgetLegacyProgress(userId: string, bookId: string): void {
+  try {
+    storage()?.removeItem(keyFor(userId, bookId));
+  } catch {
+    // A blocked storage has nothing to forget.
+  }
+}
+
+/** Epoch milliseconds of a row timestamp, or null when it is not parseable. */
+function timeOf(clientUpdatedAt: string): number | null {
+  const parsed = Date.parse(clientUpdatedAt);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Reads this device's cached position for one account.
+ *
+ * The Dexie row and the synchronous legacy buffer can disagree after a page
+ * was closed mid-write, so the newer timestamp wins. When the buffer is newer
+ * it is imported through the repository's conflict-aware apply path: the row
+ * becomes `dirty: false` and no outbox entry is created, exactly like a
+ * position pulled from another device. A row that was already aligned with
+ * the server after the first pull keeps its newer timestamp and wins. The
+ * legacy key is dropped once the comparison is settled so migration happens
+ * once.
  */
 export async function readLocalProgress(
   repo: LocalRepository,
@@ -84,28 +131,58 @@ export async function readLocalProgress(
   bookId: string,
 ): Promise<LocalProgress | null> {
   const stored = await repo.progressFor(userId, bookId);
-  if (stored) {
-    const savedAt = Date.parse(stored.clientUpdatedAt);
-    return { locator: stored.locator, savedAt: Number.isNaN(savedAt) ? Date.now() : savedAt };
-  }
-
   const legacy = readLegacyProgress(userId, bookId);
-  if (!legacy) {
-    return null;
+
+  let current = stored;
+  if (!current) {
+    if (!legacy) {
+      return null;
+    }
+
+    try {
+      current = await repo.importProgress(userId, bookId, legacy.locator, legacy.savedAt);
+    } catch {
+      // Keeping the legacy entry lets the next visit retry the migration.
+      return legacy;
+    }
   }
 
+  // `importProgress` may return a row a concurrent pull wrote first, so the
+  // comparison runs on whatever the repository now holds. A row timestamp
+  // aligned by the first pull is at least as new as the buffer and wins.
+  const currentAt = timeOf(current.clientUpdatedAt);
+  if (!legacy || (currentAt !== null && legacy.savedAt <= currentAt)) {
+    if (legacy) {
+      // The row is at least as new as the buffer, so the buffer is stale.
+      forgetLegacyProgress(userId, bookId);
+    }
+    return { locator: current.locator, savedAt: currentAt ?? Date.now() };
+  }
+
+  const at = new Date(legacy.savedAt).toISOString();
   try {
-    const imported = await repo.importProgress(userId, bookId, legacy.locator, legacy.savedAt);
-    storage()?.removeItem(keyFor(userId, bookId));
-    // A sync pull may have won the race and written a row first; use whichever
-    // position the repository now holds rather than the legacy one.
-    const savedAt = Date.parse(imported.clientUpdatedAt);
-    return {
-      locator: imported.locator,
-      savedAt: Number.isNaN(savedAt) ? legacy.savedAt : savedAt,
-    };
+    await repo.applyServerChange(userId, {
+      revision: 0,
+      entityType: 'reading_progress',
+      entityId: bookId,
+      op: 'upsert',
+      payload: {
+        bookId,
+        locator: legacy.locator,
+        percent: legacy.locator.percent,
+        updatedAt: at,
+        clientUpdatedAt: at,
+      },
+      clientUpdatedAt: at,
+      serverUpdatedAt: at,
+    });
+    const merged = await repo.progressFor(userId, bookId);
+    forgetLegacyProgress(userId, bookId);
+    return merged
+      ? { locator: merged.locator, savedAt: timeOf(merged.clientUpdatedAt) ?? legacy.savedAt }
+      : legacy;
   } catch {
-    // Keeping the legacy entry lets the next visit retry the migration.
+    // Keep the buffer for the next open and still open at its position.
     return legacy;
   }
 }
