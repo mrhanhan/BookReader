@@ -1,8 +1,9 @@
+import { connect } from 'node:net';
 import { Writable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { FastifyInstance } from 'fastify';
 import { expect, it } from 'vitest';
-import type { AppDeps, BuildAppOptions } from '../src/app';
+import { redactRequestUrl, type AppDeps, type BuildAppOptions } from '../src/app';
 import { signSyncStreamToken } from '../src/auth/tokens';
 import { syncChanges } from '../src/db/schema';
 import { listChanges, markPrunedThrough } from '../src/sync/repo';
@@ -58,10 +59,16 @@ interface OpenStream {
   pending: ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']> | null;
 }
 
-async function openStream(url: string, token: string, since = 0): Promise<OpenStream> {
+async function openStream(
+  url: string,
+  token: string,
+  since = 0,
+  headers: Record<string, string> = {},
+): Promise<OpenStream> {
   const controller = new AbortController();
   const response = await fetch(`${url}/api/sync/stream?token=${encodeURIComponent(token)}&since=${since}`, {
     signal: controller.signal,
+    headers,
   });
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/event-stream');
@@ -353,7 +360,7 @@ it('redacts the stream token from request logs', async () => {
   const user = await seedUser('member');
   const token = await fetchStreamToken(app, await authHeader(user));
 
-  const stream = await openStream(url, token, 0);
+  const stream = await openStream(url, token, 0, { 'accept-version': '1.1' });
   await waitForSubscribers(deps, user.id, 1);
 
   const logs = sink.text();
@@ -361,11 +368,12 @@ it('redacts the stream token from request logs', async () => {
   expect(logs).not.toContain(token);
   expect(logs).not.toContain('token=');
   // The default request fields survive the custom serializer.
-  expect(logs).toContain('"version"');
+  expect(logs).toContain('"version":"1.1"');
   expect(logs).toContain('"host"');
   expect(logs).toContain('"remotePort"');
 
   stream.controller.abort();
+  await waitForSubscribers(deps, user.id, 0);
   await stopServer(app);
 });
 
@@ -453,6 +461,7 @@ it('does not lose changes committed while the backlog is replaying', async () =>
   expect(stream.text.split('during-replay').length - 1).toBe(1);
 
   stream.controller.abort();
+  await waitForSubscribers(deps, user.id, 0);
   await stopServer(app);
 });
 
@@ -487,6 +496,7 @@ it('sends a reset event when the cursor predates the watermark', async () => {
   expect(stream.text).toContain('event: reset');
 
   stream.controller.abort();
+  await waitForSubscribers(deps, user.id, 0);
   await stopServer(app);
 });
 
@@ -504,5 +514,41 @@ it('replays more than one page of backlog', async () => {
   expect(stream.text.match(/event: change/g) ?? []).toHaveLength(450);
 
   stream.controller.abort();
+  await waitForSubscribers(deps, user.id, 0);
+  await stopServer(app);
+});
+
+it('survives a malformed request target without leaking it', async () => {
+  await resetDb();
+  const sink = logSink();
+  const { app, url } = await startServer({ logStream: sink.stream });
+
+  // Node's HTTP parser accepts this target, but `new URL` rejects it.
+  expect(redactRequestUrl('//[bad/x?token=secret-value')).toBe('[unparseable-url]');
+
+  const port = Number(new URL(url).port);
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1', () => {
+      socket.write(
+        'GET //[bad/x?token=SECRET-TARGET HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+      );
+    });
+    socket.on('data', () => undefined);
+    socket.on('end', () => resolve());
+    socket.on('error', reject);
+  });
+  // Let pino flush the request line before reading the sink.
+  await delay(50);
+
+  const logs = sink.text();
+  expect(logs).toContain('[unparseable-url]');
+  expect(logs).not.toContain('SECRET-TARGET');
+  expect(logs).not.toContain('//[bad');
+
+  // The process and its server are still healthy.
+  const health = await fetch(`${url}/healthz`);
+  expect(health.status).toBe(200);
+  await health.text();
+
   await stopServer(app);
 });

@@ -125,18 +125,23 @@ export interface BuildAppOptions {
 /**
  * Removes every `token` query parameter from a URL before it is logged.
  * Parsing rather than pattern matching handles percent-encoded names such as
- * `%74oken=` and duplicate occurrences.
+ * `%74oken=` and duplicate occurrences. Malformed request targets (Node passes
+ * them through) must never reach the logger as exceptions or raw text.
  */
 export function redactRequestUrl(url: string): string {
-  const parsed = new URL(url, 'http://localhost');
-  parsed.searchParams.delete('token');
-  return `${parsed.pathname}${parsed.search}`;
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    parsed.searchParams.delete('token');
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return '[unparseable-url]';
+  }
 }
 
 /** Builds the Fastify application with all cross-cutting concerns configured. */
 export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyInstance {
   const isTest = process.env.NODE_ENV === 'test';
-  const app = Fastify({
+  const app: FastifyInstance = Fastify({
     logger: {
       level:
         options.logStream !== undefined
@@ -147,14 +152,17 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
         censor: '[REDACTED]',
       },
       serializers: {
-        req: (request: FastifyRequest) => ({
-          method: request.method,
-          url: redactRequestUrl(request.url),
-          version: request.raw.httpVersion,
-          host: request.host,
-          remoteAddress: request.ip,
-          remotePort: request.raw.socket.remotePort,
-        }),
+        req: (request: FastifyRequest) => {
+          const acceptVersion = request.raw.headers['accept-version'];
+          return {
+            method: request.method,
+            url: redactRequestUrl(request.url),
+            version: Array.isArray(acceptVersion) ? acceptVersion[0] : acceptVersion,
+            host: request.host,
+            remoteAddress: request.ip,
+            remotePort: request.raw.socket.remotePort,
+          };
+        },
       },
       ...(options.logStream !== undefined ? { stream: options.logStream } : {}),
     },

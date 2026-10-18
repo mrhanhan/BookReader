@@ -56,6 +56,7 @@ async function openStream(
   userId: string,
   since: number,
   activeStreams: Set<() => void>,
+  isClosing: () => boolean,
 ): Promise<void> {
   reply.hijack();
   const raw = reply.raw;
@@ -87,6 +88,11 @@ async function openStream(
     }
   };
   activeStreams.add(cleanup);
+  // A stream can register after preClose already snapshotted the set (for
+  // example while its token is being verified); clean it up immediately.
+  if (isClosing()) {
+    cleanup();
+  }
 
   /** Clears the backpressure warning once the socket accepts writes again. */
   const onDrain = (): void => {
@@ -193,7 +199,9 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
   // in-flight requests then finish under the default close policy.
   const activeStreams = new Set<() => void>();
   const runningStreams = new Set<Promise<void>>();
+  let closing = false;
   app.addHook('preClose', async () => {
+    closing = true;
     for (const cleanup of [...activeStreams]) {
       cleanup();
     }
@@ -246,7 +254,14 @@ export function registerSyncRoutes(app: FastifyInstance, deps: AppDeps): void {
       throw unauthorized();
     }
 
-    const stream = openStream(deps, reply, userId, parsed.data.since, activeStreams);
+    const stream = openStream(
+      deps,
+      reply,
+      userId,
+      parsed.data.since,
+      activeStreams,
+      () => closing,
+    );
     runningStreams.add(stream);
     try {
       await stream;
