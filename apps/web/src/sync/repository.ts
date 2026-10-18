@@ -822,7 +822,16 @@ export function createRepository(db: BookrDb): LocalRepository {
     },
 
     async setCursor(userId, cursor) {
-      await db.meta.put({ key: `${CURSOR_PREFIX}${userId}`, value: cursor });
+      const key = `${CURSOR_PREFIX}${userId}`;
+      // The cursor only moves forward: a late frame from an older revision
+      // must not make the next pull replay (or skip) a page.
+      await db.transaction('rw', db.meta, async () => {
+        const current = await metaNumber(db, key);
+        if (current !== null && current >= cursor) {
+          return;
+        }
+        await db.meta.put({ key, value: cursor });
+      });
     },
 
     async getLastSyncedAt(userId) {

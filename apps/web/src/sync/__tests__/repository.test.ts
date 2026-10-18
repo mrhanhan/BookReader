@@ -441,4 +441,14 @@ describe('LocalRepository', () => {
     expect(await repo.getCursor(USER)).toBe(12);
     expect(await repo.getLastSyncedAt(USER)).toBe(1_700_000_000_000);
   });
+
+  it('never moves the cursor backwards', async () => {
+    await repo.setCursor(USER, 7);
+    await repo.setCursor(USER, 3);
+
+    expect(await repo.getCursor(USER)).toBe(7);
+
+    await repo.setCursor(USER, 9);
+    expect(await repo.getCursor(USER)).toBe(9);
+  });
 });

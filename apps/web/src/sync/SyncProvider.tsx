@@ -22,13 +22,13 @@ export const WRITE_SYNC_DELAY_MS = 2000;
 
 export type ConflictListener = (notice: ConflictNotice) => void;
 
-/** Resolves once the engine completes its first sync for this session. */
-interface FirstSyncGate {
+/** Resolves once the provider has installed the engine for the current user. */
+interface EngineReadyGate {
   promise: Promise<void>;
   resolve: () => void;
 }
 
-function createFirstSyncGate(): FirstSyncGate {
+function createEngineReadyGate(): EngineReadyGate {
   let resolve: () => void = () => {};
   const promise = new Promise<void>((settle) => {
     resolve = settle;
@@ -43,10 +43,11 @@ export interface SyncContextValue {
   /** Debounced sync request for local writes; the engine pushes once the burst ends. */
   requestSync: (reason?: string) => void;
   /**
-   * Resolves when this session's first sync completes, or after `timeoutMs`
-   * when the engine is offline or still busy. Never rejects.
+   * Runs a sync and resolves when it completes, or after `timeoutMs`. Every
+   * call starts a fresh sync, so each book open sees server changes made since
+   * the previous one. Offline (or no engine yet) returns immediately.
    */
-  waitForFirstSync: (timeoutMs: number) => Promise<void>;
+  waitForSync: (timeoutMs: number) => Promise<void>;
   /** Conflict notifications resolved after the provider mounted. */
   subscribeConflicts: (listener: ConflictListener) => () => void;
 }
@@ -81,10 +82,10 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const conflictListenersRef = useRef(new Set<ConflictListener>());
   // Created during render so a child that reads it before the provider's own
-  // mount effect runs still waits for this session's first sync.
-  const firstSyncRef = useRef<FirstSyncGate | null>(null);
-  if (firstSyncRef.current === null) {
-    firstSyncRef.current = createFirstSyncGate();
+  // mount effect runs still waits for the engine this session will install.
+  const engineReadyRef = useRef<EngineReadyGate | null>(null);
+  if (engineReadyRef.current === null) {
+    engineReadyRef.current = createEngineReadyGate();
   }
 
   // Applied changes can touch any of the sync-backed queries; the reader keys
@@ -107,9 +108,6 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
     const userId = user?.id;
     if (userId === undefined) {
       setState(DEFAULT_SYNC_STATE);
-      const pending = firstSyncRef.current;
-      firstSyncRef.current = null;
-      pending?.resolve();
       return;
     }
 
@@ -131,21 +129,14 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
         : factory(userId, deps.repo);
 
     engineRef.current = engine;
-    const gate = firstSyncRef.current ?? createFirstSyncGate();
-    firstSyncRef.current = gate;
+    const ready = engineReadyRef.current ?? createEngineReadyGate();
+    engineReadyRef.current = ready;
     // Conflicts counted before this effect runs are the mount baseline; only
     // later increases are reported to subscribers.
     let previousConflicts = engine.getState().conflicts;
 
     const unsubscribe = engine.subscribe((next) => {
       setState(next);
-      if (
-        next.status === 'synced' ||
-        next.status === 'offline' ||
-        next.status === 'error'
-      ) {
-        gate.resolve();
-      }
       if (next.conflicts > previousConflicts) {
         previousConflicts = next.conflicts;
         const notice = next.lastConflict;
@@ -158,21 +149,18 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
         previousConflicts = next.conflicts;
       }
     });
-    const initial = engine.getState();
-    setState(initial);
-    // An offline engine starts in its final state and may never publish a
-    // change, so waiting for a notification would burn the whole timeout.
-    if (initial.status === 'offline') {
-      gate.resolve();
-    }
+    setState(engine.getState());
     engine.start();
+    // A child effect that runs before this one is waiting on the gate; resolve
+    // it only after the engine ref is installed so the continuation finds it.
+    ready.resolve();
 
     return () => {
       unsubscribe();
       void engine.stop();
-      gate.resolve();
-      if (firstSyncRef.current === gate) {
-        firstSyncRef.current = null;
+      ready.resolve();
+      if (engineReadyRef.current === ready) {
+        engineReadyRef.current = null;
       }
       if (engineRef.current === engine) {
         engineRef.current = null;
@@ -204,24 +192,37 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
     }, WRITE_SYNC_DELAY_MS);
   }, []);
 
-  const waitForFirstSync = useCallback(async (timeoutMs: number): Promise<void> => {
-    // A remount (React StrictMode, a provider above us) may have cleared the
-    // gate between the render and this call; recreate it so the provider's
-    // next mount adopts the same promise.
-    let gate = firstSyncRef.current;
-    if (gate === null) {
-      gate = createFirstSyncGate();
-      firstSyncRef.current = gate;
-    }
-
+  const waitForSync = useCallback(async (timeoutMs: number): Promise<void> => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, timeoutMs));
+    });
+
     try {
-      await Promise.race([
-        gate.promise,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, Math.max(0, timeoutMs));
-        }),
-      ]);
+      if (engineRef.current === null) {
+        // Child effects run before the provider's, so the first open can land
+        // before the engine exists. Wait for the mount effect, bounded by the
+        // caller's timeout.
+        let ready = engineReadyRef.current;
+        if (ready === null) {
+          ready = createEngineReadyGate();
+          engineReadyRef.current = ready;
+        }
+        await Promise.race([ready.promise, timeout]);
+      }
+
+      const engine = engineRef.current;
+      if (engine === null || engine.getState().status === 'offline') {
+        return;
+      }
+
+      // Every call starts a fresh sync: a book opened later in the session
+      // must see positions written by another device since the last one.
+      try {
+        await Promise.race([engine.syncNow('open'), timeout]);
+      } catch {
+        // A failed sync is reported through the engine state, never here.
+      }
     } finally {
       if (timer !== null) {
         clearTimeout(timer);
@@ -243,10 +244,10 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
       state,
       syncNow,
       requestSync,
-      waitForFirstSync,
+      waitForSync,
       subscribeConflicts,
     }),
-    [deps.repo, state, syncNow, requestSync, waitForFirstSync, subscribeConflicts],
+    [deps.repo, state, syncNow, requestSync, waitForSync, subscribeConflicts],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;

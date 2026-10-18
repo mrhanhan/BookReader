@@ -1,5 +1,11 @@
 import { SYNC_PUSH_MAX_CHANGES, syncKey } from '@bookr/shared';
-import type { SyncChangeEnvelope, SyncEntityType, SyncPushChange } from '@bookr/shared';
+import type {
+  SyncChangeEnvelope,
+  SyncEntityType,
+  SyncPushChange,
+  SyncPushResult,
+} from '@bookr/shared';
+import { ApiError } from '../api/client';
 import { syncStreamUrl } from '../api/sync';
 import type { SyncApi } from '../api/sync';
 import type { BookrDb } from './db';
@@ -79,6 +85,9 @@ export interface SyncEngine {
 const RECONNECT_DELAYS = [1000, 2000, 5000, 15000, 30000];
 const HEARTBEAT_MS = 60_000;
 const SYNC_ERRORS_PREFIX = 'syncErrors:';
+const BOOTSTRAP_PREFIX = 'bootstrapped:';
+/** Upper bound for the exponential push retry delay. */
+const MAX_PUSH_BACKOFF_MS = 5 * 60 * 1000;
 
 interface SyncEvent {
   type: 'applied' | 'conflict';
@@ -103,6 +112,11 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   let conflicts = 0;
   let lastApplied: AppliedChange | undefined;
   let lastConflict: ConflictNotice | undefined;
+  /**
+   * Set by the browser's `offline` event until `online` fires. It overrides the
+   * injectable probe so an explicit event always wins over a stale value.
+   */
+  let offlineNotified = false;
   /** Bumped whenever pending/lastSyncedAt are written, so a stale refresh cannot win. */
   let stateEpoch = 0;
 
@@ -116,13 +130,19 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   let reconnectIndex = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let onlineListener: (() => void) | null = null;
+  let offlineListener: (() => void) | null = null;
   let visibilityListener: (() => void) | null = null;
 
   const listeners = new Set<(state: SyncState) => void>();
 
+  /** Effective connectivity: an explicit offline event beats the probe. */
+  function canReachNetwork(): boolean {
+    return !offlineNotified && online();
+  }
+
   function computeState(): SyncState {
     let status: SyncStatus;
-    if (!online()) {
+    if (!canReachNetwork()) {
       status = 'offline';
     } else if (syncing) {
       status = 'syncing';
@@ -196,9 +216,23 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     publish();
   }
 
+  /**
+   * Serializes local application of server state. Stream frames and pulls run
+   * through one queue so an older revision cannot overwrite a newer one, and
+   * the cursor can only move forward.
+   */
+  function enqueueSerial<T>(task: () => Promise<T>): Promise<T> {
+    const result = streamQueue.then(task);
+    streamQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   /** Push every due batch, then pull pages until the server reports the end. */
   async function runOnce(): Promise<void> {
-    if (!online()) {
+    if (!canReachNetwork()) {
       await refreshPending();
       publish();
       return;
@@ -207,8 +241,11 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     syncing = true;
     publish();
     try {
-      await pushAll();
-      await pullAll();
+      const bootstrapped = await bootstrapIfNeeded();
+      if (!bootstrapped) {
+        await pushAll();
+      }
+      await enqueueSerial(() => pullAll());
       lastError = false;
       lastSyncedAt = now();
       stateEpoch += 1;
@@ -227,6 +264,45 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     publish();
   }
 
+  /**
+   * A device that has never synced holds cursor 0, but the server does not
+   * reset its log for every new client. Push the local outbox first, then take
+   * a full snapshot so the existing server state lands locally. The marker
+   * keeps this one-shot even when the server has no changes and the snapshot
+   * cursor stays at 0.
+   *
+   * Returns true when it ran the outbox push itself, so the caller does not
+   * repeat it in the same sync.
+   */
+  async function bootstrapIfNeeded(): Promise<boolean> {
+    const key = `${BOOTSTRAP_PREFIX}${userId}`;
+    if ((await db.meta.get(key)) !== undefined) {
+      return false;
+    }
+
+    if ((await repo.getCursor(userId)) !== 0) {
+      await db.meta.put({ key, value: true });
+      return false;
+    }
+
+    await pushAll();
+    if ((await repo.pendingCount(userId)) > 0) {
+      // A write the server never acknowledged would be erased by the
+      // snapshot; leave the bootstrap for the next sync instead.
+      return true;
+    }
+
+    await enqueueSerial(async () => {
+      const snapshot = await api.snapshot();
+      await repo.applySnapshot(userId, snapshot);
+      await repo.setCursor(userId, snapshot.cursor);
+    });
+    await db.meta.put({ key, value: true });
+    await refreshPending();
+    publish();
+    return true;
+  }
+
   async function pushAll(): Promise<void> {
     for (;;) {
       const rows = await dueOutbox(db, userId, now(), SYNC_PUSH_MAX_CHANGES);
@@ -234,6 +310,27 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         return;
       }
 
+      const acknowledged = await pushBatch(rows);
+      if (acknowledged === 0) {
+        // Nothing in the batch could be matched to a response; stop instead of
+        // re-pushing the same rows forever.
+        return;
+      }
+    }
+  }
+
+  /**
+   * Pushes one batch and applies its result. A 413 means the request was too
+   * large: halve the batch and retry each half, down to a single row, which is
+   * dropped and counted as rejected. Other failures back the rows off.
+   */
+  async function pushBatch(rows: OutboxRow[]): Promise<number> {
+    if (rows.length === 0) {
+      return 0;
+    }
+
+    let result: SyncPushResult;
+    try {
       const changes: SyncPushChange[] = rows.map((row) => ({
         entityType: row.entityType,
         entityId: row.entityId,
@@ -241,73 +338,108 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         clientUpdatedAt: row.clientUpdatedAt,
         payload: row.payload,
       }));
-      const result = await api.push(changes);
-      const rowsByKey = groupRowsByKey(rows);
-      // Ids alone are not enough: a merged progress row may have changed while
-      // the batch was in flight, and acknowledging it would drop the newer
-      // position. Keep the snapshot so only unchanged rows are removed.
-      const acknowledged = new Map<string, OutboxRow>();
-      const skippedKeys: string[] = [];
-      let rejected = 0;
-
-      for (const envelope of result.applied) {
-        for (const row of rowsByKey.get(syncKey(envelope.entityType, envelope.entityId)) ?? []) {
-          acknowledged.set(row.id, row);
+      result = await api.push(changes);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 413) {
+        if (rows.length > 1) {
+          const cut = Math.ceil(rows.length / 2);
+          const first = await pushBatch(rows.slice(0, cut));
+          const second = await pushBatch(rows.slice(cut));
+          return first + second;
         }
+        await acknowledgeOutbox(db, rows);
+        await recordRejected(1);
+        return rows.length;
       }
 
-      for (const key of result.skipped) {
-        skippedKeys.push(key);
-        for (const row of rowsByKey.get(key) ?? []) {
-          acknowledged.set(row.id, row);
-        }
-      }
+      await backOffBatch(rows);
+      throw error;
+    }
 
-      for (const rejection of result.rejected) {
-        for (const row of rowsByKey.get(rejection.key) ?? []) {
-          acknowledged.set(row.id, row);
-        }
-        rejected += 1;
-      }
+    return applyPushResult(rows, result);
+  }
 
-      // Confirm the batch *before* applying the echoes. Writes made while the
-      // push was in flight are still queued, so last-write-wins protects them;
-      // if nothing newer was written, the echo applies because no pending row
-      // is left to compare against.
-      await acknowledgeOutbox(db, [...acknowledged.values()]);
-      if (rejected > 0) {
-        await recordRejected(rejected);
-      }
-
-      for (const envelope of result.applied) {
-        const outcome = await repo.applyServerChange(userId, envelope);
-        if (outcome === 'applied') {
-          publish({
-            type: 'applied',
-            entityType: envelope.entityType,
-            entityId: envelope.entityId,
-            source: 'push',
-          });
-        }
-      }
-
-      for (const key of skippedKeys) {
-        const skippedRows = rowsByKey.get(key) ?? [];
-        const first = skippedRows[0];
-        if (first === undefined) {
+  /** Exponential backoff so a failing push does not block the sync loop. */
+  async function backOffBatch(rows: OutboxRow[]): Promise<void> {
+    await db.transaction('rw', db.outbox, async () => {
+      for (const row of rows) {
+        const current = await db.outbox.get(row.id);
+        if (current === undefined) {
           continue;
         }
-        conflicts += 1;
-        await markLocalClean(first.entityType, first.entityId);
-        publish({ type: 'conflict', entityType: first.entityType, entityId: first.entityId });
+        const attempts = current.attempts + 1;
+        const delay = Math.min(2 ** attempts * 1000, MAX_PUSH_BACKOFF_MS);
+        await db.outbox.update(row.id, {
+          attempts,
+          nextAttemptAt: now() + delay,
+        });
       }
+    });
+  }
 
-      if (acknowledged.size === 0) {
-        // Nothing in the batch could be matched to a response; stop instead of
-        // re-pushing the same rows forever.
-        return;
+  /** Acknowledges what the server settled and applies its echoes. */
+  async function applyPushResult(rows: OutboxRow[], result: SyncPushResult): Promise<number> {
+    const rowsByKey = groupRowsByKey(rows);
+    // Ids alone are not enough: a merged progress row may have changed while
+    // the batch was in flight, and acknowledging it would drop the newer
+    // position. Keep the snapshot so only unchanged rows are removed.
+    const acknowledged = new Map<string, OutboxRow>();
+    const skippedKeys: string[] = [];
+    let rejected = 0;
+
+    for (const envelope of result.applied) {
+      for (const row of rowsByKey.get(syncKey(envelope.entityType, envelope.entityId)) ?? []) {
+        acknowledged.set(row.id, row);
       }
     }
+
+    for (const key of result.skipped) {
+      skippedKeys.push(key);
+      for (const row of rowsByKey.get(key) ?? []) {
+        acknowledged.set(row.id, row);
+      }
+    }
+
+    for (const rejection of result.rejected) {
+      for (const row of rowsByKey.get(rejection.key) ?? []) {
+        acknowledged.set(row.id, row);
+      }
+      rejected += 1;
+    }
+
+    // Confirm the batch *before* applying the echoes. Writes made while the
+    // push was in flight are still queued, so last-write-wins protects them;
+    // if nothing newer was written, the echo applies because no pending row
+    // is left to compare against.
+    await acknowledgeOutbox(db, [...acknowledged.values()]);
+    if (rejected > 0) {
+      await recordRejected(rejected);
+    }
+
+    for (const envelope of result.applied) {
+      const outcome = await repo.applyServerChange(userId, envelope);
+      if (outcome === 'applied') {
+        publish({
+          type: 'applied',
+          entityType: envelope.entityType,
+          entityId: envelope.entityId,
+          source: 'push',
+        });
+      }
+    }
+
+    for (const key of skippedKeys) {
+      const skippedRows = rowsByKey.get(key) ?? [];
+      const first = skippedRows[0];
+      if (first === undefined) {
+        continue;
+      }
+      conflicts += 1;
+      await markLocalClean(first.entityType, first.entityId);
+      publish({ type: 'conflict', entityType: first.entityType, entityId: first.entityId });
+    }
+
+    return acknowledged.size;
   }
 
   async function pullAll(): Promise<void> {
@@ -335,11 +467,15 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
 
       let cursor = since;
       for (const change of page.changes) {
-        const outcome = await repo.applyServerChange(userId, change);
-        if (change.revision > cursor) {
-          cursor = change.revision;
-          await repo.setCursor(userId, cursor);
+        // Revisions are the global log order: anything at or below the running
+        // cursor is a duplicate or an out-of-order frame and must not overwrite
+        // newer local state.
+        if (change.revision <= cursor) {
+          continue;
         }
+        const outcome = await repo.applyServerChange(userId, change);
+        cursor = change.revision;
+        await repo.setCursor(userId, cursor);
         if (outcome === 'applied') {
           await refreshPending();
           publish({
@@ -464,7 +600,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     }
     // A delivered frame proves the stream is healthy; restart the backoff ladder.
     reconnectIndex = 0;
-    streamQueue = streamQueue.then(() => applyStreamChange(event)).catch(() => undefined);
+    void enqueueSerial(() => applyStreamChange(event)).catch(() => undefined);
   }
 
   async function applyStreamChange(event: MessageEvent): Promise<void> {
@@ -518,7 +654,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       return;
     }
     reconnectIndex = 0;
-    streamQueue = streamQueue.then(() => rebuildFromSnapshot()).catch(() => undefined);
+    void enqueueSerial(() => rebuildFromSnapshot()).catch(() => undefined);
   }
 
   async function rebuildFromSnapshot(): Promise<void> {
@@ -555,7 +691,7 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   }
 
   function scheduleReconnect(): void {
-    if (stopped || reconnectTimer !== null || !online()) {
+    if (stopped || reconnectTimer !== null || !canReachNetwork()) {
       return;
     }
 
@@ -568,19 +704,25 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
   }
 
   async function connectStream(): Promise<void> {
-    if (stopped || !online() || eventSourceFactory === undefined || stream !== null || connecting) {
+    if (
+      stopped ||
+      !canReachNetwork() ||
+      eventSourceFactory === undefined ||
+      stream !== null ||
+      connecting
+    ) {
       return;
     }
 
     connecting = true;
     try {
       const { token } = await api.streamToken();
-      if (stopped || !online() || eventSourceFactory === undefined || stream !== null) {
+      if (stopped || !canReachNetwork() || eventSourceFactory === undefined || stream !== null) {
         return;
       }
 
       const since = await repo.getCursor(userId);
-      if (stopped || !online()) {
+      if (stopped || !canReachNetwork()) {
         return;
       }
 
@@ -617,11 +759,34 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       window.removeEventListener('online', onlineListener);
       onlineListener = null;
     }
+    if (offlineListener !== null && typeof window !== 'undefined') {
+      window.removeEventListener('offline', offlineListener);
+      offlineListener = null;
+    }
     if (visibilityListener !== null && typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', visibilityListener);
       visibilityListener = null;
     }
     teardownStream();
+  }
+
+  function handleOffline(): void {
+    if (stopped) {
+      return;
+    }
+    offlineNotified = true;
+    reconnectIndex = 0;
+    teardownStream();
+    publish();
+  }
+
+  function handleOnline(): void {
+    if (stopped) {
+      return;
+    }
+    offlineNotified = false;
+    void syncNow('online');
+    void connectStream();
   }
 
   function start(): void {
@@ -631,11 +796,10 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
     started = true;
 
     if (typeof window !== 'undefined') {
-      onlineListener = () => {
-        void syncNow('online');
-        void connectStream();
-      };
+      onlineListener = handleOnline;
+      offlineListener = handleOffline;
       window.addEventListener('online', onlineListener);
+      window.addEventListener('offline', offlineListener);
     }
     if (typeof document !== 'undefined') {
       visibilityListener = () => {

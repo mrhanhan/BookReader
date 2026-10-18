@@ -85,8 +85,9 @@ const SYNC_CONFLICT_MESSAGES: Record<SyncEntityType, string> = {
 /** Chrome hides after this much inactivity while no panel is open. */
 const CHROME_HIDE_DELAY_MS = 2_500;
 /**
- * Longest the reader waits for this session's first sync before opening at the
- * locally stored position. Offline and failed syncs resolve earlier.
+ * Longest the reader waits for a sync before opening at the locally stored
+ * position. Every open runs a fresh sync; offline and failed syncs resolve
+ * earlier.
  */
 const FIRST_SYNC_WAIT_MS = 1_500;
 
@@ -238,7 +239,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Local progress is namespaced per account; never read or write it before
   // the signed-in user is known.
   const userId = user?.id ?? null;
-  const { repo, requestSync, waitForFirstSync, subscribeConflicts } = useSync();
+  const { repo, requestSync, waitForSync, subscribeConflicts } = useSync();
   const { db, cache } = useOfflineSession();
   const bookQuery = useBook(id ?? null);
   // Cold-start offline: the library API is unreachable, so the metadata
@@ -534,8 +535,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     readyRef.current = false;
   }, [bookId]);
 
-  // Resolve the file URL while this session's first sync settles, then read
-  // the position the reader should open at. Waiting for the pull (bounded by
+  // Resolve the file URL while this open's sync settles, then read the
+  // position the reader should open at. Waiting for the pull (bounded by
   // FIRST_SYNC_WAIT_MS) keeps a stale local position from hiding a newer one
   // from another device without delaying offline or timed-out opens. The
   // source resolver signs fresh URLs online, falls back to the device copy,
@@ -559,7 +560,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
             fetchFile: (id) => fetchReaderFile(id),
             fetchReflow: (id) => fetchReflowFile(id),
           }),
-          waitForFirstSync(FIRST_SYNC_WAIT_MS),
+          waitForSync(FIRST_SYNC_WAIT_MS),
         ]);
         const progress = await readLocalProgress(repo, userId, bookId).catch(() => null);
         if (cancelled) return;
@@ -578,7 +579,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId, cache, repo, userId, waitForFirstSync, wantsReflow]);
+  }, [bookId, cache, repo, userId, waitForSync, wantsReflow]);
 
   const initialLocator = source?.initialLocator;
 

@@ -8,6 +8,7 @@ import type {
   SyncSnapshot,
 } from '@bookr/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../../api/client';
 import type { SyncApi } from '../../api/sync';
 import { createSyncDb, type BookrDb } from '../db';
 import { createSyncEngine, type EventSourceLike, type SyncEngine } from '../engine';
@@ -22,6 +23,7 @@ const locator: Locator = { kind: 'pdf', page: 3, percent: 0.25 };
 const laterLocator: Locator = { kind: 'pdf', page: 9, percent: 0.75 };
 
 const T1 = '2026-01-01T00:00:00.000Z';
+const T2 = '2026-01-02T00:00:00.000Z';
 const NOW = 1_700_000_000_000;
 
 let counter = 0;
@@ -158,6 +160,16 @@ describe('SyncEngine', () => {
   it('pushes queued changes and clears the outbox', async () => {
     const api = createFakeApi();
     api.push = vi.fn(async (changes: SyncPushChange[]) => appliedEcho(changes));
+    // The first sync takes a snapshot; it echoes what the push just confirmed.
+    api.snapshot = vi.fn(async () => ({
+      cursor: 1,
+      progress: [
+        { bookId: BOOK, locator, percent: locator.percent, updatedAt: T1, clientUpdatedAt: T1 },
+      ],
+      annotations: [],
+      bookmarks: [],
+      settings: null,
+    }));
     await repo.saveProgress(USER, BOOK, locator);
     const onChange = vi.fn();
     engine = testEngine(api, { onChange });
@@ -196,6 +208,21 @@ describe('SyncEngine', () => {
       skipped: [],
       rejected: [],
       cursor: 1,
+    }));
+    api.snapshot = vi.fn(async () => ({
+      cursor: 1,
+      progress: [
+        {
+          bookId: BOOK,
+          locator: laterLocator,
+          percent: laterLocator.percent,
+          updatedAt: clamped,
+          clientUpdatedAt: clamped,
+        },
+      ],
+      annotations: [],
+      bookmarks: [],
+      settings: null,
     }));
     // The client clock is ten minutes ahead, so the server echoes a smaller time.
     await repo.saveProgress(USER, BOOK, locator, NOW + 10 * 60 * 1000);
@@ -553,6 +580,16 @@ describe('SyncEngine', () => {
       rejected: [],
       cursor: 0,
     }));
+    // The bootstrap snapshot echoes the position the server already holds.
+    api.snapshot = vi.fn(async () => ({
+      cursor: 1,
+      progress: [
+        { bookId: BOOK, locator, percent: locator.percent, updatedAt: T1, clientUpdatedAt: T1 },
+      ],
+      annotations: [],
+      bookmarks: [],
+      settings: null,
+    }));
     await repo.saveProgress(USER, BOOK, locator);
     engine = testEngine(api);
 
@@ -599,5 +636,172 @@ describe('SyncEngine', () => {
     expect(await repo.pendingCount(USER)).toBe(0);
     const errors = await db.meta.get(`syncErrors:${USER}`);
     expect(errors?.value).toBe(1);
+  });
+
+  it('bootstraps from the server snapshot when the device has no cursor', async () => {
+    const api = createFakeApi();
+    api.snapshot = vi.fn(async () => ({
+      cursor: 8,
+      progress: [
+        { bookId: BOOK, locator, percent: locator.percent, updatedAt: T1, clientUpdatedAt: T1 },
+      ],
+      annotations: [],
+      bookmarks: [],
+      settings: { settings: { theme: 'dark' }, clientUpdatedAt: T1 },
+    }));
+    engine = testEngine(api);
+
+    await engine.syncNow('first-open');
+
+    expect(api.snapshot).toHaveBeenCalledTimes(1);
+    expect(await repo.getCursor(USER)).toBe(8);
+    expect((await repo.progressFor(USER, BOOK))?.locator).toEqual(locator);
+    expect((await repo.settingsFor(USER))?.settings).toEqual({ theme: 'dark' });
+    // The pull resumes from the snapshot instead of replaying the whole log.
+    expect(vi.mocked(api.pull).mock.calls[0]?.[0]).toBe(8);
+
+    await engine.syncNow('second-run');
+
+    expect(api.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers the bootstrap even when the server snapshot is empty', async () => {
+    const api = createFakeApi();
+    engine = testEngine(api);
+
+    await engine.syncNow();
+    await engine.syncNow();
+
+    expect(api.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not snapshot when a cursor already exists', async () => {
+    await repo.setCursor(USER, 4);
+    const api = createFakeApi();
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(api.snapshot).not.toHaveBeenCalled();
+    expect(await repo.getCursor(USER)).toBe(4);
+  });
+
+  it('keeps the newest state when revisions arrive out of order', async () => {
+    const api = createFakeApi();
+    const entityId = '0198f0c0-0000-7000-8000-0000000000aa';
+    const envelope = (revision: number, label: string, at: string): SyncChangeEnvelope => ({
+      revision,
+      entityType: 'bookmark',
+      entityId,
+      op: 'upsert',
+      payload: {
+        id: entityId,
+        bookId: BOOK,
+        locator,
+        label,
+        createdAt: T1,
+        updatedAt: at,
+        clientUpdatedAt: at,
+      },
+      clientUpdatedAt: at,
+      serverUpdatedAt: at,
+    });
+    api.pull = vi.fn(async () => ({
+      changes: [envelope(5, '新', T2), envelope(3, '旧', T1)],
+      cursor: 5,
+      hasMore: false,
+      reset: false,
+    }));
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(await repo.getCursor(USER)).toBe(5);
+    const rows = await repo.listBookmarks(USER, BOOK);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe('新');
+  });
+
+  it('backs off a failed push before retrying', async () => {
+    let clock = NOW;
+    const api = createFakeApi();
+    api.push = vi.fn(async () => {
+      throw new TypeError('network down');
+    });
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api, { now: () => clock });
+
+    await engine.syncNow();
+
+    expect(api.push).toHaveBeenCalledTimes(1);
+    expect(await repo.pendingCount(USER)).toBe(1);
+    const [failed] = await db.outbox.toArray();
+    expect(failed?.attempts).toBe(1);
+    expect(failed?.nextAttemptAt).toBe(NOW + 2000);
+
+    // Still inside the backoff window: the next sync must not re-push.
+    await engine.syncNow();
+    expect(api.push).toHaveBeenCalledTimes(1);
+
+    clock = NOW + 2000;
+    await engine.syncNow();
+    expect(api.push).toHaveBeenCalledTimes(2);
+  });
+
+  it('splits a batch the server rejects as too large', async () => {
+    const api = createFakeApi();
+    let calls = 0;
+    api.push = vi.fn(async (changes: SyncPushChange[]) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ApiError(413, 'VALIDATION_FAILED', 'payload too large');
+      }
+      return appliedEcho(changes);
+    });
+    await repo.createBookmark(USER, { bookId: BOOK, locator, label: '一' });
+    await repo.createBookmark(USER, { bookId: BOOK, locator, label: '二' });
+    await repo.createBookmark(USER, { bookId: BOOK, locator, label: '三' });
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(api.push).toHaveBeenCalledTimes(3);
+    expect(await repo.pendingCount(USER)).toBe(0);
+  });
+
+  it('drops a single change that is still too large', async () => {
+    const api = createFakeApi();
+    api.push = vi.fn(async () => {
+      throw new ApiError(413, 'VALIDATION_FAILED', 'payload too large');
+    });
+    await repo.saveProgress(USER, BOOK, locator);
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(api.push).toHaveBeenCalledTimes(1);
+    expect(await repo.pendingCount(USER)).toBe(0);
+    const errors = await db.meta.get(`syncErrors:${USER}`);
+    expect(errors?.value).toBe(1);
+  });
+
+  it('publishes offline immediately and reconnects when the browser returns', async () => {
+    const api = createFakeApi();
+    engine = testEngine(api, {
+      eventSourceFactory: (url) => new FakeEventSource(url),
+    });
+
+    engine.start();
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const first = FakeEventSource.instances[0];
+
+    window.dispatchEvent(new Event('offline'));
+
+    await vi.waitFor(() => expect(engine?.getState().status).toBe('offline'));
+    expect(first?.closed).toBe(true);
+
+    window.dispatchEvent(new Event('online'));
+
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
   });
 });

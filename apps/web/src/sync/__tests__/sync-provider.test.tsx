@@ -178,6 +178,15 @@ describe('SyncProvider', () => {
     setTokens(tokens);
     let pullCalls = 0;
     server.use(
+      http.get('/api/sync/snapshot', () =>
+        HttpResponse.json({
+          cursor: 0,
+          progress: [],
+          annotations: [],
+          bookmarks: [],
+          settings: null,
+        }),
+      ),
       http.get('/api/sync/pull', ({ request }) => {
         pullCalls += 1;
         const since = Number(new URL(request.url).searchParams.get('since') ?? '0');
@@ -239,10 +248,10 @@ describe('SyncProvider', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['books'] });
   });
 
-  it('resolves the first-sync wait immediately when the engine starts offline', async () => {
+  it('resolves the sync wait immediately when the engine starts offline', async () => {
     setTokens(tokens);
-    // A real engine starts offline in its final state and never publishes a
-    // change, so the provider must resolve the gate from the initial state.
+    // Offline opens must not burn the reader's timeout before showing the
+    // locally stored position.
     const offlineEngine: SyncEngine = {
       start: vi.fn(),
       stop: vi.fn(async () => undefined),
@@ -264,8 +273,64 @@ describe('SyncProvider', () => {
 
     await waitFor(() => expect(offlineEngine.start).toHaveBeenCalled());
     const startedAt = Date.now();
-    await handle.current?.sync.waitForFirstSync(1_500);
+    await handle.current?.sync.waitForSync(1_500);
     expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(offlineEngine.syncNow).not.toHaveBeenCalled();
+  });
+
+  it('runs a fresh sync every time a book opens', async () => {
+    setTokens(tokens);
+    let page = 2;
+    let state: SyncState = { status: 'synced', pending: 0, lastSyncedAt: null, conflicts: 0 };
+    let listener: ((next: SyncState) => void) | null = null;
+    const syncNow = vi.fn(async () => {
+      page += 1;
+      await repo.saveProgress(USER, BOOK, { kind: 'pdf', page, percent: page / 10 });
+      state = { ...state, lastSyncedAt: Date.now() };
+      listener?.(state);
+    });
+    const engine: SyncEngine = {
+      start: vi.fn(),
+      stop: vi.fn(async () => undefined),
+      syncNow,
+      getState: () => state,
+      subscribe(next) {
+        listener = next;
+        next(state);
+        return () => {
+          if (listener === next) listener = null;
+        };
+      },
+    };
+
+    const handle: { current: ProbeHandle | null } = { current: null };
+    renderWithProviders(
+      <SyncProvider createRepo={() => repo} createEngine={() => engine}>
+        <Probe
+          onReady={(next) => {
+            handle.current = next;
+          }}
+        />
+      </SyncProvider>,
+    );
+
+    await waitFor(() => expect(handle.current).not.toBeNull());
+    // The engine is installed once the auth session resolves; syncing before
+    // that would just wait out the caller's timeout.
+    await waitFor(() => expect(engine.start).toHaveBeenCalled());
+
+    await act(async () => {
+      await handle.current?.sync.waitForSync(1_500);
+    });
+    expect((await repo.progressFor(USER, BOOK))?.locator).toMatchObject({ page: 3 });
+
+    // A second open in the same session must sync again and see the position
+    // another device wrote since the first open.
+    await act(async () => {
+      await handle.current?.sync.waitForSync(1_500);
+    });
+    expect((await repo.progressFor(USER, BOOK))?.locator).toMatchObject({ page: 4 });
+    expect(syncNow).toHaveBeenCalledTimes(2);
   });
 
   it('opens the event stream through the browser EventSource', async () => {
