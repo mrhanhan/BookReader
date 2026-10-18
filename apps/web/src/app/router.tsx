@@ -7,6 +7,7 @@ import { MembersPage } from '../features/admin/MembersPage';
 import { BookshelfPage } from '../features/bookshelf/BookshelfPage';
 import { TrashPage } from '../features/bookshelf/TrashPage';
 import { ReaderPage } from '../features/reader/ReaderPage';
+import { SettingsPage } from '../features/settings/SettingsPage';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './auth';
 
@@ -73,6 +74,7 @@ export const routes: RouteObject[] = [
           { index: true, element: <BookshelfPage /> },
           { path: 'books/:id', element: <BookRedirect /> },
           { path: 'trash', element: <TrashPage /> },
+          { path: 'settings', element: <SettingsPage /> },
           { path: 'admin', element: <Navigate to="/admin/members" replace /> },
           {
             path: 'admin/members',

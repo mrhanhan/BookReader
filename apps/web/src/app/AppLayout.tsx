@@ -7,6 +7,7 @@ import { useAuth } from './auth';
 const NAV_ITEMS = [
   { to: '/', label: '书架', end: true },
   { to: '/trash', label: '回收站', end: false },
+  { to: '/settings', label: '设置', end: true },
 ] as const;
 
 /** Administration is only advertised to administrators. */
