@@ -48,6 +48,12 @@ export interface BookDto {
   conversionStatus: BookConversionStatus;
   /** Why the last conversion attempt failed; null unless it failed. */
   conversionError: string | null;
+  /** True when a preprocessed reflow pack is stored for this book. */
+  reflowAvailable: boolean;
+  /** Schema version of the stored pack; null when no pack is stored. */
+  reflowSchemaVersion: number | null;
+  /** Source page count recorded by the stored pack; null when absent. */
+  reflowPageCount: number | null;
   createdAt: string;
   updatedAt: string;
   /** Set when the book was moved to the trash; null while it is on the shelf. */

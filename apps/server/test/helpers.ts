@@ -144,6 +144,10 @@ export interface SeedBookInput {
   sha256?: string;
   fileKey?: string | null;
   coverKey?: string | null;
+  reflowKey?: string | null;
+  reflowSchemaVersion?: number | null;
+  reflowPageCount?: number | null;
+  reflowUpdatedAt?: Date | null;
   epubKey?: string | null;
   status?: BookStatus;
   metadataStatus?: MetadataStatus;
@@ -188,6 +192,10 @@ export async function seedBook(input: SeedBookInput): Promise<BookRow> {
           : input.fileKey,
       coverKey: input.coverKey ?? null,
       epubKey: input.epubKey ?? null,
+      reflowKey: input.reflowKey ?? null,
+      reflowSchemaVersion: input.reflowSchemaVersion ?? null,
+      reflowPageCount: input.reflowPageCount ?? null,
+      reflowUpdatedAt: input.reflowUpdatedAt ?? null,
       status: input.status ?? 'unread',
       metadataStatus: input.metadataStatus ?? 'done',
       conversionStatus: input.conversionStatus ?? 'none',

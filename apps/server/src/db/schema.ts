@@ -104,6 +104,9 @@ export const books = pgTable(
     coverKey: text('cover_key'),
     textLayerKey: text('text_layer_key'),
     reflowKey: text('reflow_key'),
+    reflowSchemaVersion: integer('reflow_schema_version'),
+    reflowPageCount: integer('reflow_page_count'),
+    reflowUpdatedAt: timestamp('reflow_updated_at', { withTimezone: true }),
     epubKey: text('epub_key'),
     status: text('status').$type<BookStatus>().notNull().default('unread'),
     conversionStatus: text('conversion_status')

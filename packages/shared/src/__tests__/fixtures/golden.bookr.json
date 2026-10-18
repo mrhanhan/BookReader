@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "pageCount": 2
+  },
+  "generatedAt": "2026-10-18T08:00:00.000Z",
+  "tool": {
+    "name": "bookr-preprocess",
+    "version": "0.1.0"
+  },
+  "quality": {
+    "pages": 2,
+    "textBlocks": 2,
+    "fallbackPages": [2],
+    "ocrPages": [],
+    "avgConfidence": null,
+    "warnings": []
+  },
+  "toc": [
+    {
+      "label": "第一章",
+      "page": 1,
+      "level": 1
+    }
+  ],
+  "pages": [
+    {
+      "page": 1,
+      "width": 612,
+      "height": 792,
+      "blocks": [
+        {
+          "id": "p1-b0",
+          "type": "heading",
+          "text": "第一章",
+          "level": 1,
+          "rect": { "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.05 },
+          "sourceCharStart": 0,
+          "sourceCharEnd": 3
+        },
+        {
+          "id": "p1-b1",
+          "type": "paragraph",
+          "text": "A 𠮷 B.",
+          "rect": { "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.05 },
+          "sourceCharStart": 3,
+          "sourceCharEnd": 10
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "width": 612,
+      "height": 792,
+      "blocks": [
+        {
+          "id": "p2-b0",
+          "type": "image",
+          "rect": { "x": 0.05, "y": 0.05, "w": 0.9, "h": 0.9 }
+        }
+      ]
+    }
+  ]
+}

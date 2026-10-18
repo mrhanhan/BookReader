@@ -10,6 +10,8 @@ const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   [ERROR_CODES.QUOTA_EXCEEDED]: 'Storage quota exceeded',
   [ERROR_CODES.INVALID_FILE]: 'The uploaded file is not valid',
   [ERROR_CODES.BOOK_NOT_READY]: 'This book is not ready to read',
+  [ERROR_CODES.REFLOW_NOT_READY]: 'This book has no reflow pack yet',
+  [ERROR_CODES.REFLOW_INVALID]: 'The reflow pack is not valid for this book',
   [ERROR_CODES.FILE_MISSING]: 'The book file is missing',
   [ERROR_CODES.VALIDATION_FAILED]: 'Request validation failed',
   [ERROR_CODES.INVITE_INVALID]: 'Invite code is invalid or expired',

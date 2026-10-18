@@ -6,4 +6,5 @@ export * from './schemas/auth';
 export * from './schemas/books';
 export * from './schemas/categories';
 export * from './schemas/reading';
+export * from './schemas/reflow';
 export * from './schemas/uploads';

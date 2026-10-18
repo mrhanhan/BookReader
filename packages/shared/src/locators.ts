@@ -53,12 +53,19 @@ const charRangeSchema = z
     }
   });
 
+const reflowRangeSchema = z.object({
+  blockId: z.string().min(1).max(200),
+  charRange: charRangeSchema,
+});
+
 const reflowLocatorSchema = z.object({
   kind: z.literal('reflow'),
   sourcePage: z.number().int().min(1),
   percent: z.number().min(0).max(1),
   blockId: z.string().min(1).max(200).optional(),
   charRange: charRangeSchema.optional(),
+  /** Character ranges across several blocks, used for cross-block highlights. */
+  ranges: z.array(reflowRangeSchema).max(200).optional(),
 });
 
 /** Discriminated position of a reading location inside a book. */

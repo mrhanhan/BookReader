@@ -16,6 +16,8 @@ const MESSAGES: Record<ErrorCode, string> = {
   QUOTA_EXCEEDED: '存储空间不足，请联系管理员',
   INVALID_FILE: '文件无效或格式不受支持',
   BOOK_NOT_READY: '这本书正在转换，请稍后再试',
+  REFLOW_NOT_READY: '这本书还没有重排包',
+  REFLOW_INVALID: '重排包与这本书不匹配',
   FILE_MISSING: '这本书的文件不存在',
   VALIDATION_FAILED: '提交的信息有误，请检查后重试',
   INVITE_INVALID: '邀请码无效或已过期',

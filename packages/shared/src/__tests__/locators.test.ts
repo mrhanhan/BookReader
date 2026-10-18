@@ -61,4 +61,27 @@ describe('locator contract', () => {
       rects: Array.from({ length: 201 }, () => ({ x: 0, y: 0, w: 0.1, h: 0.1 })),
     }).success).toBe(false);
   });
+
+  it('accepts a reflow locator spanning several blocks', () => {
+    expect(locatorSchema.safeParse({
+      kind: 'reflow',
+      sourcePage: 1,
+      percent: 0.5,
+      blockId: 'p1-b0',
+      charRange: [0, 3],
+      ranges: [
+        { blockId: 'p1-b0', charRange: [0, 3] },
+        { blockId: 'p1-b1', charRange: [0, 2] },
+      ],
+    }).success).toBe(true);
+  });
+
+  it('caps reflow ranges at 200', () => {
+    expect(locatorSchema.safeParse({
+      kind: 'reflow',
+      sourcePage: 1,
+      percent: 0,
+      ranges: Array.from({ length: 201 }, () => ({ blockId: 'p1-b0', charRange: [0, 1] })),
+    }).success).toBe(false);
+  });
 });
