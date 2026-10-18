@@ -1,12 +1,17 @@
+import AdmZip from 'adm-zip';
 import { eq } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
+  MAX_COVER_PIXELS,
+  MAX_COVER_SIDE_PX,
+  MAX_EPUB_COVER_BYTES,
   MAX_EPUB_UNCOMPRESSED_BYTES,
   MAX_EPUB_XML_BYTES,
   assertEntryWithinLimit,
   assertZipWithinLimit,
   extractMetadata,
+  planCoverRender,
 } from '../src/books/metadata';
 import { books, type JobType } from '../src/db/schema';
 import type { JobQueue } from '../src/jobs/types';
@@ -22,6 +27,32 @@ import {
   seedUser,
   testDb,
 } from './helpers';
+
+/** Builds an EPUB with valid metadata whose cover entry declares an oversized length. */
+function epubWithOversizedCover(): Buffer {
+  const zip = new AdmZip({ noSort: true });
+  zip.addFile('mimetype', Buffer.from('application/epub+zip'));
+  zip.addFile(
+    'META-INF/container.xml',
+    Buffer.from(
+      '<?xml version="1.0"?><container><rootfiles>' +
+        '<rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+    ),
+  );
+  zip.addFile(
+    'OEBPS/content.opf',
+    Buffer.from(
+      '<?xml version="1.0"?><package>' +
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">' +
+        '<dc:title>大封面</dc:title><dc:creator>作者</dc:creator></metadata>' +
+        '<manifest><item id="cover" href="cover.png" properties="cover-image"/></manifest>' +
+        '</package>',
+    ),
+  );
+  const cover = zip.addFile('OEBPS/cover.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  cover.header.size = MAX_EPUB_COVER_BYTES + 1;
+  return zip.toBuffer();
+}
 
 it('extracts title, author and cover from an EPUB', async () => {
   const result = await extractMetadata({
@@ -88,6 +119,82 @@ it('keeps a manually edited title and still stores the extracted cover', async (
   expect(row!.metadataStatus).toBe('done');
   expect(row!.coverKey).toBe(`covers/${book.id}.png`);
   expect(await fakeStorage.head(row!.coverKey!)).not.toBeNull();
+});
+
+it('applies extracted metadata when the title is still the filename default', async () => {
+  await resetDb();
+  const user = await seedUser('member');
+  const book = await seedBook({
+    uploadedBy: user.id,
+    title: 'book',
+    originalFilename: 'book.epub',
+    format: 'epub',
+    metadataStatus: 'pending',
+  });
+  await fakeStorage.putObject(
+    book.fileKey!,
+    readFileSync('test/fixtures/sample.epub'),
+    'application/epub+zip',
+  );
+
+  await runMetadataJobForTest(book.id);
+
+  const row = await getBookRow(book.id);
+  expect(row!.metadataStatus).toBe('done');
+  expect(row!.title).toBe('测试之书');
+  expect(row!.author).toBe('张三');
+  expect(row!.description).toContain('测试');
+});
+
+it('keeps parsed metadata when cover extraction fails', async () => {
+  await resetDb();
+  const user = await seedUser('member');
+  const book = await seedBook({
+    uploadedBy: user.id,
+    title: 'book',
+    originalFilename: 'book.epub',
+    format: 'epub',
+    metadataStatus: 'pending',
+  });
+  await fakeStorage.putObject(book.fileKey!, epubWithOversizedCover(), 'application/epub+zip');
+
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  const loggedCalls: unknown[][] = [];
+  try {
+    await runMetadataJobForTest(book.id);
+    loggedCalls.push(...errorSpy.mock.calls);
+  } finally {
+    errorSpy.mockRestore();
+  }
+
+  const row = await getBookRow(book.id);
+  expect(row!.metadataStatus).toBe('done');
+  expect(row!.title).toBe('大封面');
+  expect(row!.author).toBe('作者');
+  expect(row!.coverKey).toBeNull();
+
+  const logged = loggedCalls.flat().join(' ');
+  expect(logged).toContain(book.id);
+  expect(logged).toContain('EpubSizeLimitError');
+  // Parser details and book text must never reach the log.
+  expect(logged).not.toContain('大封面');
+});
+
+it('clamps oversized PDF pages before allocating a cover canvas', () => {
+  const normal = planCoverRender(595, 842);
+  expect(normal.scale).toBe(1.5);
+  expect(normal.width).toBe(892);
+  expect(normal.height).toBe(1263);
+
+  const huge = planCoverRender(200_000, 120_000);
+  expect(huge.width).toBeLessThanOrEqual(MAX_COVER_SIDE_PX);
+  expect(huge.height).toBeLessThanOrEqual(MAX_COVER_SIDE_PX);
+  expect(huge.width * huge.height).toBeLessThanOrEqual(MAX_COVER_PIXELS);
+  expect(huge.width).toBeGreaterThan(0);
+
+  const square = planCoverRender(3_000, 3_000);
+  expect(square.width * square.height).toBeLessThanOrEqual(MAX_COVER_PIXELS);
+  expect(Math.max(square.width, square.height)).toBeLessThanOrEqual(MAX_COVER_SIDE_PX);
 });
 
 it('rejects EPUB archives whose declared sizes exceed the limits', () => {

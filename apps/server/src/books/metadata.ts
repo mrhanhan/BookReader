@@ -20,6 +20,11 @@ export interface ExtractedMetadata {
   author?: string;
   description?: string;
   cover?: ExtractedCover;
+  /**
+   * Why cover extraction failed. The other fields are still valid; callers
+   * must persist them and continue without a cover.
+   */
+  coverError?: unknown;
 }
 
 type XmlRecord = Record<string, unknown>;
@@ -72,6 +77,62 @@ export function assertEntryWithinLimit(entry: SizedEntry, maxBytes: number): voi
   if (entry.header.size > maxBytes) {
     throw new EpubSizeLimitError('EPUB entry exceeds the size limit');
   }
+}
+
+/** Preferred render scale for a PDF cover (1.5x). */
+export const PDF_COVER_SCALE = 1.5;
+
+/** Largest accepted cover width or height, in pixels. */
+export const MAX_COVER_SIDE_PX = 2048;
+
+/** Largest accepted cover area, in pixels. */
+export const MAX_COVER_PIXELS = 4_000_000;
+
+/** Render scale and canvas size chosen for a PDF page. */
+export interface CoverRenderPlan {
+  scale: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Chooses a render scale that keeps a malicious or unusual page from
+ * allocating gigabytes of native canvas memory. The preferred scale is used
+ * unless the page would exceed the side or area caps, in which case it is
+ * reduced before the canvas is created.
+ */
+export function planCoverRender(
+  pageWidth: number,
+  pageHeight: number,
+  preferredScale: number = PDF_COVER_SCALE,
+): CoverRenderPlan {
+  if (
+    !Number.isFinite(pageWidth) ||
+    !Number.isFinite(pageHeight) ||
+    !Number.isFinite(preferredScale) ||
+    pageWidth <= 0 ||
+    pageHeight <= 0 ||
+    preferredScale <= 0
+  ) {
+    throw new Error('PDF page has invalid dimensions');
+  }
+
+  let scale = preferredScale;
+  const longestSide = Math.max(pageWidth, pageHeight);
+  if (longestSide * scale > MAX_COVER_SIDE_PX) {
+    scale = MAX_COVER_SIDE_PX / longestSide;
+  }
+
+  const area = pageWidth * pageHeight;
+  if (area * scale * scale > MAX_COVER_PIXELS) {
+    scale = Math.sqrt(MAX_COVER_PIXELS / area);
+  }
+
+  return {
+    scale,
+    width: Math.max(1, Math.floor(pageWidth * scale)),
+    height: Math.max(1, Math.floor(pageHeight * scale)),
+  };
 }
 
 /** Parsing options that keep attributes addressable and avoid coercing text to numbers. */
@@ -278,11 +339,21 @@ function extractEpub(buffer: Buffer): ExtractedMetadata {
   const author = joinUnique(valuesByLocalName(metadata, 'creator'));
   const description = valuesByLocalName(metadata, 'description')[0];
 
+  // A broken or oversized cover must not discard metadata that parsed cleanly.
+  let cover: ExtractedCover | undefined;
+  let coverError: unknown;
+  try {
+    cover = findCoverEntry(zip, opfPath, opf);
+  } catch (error) {
+    coverError = error;
+  }
+
   return {
     ...(title ? { title } : {}),
     ...(author ? { author } : {}),
     ...(description ? { description } : {}),
-    cover: findCoverEntry(zip, opfPath, opf),
+    ...(cover ? { cover } : {}),
+    ...(coverError !== undefined ? { coverError } : {}),
   };
 }
 
@@ -295,8 +366,12 @@ async function renderPdfCover(document: PDFDocumentProxy): Promise<ExtractedCove
   const { createCanvas } = await import('@napi-rs/canvas');
   const page = await document.getPage(1);
   try {
-    const viewport = page.getViewport({ scale: 1.5 });
-    const canvas = createCanvas(viewport.width, viewport.height);
+    // Clamp before creating the canvas: an unusual MediaBox must not turn
+    // into a multi-gigabyte native allocation.
+    const baseViewport = page.getViewport({ scale: 1 });
+    const plan = planCoverRender(baseViewport.width, baseViewport.height);
+    const viewport = page.getViewport({ scale: plan.scale });
+    const canvas = createCanvas(plan.width, plan.height);
     const canvasContext = canvas.getContext('2d');
     await page.render({
       canvasContext,
@@ -335,8 +410,21 @@ async function extractPdf(buffer: Buffer): Promise<ExtractedMetadata> {
     const document = await loadingTask.promise;
     const metadata = await document.getMetadata().catch(() => ({ info: {} }));
     const result = extractPdfInfo(isRecord(metadata.info) ? metadata.info : {});
-    const cover = await renderPdfCover(document);
-    return cover ? { ...result, cover } : result;
+
+    // A page that cannot be rendered still yields usable title/author data.
+    let cover: ExtractedCover | undefined;
+    let coverError: unknown;
+    try {
+      cover = await renderPdfCover(document);
+    } catch (error) {
+      coverError = error;
+    }
+
+    return {
+      ...result,
+      ...(cover ? { cover } : {}),
+      ...(coverError !== undefined ? { coverError } : {}),
+    };
   } finally {
     await loadingTask.destroy().catch(() => undefined);
   }
@@ -421,6 +509,12 @@ function logMetadataFailure(bookId: string, error: unknown): void {
   console.error(`[metadata] book ${bookId} failed with ${errorName}`);
 }
 
+/** Cover problems are non-fatal, but still log only the id and error class. */
+function logCoverFailure(bookId: string, error: unknown): void {
+  const errorName = error instanceof Error ? error.name : typeof error;
+  console.error(`[cover] book ${bookId} failed with ${errorName}`);
+}
+
 /**
  * Extracts metadata for a pending book, stores its cover under a stable key,
  * and flips `metadata_status` to done or failed. Never throws: a broken file
@@ -439,11 +533,25 @@ export async function runMetadataJob(deps: AppDeps, bookId: string): Promise<voi
     const buffer = await deps.storage.getObject(book.fileKey);
     const extracted = await extractMetadata({ buffer, format: book.format });
 
+    if (extracted.coverError !== undefined) {
+      logCoverFailure(bookId, extracted.coverError);
+    }
+
     let coverKey: string | undefined;
     if (extracted.cover && !book.coverKey) {
       const extension = extracted.cover.contentType === 'image/png' ? 'png' : 'jpg';
-      coverKey = `covers/${bookId}.${extension}`;
-      await deps.storage.putObject(coverKey, extracted.cover.data, extracted.cover.contentType);
+      const candidateKey = `covers/${bookId}.${extension}`;
+      try {
+        await deps.storage.putObject(
+          candidateKey,
+          extracted.cover.data,
+          extracted.cover.contentType,
+        );
+        coverKey = candidateKey;
+      } catch (error) {
+        // Metadata is still worth keeping; the book simply has no cover.
+        logCoverFailure(bookId, error);
+      }
     }
 
     await applyExtractedMetadata(deps, bookId, extracted, coverKey);
