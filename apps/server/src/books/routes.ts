@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppDeps } from '../app';
 import { makeRequireAuth } from '../auth/guards';
 import { AppError } from '../errors';
+import { retryConversion } from './conversion';
 import {
   assertCanManageBook,
   getBook,
@@ -46,6 +47,14 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.post('/api/books/:id/restore', { preHandler: requireAuth }, async (request) => {
     const { id } = bookIdParamsSchema.parse(request.params);
     return { book: await restoreBook(deps, request.user!, id) };
+  });
+
+  // Retrying a failed MOBI/AZW3 conversion is limited to the uploader or an
+  // admin; the route only queues work, so 202 is the honest response.
+  app.post('/api/books/:id/convert', { preHandler: requireAuth }, async (request, reply) => {
+    const { id } = bookIdParamsSchema.parse(request.params);
+    await retryConversion(deps, request.user!, id);
+    return reply.status(202).send();
   });
 
   app.get('/api/trash', { preHandler: requireAuth }, async () => {

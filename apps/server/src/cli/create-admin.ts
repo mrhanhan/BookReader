@@ -1,6 +1,7 @@
 import { newId, registerSchema } from '@bookr/shared';
 import { z } from 'zod';
 import { createAdmin } from '../auth/service';
+import { CalibreConverter } from '../books/conversion';
 import { loadConfig } from '../config';
 import { closeDb, createDb } from '../db/client';
 import { FakeJobQueue } from '../jobs/fake';
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
         clock: { now: () => new Date() },
         ids: { newId },
         jobs: new FakeJobQueue(),
+        converter: new CalibreConverter(),
       },
       {
         username: credentials.data.username,

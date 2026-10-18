@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
 import { signAccessToken } from '../src/auth/tokens';
+import { FakeConverter } from '../src/books/conversion';
 import { runMetadataJob } from '../src/books/metadata';
 import { cleanupTrash } from '../src/books/service';
 import type { AppConfig } from '../src/config';
@@ -75,10 +76,14 @@ export async function resetDb(): Promise<void> {
   await testDb.$client.query(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
   fakeStorage.clear();
   fakeJobQueue.clear();
+  fakeConverter.reset();
 }
 
 /** In-memory storage shared by the test app and background jobs. */
 export const fakeStorage = new FakeStorage();
+
+/** In-memory converter shared by conversion jobs across test files. */
+export const fakeConverter = new FakeConverter();
 
 const fakeJobQueue = new FakeJobQueue();
 
@@ -235,6 +240,7 @@ export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise
     clock,
     ids: { newId },
     jobs: fakeJobQueue,
+    converter: fakeConverter,
   };
 }
 

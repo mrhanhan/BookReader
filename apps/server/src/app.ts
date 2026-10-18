@@ -4,6 +4,7 @@ import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { registerAuthRoutes } from './auth/routes';
+import type { Converter } from './books/conversion';
 import { registerBookRoutes } from './books/routes';
 import { COVER_MAX_BYTES } from './books/service';
 import type { AppConfig } from './config';
@@ -31,6 +32,8 @@ export interface AppDeps {
   clock: Clock;
   ids: IdGenerator;
   jobs: JobQueue;
+  /** Turns MOBI/AZW3 originals into EPUBs for the reader. */
+  converter: Converter;
 }
 
 const LOG_REDACT_PATHS = [

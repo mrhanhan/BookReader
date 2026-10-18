@@ -526,12 +526,16 @@ export async function runMetadataJob(deps: AppDeps, bookId: string): Promise<voi
     if (!book || book.metadataStatus !== 'pending') {
       return;
     }
-    if (!book.fileKey) {
+    // A converted MOBI/AZW3 keeps its original row format but its EPUB is the
+    // best metadata source, so prefer it and parse it as an EPUB.
+    const sourceKey = book.epubKey ?? book.fileKey;
+    if (!sourceKey) {
       throw new Error('Book has no original file key');
     }
+    const format: BookFormat = book.epubKey ? 'epub' : book.format;
 
-    const buffer = await deps.storage.getObject(book.fileKey);
-    const extracted = await extractMetadata({ buffer, format: book.format });
+    const buffer = await deps.storage.getObject(sourceKey);
+    const extracted = await extractMetadata({ buffer, format });
 
     if (extracted.coverError !== undefined) {
       logCoverFailure(bookId, extracted.coverError);

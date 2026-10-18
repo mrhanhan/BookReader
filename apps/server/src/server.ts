@@ -1,5 +1,6 @@
 import { newId } from '@bookr/shared';
 import { buildApp } from './app';
+import { CalibreConverter } from './books/conversion';
 import { loadConfig } from './config';
 import { closeDb, createDb } from './db/client';
 import { PostgresJobQueue } from './jobs/queue';
@@ -16,6 +17,7 @@ const app = buildApp({
   clock,
   ids: { newId },
   jobs: new PostgresJobQueue(db, clock),
+  converter: new CalibreConverter(),
 });
 
 async function shutdown(signal: string): Promise<void> {

@@ -1,11 +1,12 @@
 import type { AppDeps } from '../app';
+import { runConvertJob } from '../books/conversion';
 import { runMetadataJob } from '../books/metadata';
 import type { ClaimedJob } from './types';
 
 /** How often the worker looks for pending jobs. */
 export const WORKER_POLL_INTERVAL_MS = 5_000;
 
-/** A job type this worker cannot handle (for example `convert` before Task 9b). */
+/** A job type this worker cannot handle (for example `cleanup`). */
 class UnsupportedJobError extends Error {
   constructor(type: string) {
     super(`Unsupported job type: ${type}`);
@@ -29,13 +30,15 @@ function payloadBookId(payload: Record<string, unknown>): string {
   return bookId;
 }
 
-/** Runs one claimed job; `metadata` is the only handler in this task. */
+/** Runs one claimed job. */
 async function runJob(deps: AppDeps, job: ClaimedJob): Promise<void> {
   switch (job.type) {
     case 'metadata':
       await runMetadataJob(deps, payloadBookId(job.payload));
       return;
     case 'convert':
+      await runConvertJob(deps, payloadBookId(job.payload));
+      return;
     case 'cleanup':
       throw new UnsupportedJobError(job.type);
     default:
