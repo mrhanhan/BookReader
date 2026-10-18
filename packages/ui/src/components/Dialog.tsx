@@ -26,7 +26,12 @@ export function Dialog({ open, onClose, title, children, footer, className }: Di
         dialog.setAttribute('open', '');
       }
     } else if (!open && dialog.open) {
-      dialog.close();
+      if (typeof dialog.close === 'function') {
+        dialog.close();
+      } else {
+        // jsdom reflects the `open` attribute without implementing close().
+        dialog.removeAttribute('open');
+      }
     }
   }, [open]);
 

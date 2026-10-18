@@ -2,9 +2,11 @@ import { createBrowserRouter, Navigate, Outlet, useLocation } from 'react-router
 import type { RouteObject } from 'react-router';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RegisterPage } from '../features/auth/RegisterPage';
+import { BookshelfPage } from '../features/bookshelf/BookshelfPage';
+import { TrashPage } from '../features/bookshelf/TrashPage';
 import { AppLayout } from './AppLayout';
 import { useAuth } from './auth';
-import { AdminPage, BookshelfPage, TrashPage } from './pages';
+import { AdminPage } from './pages';
 
 function RequireAuth() {
   const { user, loading } = useAuth();

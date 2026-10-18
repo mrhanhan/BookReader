@@ -52,7 +52,8 @@ it('clears cached queries when logging out', async () => {
   const router = createMemoryRouter(routes, { initialEntries: ['/'] });
   const { queryClient } = renderWithProviders(<RouterProvider router={router} />);
 
-  await screen.findByText('书架还是空的');
+  // Wait until the stored session has been verified and the app shell is up.
+  await screen.findByRole('button', { name: '退出登录' });
   queryClient.setQueryData(['books'], [{ id: 'cached-book' }]);
 
   await userEvent.click(screen.getByRole('button', { name: '退出登录' }));
