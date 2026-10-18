@@ -135,6 +135,12 @@ async function recordConversionAudit(
     .catch(() => undefined);
 }
 
+/** Logs the book id and error class only; queue errors may carry arbitrary text. */
+function logMetadataEnqueueFailure(bookId: string, error: unknown): void {
+  const errorName = error instanceof Error ? error.name : typeof error;
+  console.error(`[convert] book ${bookId} metadata enqueue failed with ${errorName}`);
+}
+
 /**
  * Converts one MOBI/AZW3 book to EPUB in a private temporary directory. The
  * original object is only ever read. A failure is recorded on the row so the
@@ -180,7 +186,13 @@ export async function runConvertJob(deps: AppDeps, bookId: string): Promise<void
       })
       .where(eq(books.id, book.id));
 
-    await deps.jobs.enqueue({ type: 'metadata', bookId: book.id });
+    // A queue outage must not undo a finished conversion: the EPUB is already
+    // stored and the row is done, so only the metadata refresh is lost.
+    try {
+      await deps.jobs.enqueue({ type: 'metadata', bookId: book.id });
+    } catch (error) {
+      logMetadataEnqueueFailure(book.id, error);
+    }
     await recordConversionAudit(deps, book.id, 'done');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Conversion failed';

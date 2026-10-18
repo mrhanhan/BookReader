@@ -1,6 +1,9 @@
+import { eq } from 'drizzle-orm';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runConvertJob } from '../src/books/conversion';
+import { auditLogs } from '../src/db/schema';
+import type { JobQueue } from '../src/jobs/types';
 import { runNextJob } from '../src/jobs/worker';
 import {
   authHeader,
@@ -14,6 +17,7 @@ import {
   runMetadataJobForTest,
   seedBook,
   seedUser,
+  testDb,
   type SeededUser,
 } from './helpers';
 
@@ -90,6 +94,55 @@ describe('MOBI/AZW3 conversion', () => {
     expect(converted!.conversionStatus).toBe('done');
     expect(fakeConverter.calls).toHaveLength(1);
     expect(fakeConverter.calls[0]!.input.format).toBe('mobi');
+  });
+
+  it('keeps a successful conversion when the metadata job cannot be queued', async () => {
+    await resetDb();
+    const deps = await buildTestDeps();
+    const user = await seedUser('member');
+    const book = await seedBook({ uploadedBy: user.id, format: 'mobi', conversionStatus: 'pending' });
+    await fakeStorage.putObject(
+      book.fileKey!,
+      Buffer.from('BOOKMOBI'),
+      'application/x-mobipocket-ebook',
+    );
+    fakeConverter.onConvert = writeSampleEpub;
+
+    const failingQueue: JobQueue = {
+      enqueue: async () => {
+        throw new Error('queue unavailable');
+      },
+      claimNext: async () => null,
+      complete: async () => undefined,
+      fail: async () => undefined,
+    };
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const loggedCalls: unknown[][] = [];
+    try {
+      await runConvertJob({ ...deps, jobs: failingQueue }, book.id);
+      loggedCalls.push(...errorSpy.mock.calls);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    const converted = await getBookRow(book.id);
+    expect(converted!.conversionStatus).toBe('done');
+    expect(converted!.conversionError).toBeNull();
+    expect(converted!.metadataStatus).toBe('pending');
+
+    const audits = await testDb
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.target, book.id));
+    expect(audits.some((audit) => audit.metadata?.status === 'done')).toBe(true);
+    expect(audits.some((audit) => audit.metadata?.status === 'failed')).toBe(false);
+
+    const logged = loggedCalls.flat().join(' ');
+    expect(logged).toContain(book.id);
+    expect(logged).toContain('Error');
+    // The queue's message is not trusted enough to log.
+    expect(logged).not.toContain('queue unavailable');
   });
 
   it('only lets the uploader or an admin retry a failed conversion', async () => {
