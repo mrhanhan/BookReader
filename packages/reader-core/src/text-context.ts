@@ -82,10 +82,7 @@ export function pdfChapterRange(
 
   const previous = pages.filter((page) => page <= current).at(-1);
   const next = pages.find((page) => page > current);
-  // Past the last outline entry there is no chapter boundary to rely on, so
-  // the caller's page anchors the scan instead of the stale last heading.
-  const rawStart = next === undefined ? current : previous ?? current;
-  const start = Math.min(Math.max(rawStart, 1), count);
+  const start = Math.min(Math.max(previous ?? current, 1), count);
   const rawEnd = next === undefined
     ? Math.min(count, start + PDF_CHAPTER_PAGE_SPAN - 1)
     : next - 1;

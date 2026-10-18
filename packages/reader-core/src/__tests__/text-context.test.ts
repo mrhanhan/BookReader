@@ -57,7 +57,8 @@ it('computes a chapter range from the outline', () => {
   expect(pdfChapterRange(5, [1, 4, 9], 20)).toEqual({ start: 4, end: 8 });
   expect(pdfChapterRange(5, [], 20)).toEqual({ start: 5, end: 20 });
   expect(pdfChapterRange(1, [1, 4], 20)).toEqual({ start: 1, end: 3 });
-  expect(pdfChapterRange(18, [1, 4], 20)).toEqual({ start: 18, end: 20 });
+  // Page 18 is still inside the chapter that starts on page 4.
+  expect(pdfChapterRange(18, [1, 4], 20)).toEqual({ start: 4, end: 20 });
 });
 
 it('extracts EPUB chapter text from a document', () => {
