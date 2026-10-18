@@ -19,7 +19,7 @@ import { FakeConverter } from '../src/books/conversion';
 import { runMetadataJob } from '../src/books/metadata';
 import { InProcessMetadataRunner } from '../src/books/metadata-runner';
 import { cleanupTrash } from '../src/books/service';
-import type { AppConfig } from '../src/config';
+import { DEFAULT_CORS_ORIGINS, type AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
 import { assertTestDatabase } from '../src/db/guard';
 import { migrate } from '../src/db/migrate';
@@ -114,7 +114,7 @@ const DEFAULT_CONFIG: AppConfig = {
   libraryQuotaBytes: LIBRARY_QUOTA_BYTES,
   memberUploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
   loginRateLimit: 10,
-  corsOrigin: 'http://localhost:5173',
+  corsOrigins: [...DEFAULT_CORS_ORIGINS],
 };
 
 /** Builds a test config, merging top-level overrides and nested S3 settings. */

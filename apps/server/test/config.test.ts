@@ -55,3 +55,28 @@ describe('loadConfig TRUST_PROXY', () => {
     }
   });
 });
+
+describe('loadConfig CORS allowlist', () => {
+  it('parses a comma-separated CORS allowlist', () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgres://x', S3_ENDPOINT: 'http://x', S3_ACCESS_KEY: 'a',
+      S3_SECRET_KEY: 'b', JWT_SECRET: 'x'.repeat(32),
+      CORS_ORIGIN: ' http://localhost:8180 , https://tauri.localhost ',
+    });
+    expect(config.corsOrigins).toEqual(['http://localhost:8180', 'https://tauri.localhost']);
+  });
+
+  it('defaults to the web and native app origins', () => {
+    expect(loadConfig(BASE_ENV).corsOrigins).toEqual([
+      'http://localhost:8180',
+      'https://tauri.localhost',
+      'http://tauri.localhost',
+      'https://localhost',
+      'capacitor://localhost',
+    ]);
+  });
+
+  it('rejects an allowlist with no origins', () => {
+    expect(() => loadConfig({ ...BASE_ENV, CORS_ORIGIN: ' , ,, ' })).toThrow(/CORS_ORIGIN/);
+  });
+});

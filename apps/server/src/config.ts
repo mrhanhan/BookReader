@@ -31,8 +31,22 @@ export interface AppConfig {
   libraryQuotaBytes: number;
   memberUploadQuotaBytes: number;
   loginRateLimit: number;
-  corsOrigin: string;
+  /** Browser and native-app origins allowed to call the API. */
+  corsOrigins: string[];
 }
+
+/**
+ * Origins accepted by default: the Docker Compose web app plus the Tauri and
+ * Capacitor webviews. Deployments override this with a comma-separated
+ * `CORS_ORIGIN` list.
+ */
+export const DEFAULT_CORS_ORIGINS = [
+  'http://localhost:8180',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+  'https://localhost',
+  'capacitor://localhost',
+];
 
 /** Parses `TRUST_PROXY` into a number of trusted proxy hops, or `false`. */
 const trustProxySchema = z
@@ -59,6 +73,19 @@ const trustProxySchema = z
     return z.NEVER;
   });
 
+const corsOriginsSchema = z
+  .string()
+  .default(DEFAULT_CORS_ORIGINS.join(','))
+  .transform((value) =>
+    value
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin !== ''),
+  )
+  .refine((origins) => origins.length > 0, {
+    message: 'must list at least one origin',
+  });
+
 const configSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().min(1).default('0.0.0.0'),
@@ -74,7 +101,7 @@ const configSchema = z.object({
   LIBRARY_QUOTA_BYTES: z.coerce.number().int().positive().default(LIBRARY_QUOTA_BYTES),
   MEMBER_UPLOAD_QUOTA_BYTES: z.coerce.number().int().positive().default(MEMBER_UPLOAD_QUOTA_BYTES),
   LOGIN_RATE_LIMIT: z.coerce.number().int().positive().default(10),
-  CORS_ORIGIN: z.string().min(1).default('http://localhost:5173'),
+  CORS_ORIGIN: corsOriginsSchema,
 });
 
 function describeIssue(issue: z.ZodIssue, env: NodeJS.ProcessEnv): string {
@@ -126,6 +153,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     libraryQuotaBytes: parsed.LIBRARY_QUOTA_BYTES,
     memberUploadQuotaBytes: parsed.MEMBER_UPLOAD_QUOTA_BYTES,
     loginRateLimit: parsed.LOGIN_RATE_LIMIT,
-    corsOrigin: parsed.CORS_ORIGIN,
+    corsOrigins: parsed.CORS_ORIGIN,
   };
 }

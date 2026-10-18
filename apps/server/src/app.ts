@@ -126,7 +126,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     genReqId: () => deps.ids.newId(),
   });
 
-  app.register(cors, { origin: deps.config.corsOrigin });
+  app.register(cors, { origin: deps.config.corsOrigins });
 
   // Cover uploads accept a single image capped at 5 MiB; the service checks
   // the bytes themselves before anything is stored.
