@@ -122,6 +122,11 @@ export async function recordChange(
  * Reads one page of the caller's change log. A cursor older than the retained
  * window is answered with `reset` so the client rebuilds from a snapshot
  * instead of silently missing pruned changes.
+ *
+ * The returned cursor is the revision of the last change in this page (or
+ * `since` when the page is empty). Returning the user's global high-water mark
+ * here would let a client with `hasMore: true` skip everything committed after
+ * the page, so it only advances as far as this page actually covers.
  */
 export async function pullChanges(
   deps: AppDeps,
@@ -129,14 +134,14 @@ export async function pullChanges(
   since: number,
   limit: number,
 ): Promise<SyncPullResult> {
-  const cursor = await maxRevision(deps.db, userId);
   const watermark = await prunedThrough(deps.db);
 
   if (since > 0 && since < watermark) {
-    return { changes: [], cursor, hasMore: false, reset: true };
+    return { changes: [], cursor: since, hasMore: false, reset: true };
   }
 
   const page = await listChanges(deps.db, userId, since, limit);
+  const cursor = page.rows.at(-1)?.revision ?? since;
   return { changes: page.rows, cursor, hasMore: page.hasMore, reset: false };
 }
 

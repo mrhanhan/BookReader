@@ -54,7 +54,7 @@ it('pulls incrementally by cursor', async () => {
   });
   expect(page.statusCode).toBe(200);
   expect(page.json()).toMatchObject({
-    cursor: third.revision,
+    cursor: second.revision,
     hasMore: true,
     reset: false,
     changes: [{ revision: first.revision }, { revision: second.revision }],
@@ -71,6 +71,18 @@ it('pulls incrementally by cursor', async () => {
     reset: false,
     changes: [{ revision: third.revision }],
   });
+
+  const empty = await app.inject({
+    method: 'GET',
+    url: `/api/sync/pull?since=${third.revision}`,
+    headers,
+  });
+  expect(empty.json()).toEqual({
+    changes: [],
+    cursor: third.revision,
+    hasMore: false,
+    reset: false,
+  });
 });
 
 it('returns reset when the cursor predates the retention watermark', async () => {
@@ -78,7 +90,7 @@ it('returns reset when the cursor predates the retention watermark', async () =>
   const app = await buildTestApp();
   const user = await seedUser('member');
   await testDb.transaction((tx) => markPrunedThrough(tx, 5));
-  const latest = await appendChangeInTx(changeInput(user.id, 'kept'));
+  await appendChangeInTx(changeInput(user.id, 'kept'));
 
   const response = await app.inject({
     method: 'GET',
@@ -88,7 +100,7 @@ it('returns reset when the cursor predates the retention watermark', async () =>
   expect(response.statusCode).toBe(200);
   expect(response.json()).toEqual({
     changes: [],
-    cursor: latest.revision,
+    cursor: 2,
     hasMore: false,
     reset: true,
   });
