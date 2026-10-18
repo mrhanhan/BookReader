@@ -15,15 +15,19 @@ function safePercent(value: number): number {
 }
 
 /**
- * Clamps a page into `1..pageCount`. Without a pack there is no upper bound to
- * clamp against, so only the lower bound applies.
+ * Clamps a page into `1..pageCount`. Without a pack (or with a malformed page
+ * count) there is no upper bound to clamp against, so only the lower bound
+ * applies and the result can never become NaN.
  */
 function safePage(value: number, pageCount: number | null): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 1;
   }
   const page = Math.floor(value);
-  return pageCount === null ? Math.max(1, page) : clamp(page, 1, Math.max(1, Math.floor(pageCount)));
+  if (typeof pageCount !== 'number' || !Number.isFinite(pageCount)) {
+    return Math.max(1, page);
+  }
+  return clamp(page, 1, Math.max(1, Math.floor(pageCount)));
 }
 
 function cloneRect(rect: LocatorRect): LocatorRect {
@@ -141,7 +145,10 @@ function clonePdfLocator(locator: PdfLocator, pageCount: number | null): PdfLoca
  */
 export function reflowLocatorFor(locator: Locator, pack: ReflowPack): ReflowLocator | null {
   try {
-    if (!locator || typeof locator !== 'object' || locator.kind === 'epub') {
+    if (!locator || typeof locator !== 'object') {
+      return null;
+    }
+    if (locator.kind !== 'pdf' && locator.kind !== 'reflow') {
       return null;
     }
     const index = indexForPack(pack);
@@ -180,7 +187,10 @@ export function reflowLocatorFor(locator: Locator, pack: ReflowPack): ReflowLoca
  */
 export function pdfLocatorFor(locator: Locator, pack?: ReflowPack | null): PdfLocator | null {
   try {
-    if (!locator || typeof locator !== 'object' || locator.kind === 'epub') {
+    if (!locator || typeof locator !== 'object') {
+      return null;
+    }
+    if (locator.kind !== 'pdf' && locator.kind !== 'reflow') {
       return null;
     }
     const index = pack ? indexForPack(pack) : null;
@@ -214,8 +224,8 @@ export function pdfLocatorFor(locator: Locator, pack?: ReflowPack | null): PdfLo
 
 /**
  * Normalizes a locator for the requested PDF reading mode. Without a pack the
- * PDF locator is the best available position, so it is returned unchanged for
- * reflow mode; reflow locators downgrade to their source page.
+ * PDF locator is the best available position, so a normalized copy is returned
+ * for reflow mode; reflow locators downgrade to their source page.
  */
 export function locatorForMode(
   locator: Locator,
@@ -223,11 +233,19 @@ export function locatorForMode(
   pack?: ReflowPack | null,
 ): Locator | null {
   try {
-    if (!locator || typeof locator !== 'object' || locator.kind === 'epub') {
+    if (!locator || typeof locator !== 'object') {
+      return null;
+    }
+    if (locator.kind !== 'pdf' && locator.kind !== 'reflow') {
       return null;
     }
     if (mode === 'reflow') {
-      return pack ? reflowLocatorFor(locator, pack) : locator;
+      if (pack) {
+        return reflowLocatorFor(locator, pack);
+      }
+      return locator.kind === 'reflow'
+        ? cloneReflowLocator(locator, null)
+        : clonePdfLocator(locator, null);
     }
     return pdfLocatorFor(locator, pack);
   } catch {
