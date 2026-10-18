@@ -1,16 +1,41 @@
 // Offline app shell for BookrReader.
 // Hand-written service worker (no build step): Vite copies public/ verbatim to
 // the build root, so this file ships as /sw.js and can be updated on its own.
-const CACHE = 'bookr-shell-v1';
+const CACHE = 'bookr-shell-v2';
 const SHELL_URL = '/';
+// Scripts, styles and modulepreloads emitted by Vite, e.g. /assets/index-abc.js.
+const SHELL_ASSET_PATTERN = /(?:src|href)="(\/assets\/[^"]+)"/g;
+
+function extractShellAssets(html) {
+  const assets = new Set();
+  for (const match of html.matchAll(SHELL_ASSET_PATTERN)) {
+    assets.add(match[1]);
+  }
+  return [...assets];
+}
+
+// The first load happens before this worker controls the page, so the install
+// step must seed the cache itself: the HTML plus every asset it references.
+async function precacheShell() {
+  const cache = await caches.open(CACHE);
+  const response = await fetch(SHELL_URL, { cache: 'reload' });
+  if (!response.ok) {
+    throw new Error(`Failed to precache ${SHELL_URL}: ${response.status}`);
+  }
+  await cache.put(SHELL_URL, response.clone());
+  const assets = extractShellAssets(await response.text());
+  // A missing optional asset must not abort the whole installation.
+  await Promise.allSettled(
+    assets.map((url) =>
+      fetch(url).then((assetResponse) => {
+        if (assetResponse.ok) return cache.put(url, assetResponse);
+      }),
+    ),
+  );
+}
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll([SHELL_URL]))
-      .then(() => self.skipWaiting()),
-  );
+  event.waitUntil(precacheShell().then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
