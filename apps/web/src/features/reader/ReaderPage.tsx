@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Link, useParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { readerKindForFormat } from '@bookr/shared';
 import type {
   AnnotationColor,
@@ -45,6 +46,7 @@ import {
   resolveBookSource,
 } from '../../offline/bookSource';
 import { useOfflineSession } from '../../offline/offlineContext';
+import { bookFromShelfSnapshot } from '../../offline/shelfSnapshot';
 import { useSync } from '../../sync/SyncProvider';
 import { Toast } from '../bookshelf/Toast';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
@@ -73,6 +75,7 @@ const OPEN_FAILED_MESSAGE = '无法打开这本书，请确认文件完整';
 const REFLOW_MISSING_MESSAGE = '无法加载重排包，请切回原版';
 const REFLOW_REFRESH_FAILED_MESSAGE = '无法获取重排包，请稍后重试';
 const REFLOW_FALLBACK_MESSAGE = '无法加载重排包，已切回原版';
+const OFFLINE_REFLOW_MESSAGE = '离线时仅可阅读原版，连接网络后可切换重排';
 const SYNC_CONFLICT_MESSAGES: Record<SyncEntityType, string> = {
   annotation: '此批注已在另一台设备更新，旧版本已保留在历史中',
   bookmark: '此书签已在另一台设备更新，已同步为最新版本',
@@ -236,9 +239,18 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // the signed-in user is known.
   const userId = user?.id ?? null;
   const { repo, requestSync, waitForFirstSync, subscribeConflicts } = useSync();
-  const { cache } = useOfflineSession();
+  const { db, cache } = useOfflineSession();
   const bookQuery = useBook(id ?? null);
-  const book = bookQuery.data;
+  // Cold-start offline: the library API is unreachable, so the metadata
+  // snapshot written by the shelf keeps the title and format available.
+  const cachedShelfRow = useLiveQuery(
+    async () => {
+      if (id === undefined) return null;
+      return (await db.shelf.get(id)) ?? null;
+    },
+    [db, id],
+  );
+  const book = bookQuery.data ?? (cachedShelfRow ? bookFromShelfSnapshot(cachedShelfRow) : null);
   const bookId = book?.id ?? null;
   const kind: ReaderKind | null = book ? readerKindForFormat(book.format) : null;
 
@@ -416,6 +428,12 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       // cancel, not a refresh failure on the next book.
       const startedFor = bookIdRef.current;
       if (next === 'reflow') {
+        // Offline there is no signing endpoint; only a downloaded pack can be
+        // opened, and the chrome points at the same limitation.
+        if (!isOnline() && sourceRef.current?.reflowUrl == null) {
+          showToast(OFFLINE_REFLOW_MESSAGE);
+          return;
+        }
         // The pack URL is required; the PDF URL feeds `sourcePdfUrl` for
         // visual blocks, so re-sign both in parallel. A failed PDF refresh
         // keeps the URL already in the source.
@@ -425,7 +443,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         ]);
         if (bookIdRef.current !== startedFor) return;
         if (!refreshed) {
-          showToast(REFLOW_REFRESH_FAILED_MESSAGE);
+          showToast(isOnline() ? REFLOW_REFRESH_FAILED_MESSAGE : OFFLINE_REFLOW_MESSAGE);
           return;
         }
         reflowFallbackRef.current = false;
@@ -1231,11 +1249,11 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         : 1;
   const fatalMessage = loadFailure ?? engineFailure;
 
-  if (!id || bookQuery.isPending) {
-    return <ReaderScreen message={LOADING_MESSAGE} busy />;
-  }
-
-  if (bookQuery.isError || !book) {
+  if (!book) {
+    // The cached metadata is still loading, or the shelf never saw this book.
+    if (bookQuery.isPending || cachedShelfRow === undefined) {
+      return <ReaderScreen message={LOADING_MESSAGE} busy />;
+    }
     return <ReaderScreen message={BOOK_MISSING_MESSAGE} />;
   }
 

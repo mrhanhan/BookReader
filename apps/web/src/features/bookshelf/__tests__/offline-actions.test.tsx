@@ -1,7 +1,8 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
+import { http, HttpResponse } from 'msw';
 import type { LocalAnnotationRow } from '../../../sync/types';
 import { setTokens } from '../../../api/client';
 import { routes } from '../../../app/router';
@@ -9,7 +10,7 @@ import type { OfflineSession } from '../../../offline/offlineContext';
 import { OfflineProvider, createOfflineSession } from '../../../offline/offlineContext';
 import { createMemoryStore } from '../../../offline/fileStore';
 import { createSyncDb } from '../../../sync/db';
-import { renderWithProviders } from '../../../../test/setup';
+import { renderWithProviders, server } from '../../../../test/setup';
 
 const USER = 'user-reader';
 const BOOK = 'book-three-body';
@@ -19,6 +20,14 @@ let sequence = 0;
 beforeEach(() => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
 });
+
+afterEach(() => {
+  delete (navigator as { onLine?: boolean }).onLine;
+});
+
+function setOnline(value: boolean): void {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => value });
+}
 
 function createSession(): OfflineSession {
   const db = createSyncDb(`offline-actions-${++sequence}`);
@@ -54,10 +63,10 @@ it('shows 离线 on a cached book and pins it from the menu', async () => {
   renderShelf(session);
 
   const card = await cardFor('三体');
-  expect(within(card).getByText('离线')).toBeInTheDocument();
+  expect(await within(card).findByText('离线')).toBeInTheDocument();
 
   await userEvent.click(
-    within(card).getByRole('button', { name: '下载到本机《三体》' }),
+    await within(card).findByRole('button', { name: '下载到本机《三体》' }),
   );
 
   await waitFor(async () => {
@@ -108,7 +117,7 @@ it('removing a cached book keeps its annotations', async () => {
 
   const card = await cardFor('三体');
   await userEvent.click(
-    within(card).getByRole('button', { name: '移出本机《三体》' }),
+    await within(card).findByRole('button', { name: '移出本机《三体》' }),
   );
 
   expect(await screen.findByText('《三体》已移出本机')).toBeInTheDocument();
@@ -128,7 +137,7 @@ it('unpins a pinned book without deleting its copy', async () => {
 
   const card = await cardFor('三体');
   await userEvent.click(
-    within(card).getByRole('button', { name: '取消固定《三体》' }),
+    await within(card).findByRole('button', { name: '取消固定《三体》' }),
   );
 
   expect(await screen.findByText('《三体》已取消固定')).toBeInTheDocument();
@@ -136,4 +145,57 @@ it('unpins a pinned book without deleting its copy', async () => {
     expect((await session.db.offlineBooks.get([USER, BOOK]))?.pinned).toBe(false);
   });
   expect(await session.cache.cachedUrl(USER, BOOK, 'book')).not.toBeNull();
+});
+
+it('writes the shelf snapshot after a successful load', async () => {
+  const session = createSession();
+  renderShelf(session);
+
+  await cardFor('三体');
+
+  await waitFor(async () => {
+    expect(await session.db.shelf.get(BOOK)).toMatchObject({
+      userId: USER,
+      title: '三体',
+      author: '刘慈欣',
+      format: 'epub',
+    });
+  });
+  // Only `CachedShelfBook` fields are stored; reading data stays in its tables.
+  const row = await session.db.shelf.get(BOOK);
+  expect(Object.keys(row ?? {}).sort()).toEqual([
+    'author',
+    'coverUrl',
+    'format',
+    'id',
+    'title',
+    'updatedAt',
+    'userId',
+  ]);
+});
+
+it('renders the cached shelf on a cold offline start', async () => {
+  const session = createSession();
+  await session.db.shelf.put({
+    id: BOOK,
+    userId: USER,
+    title: '三体',
+    author: '刘慈欣',
+    format: 'epub',
+    coverUrl: null,
+    updatedAt: new Date().toISOString(),
+  });
+  await session.cache.cacheFromUrl(USER, BOOK, 'book', 'https://files.test/cached.epub');
+  server.use(http.get('/api/books', () => HttpResponse.error()));
+  setOnline(false);
+
+  renderShelf(session);
+
+  expect(await screen.findByText('当前离线，显示本机缓存的书架。')).toBeInTheDocument();
+  const card = await cardFor('三体');
+  expect(await within(card).findByText('离线')).toBeInTheDocument();
+  expect(within(card).getByRole('link', { name: '阅读《三体》' })).toHaveAttribute(
+    'href',
+    `/books/${BOOK}/read`,
+  );
 });

@@ -38,17 +38,19 @@ export interface ResolveBookSourceDeps {
 /** The cached pack URL, but only for books that actually have a pack. */
 async function cachedReflowUrl(deps: ResolveBookSourceDeps): Promise<string | null> {
   if (!deps.reflowAvailable) return null;
-  return deps.cache.cachedUrl(deps.userId, deps.bookId, 'reflow');
+  // A broken cache backend must never turn a signed URL into a failure page.
+  return deps.cache.cachedUrl(deps.userId, deps.bookId, 'reflow').catch(() => null);
 }
 
 /**
  * True when the account already keeps this book on the device: either it is
  * pinned, or a cached file exists. The cache row itself is written with the
- * file, so a readable cached URL means the row is present.
+ * file, so a readable cached URL means the row is present. Probing failures
+ * count as "not cached": they only skip the background refresh.
  */
 async function hasCachedCopy(deps: ResolveBookSourceDeps): Promise<boolean> {
-  if (await deps.cache.isPinned(deps.userId, deps.bookId)) return true;
-  const url = await deps.cache.cachedUrl(deps.userId, deps.bookId, 'book');
+  if (await deps.cache.isPinned(deps.userId, deps.bookId).catch(() => false)) return true;
+  const url = await deps.cache.cachedUrl(deps.userId, deps.bookId, 'book').catch(() => null);
   return url !== null;
 }
 
@@ -80,18 +82,21 @@ async function resolveOnline(deps: ResolveBookSourceDeps): Promise<ResolvedBookS
   } catch (error) {
     // The connection may drop between the online check and the request. A
     // downloaded copy is still readable; without one the request error (which
-    // carries the API code) is the useful failure to report.
-    const fileUrl = await cache.cachedUrl(userId, bookId, 'book');
+    // carries the API code) is the useful failure to report. A broken cache
+    // backend is treated as "no copy" rather than masking the request error.
+    const fileUrl = await cache.cachedUrl(userId, bookId, 'book').catch(() => null);
     if (fileUrl === null) throw error;
     return { fileUrl, reflowUrl: await cachedReflowUrl(deps), offline: true };
   }
 
   const reflow = reflowAvailable ? await deps.fetchReflow(bookId).catch(() => null) : null;
   // A failed pack request falls back to a downloaded pack; the original stays
-  // readable either way.
+  // readable either way. Probing the cache is best-effort.
   const reflowUrl =
     reflow?.url ??
-    (reflowAvailable ? await cache.cachedUrl(userId, bookId, 'reflow') : null);
+    (reflowAvailable
+      ? await cache.cachedUrl(userId, bookId, 'reflow').catch(() => null)
+      : null);
 
   if (await hasCachedCopy(deps)) {
     void refreshCachedCopy(deps, file.url, reflow?.url ?? null);

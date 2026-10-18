@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
+import { OfflineProvider } from '../offline/offlineContext';
 import { AuthProvider } from './auth';
 import { SyncProvider } from '../sync/SyncProvider';
 
@@ -21,7 +22,11 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <SyncProvider>{children}</SyncProvider>
+        <SyncProvider>
+          {/* The offline cache owns its own connection to the same local
+              database; only cache rows are written through it. */}
+          <OfflineProvider>{children}</OfflineProvider>
+        </SyncProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

@@ -117,9 +117,11 @@ export function ReaderChrome({
               title={
                 !reflowAvailable
                   ? '尚未上传重排包'
-                  : !reflowReady
-                    ? '重排包地址获取失败，点击重试'
-                    : undefined
+                  : offline && !reflowReady
+                    ? '离线时仅可阅读原版，连接网络后可切换重排'
+                    : !reflowReady
+                      ? '重排包地址获取失败，点击重试'
+                      : undefined
               }
               onClick={onToggleReflow}
             >

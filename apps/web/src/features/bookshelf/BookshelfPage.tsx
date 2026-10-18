@@ -11,9 +11,11 @@ import { fetchReflowFile } from '../../api/reflow';
 import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
 import { formatBytes } from '../../lib/format';
+import { cacheKey } from '../../offline/fileStore';
 import { useOfflineSession } from '../../offline/offlineContext';
+import { bookFromShelfSnapshot, shelfSnapshotOf } from '../../offline/shelfSnapshot';
 import { SyncContext } from '../../sync/SyncProvider';
-import type { OfflineBookRow } from '../../sync/types';
+import type { CachedShelfBook, OfflineBookRow } from '../../sync/types';
 import { BookCard } from './BookCard';
 import { EditBookDialog } from './EditBookDialog';
 import { DEFAULT_FILTERS, FilterBar } from './FilterBar';
@@ -22,6 +24,11 @@ import { Toast } from './Toast';
 import { UploadDialog } from './UploadDialog';
 
 const SHELF_VIEW_KEY = 'bookr.shelf.view';
+
+/** Absence of an offline signal counts as online, as jsdom reports. */
+function isOnlineNow(): boolean {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
 
 function readShelfView(): ShelfView {
   try {
@@ -58,11 +65,12 @@ export function BookshelfPage() {
   const deleteBook = useDeleteBook();
   const retryConversion = useRetryConversion();
   const dismissToast = useCallback(() => setToast(null), []);
-  const { db, cache } = useOfflineSession();
+  const { db, store, cache } = useOfflineSession();
   // The shelf lives outside `SyncProvider` in some tests, so read the context
   // directly rather than through `useSync`, which requires a provider.
   const sync = useContext(SyncContext);
   const userId = user?.id ?? null;
+  const online = isOnlineNow();
   // Local cache writes arrive through the live query; a finished sync cycle can
   // also change what this account has on the device.
   const offlineRows = useLiveQuery(
@@ -77,6 +85,46 @@ export function BookshelfPage() {
     [offlineRows],
   );
   const [offlinePending, setOfflinePending] = useState<ReadonlySet<string>>(new Set());
+  // `bytes > 0` is only a hint: the badge must mean the original file is
+  // actually readable, which only the store can answer.
+  const [cachedFileIds, setCachedFileIds] = useState<ReadonlySet<string>>(new Set());
+  const cachedShelfRows = useLiveQuery(
+    async () => {
+      if (userId === null) return [] as CachedShelfBook[];
+      const rows = await db.shelf.where('userId').equals(userId).toArray();
+      // Newest metadata first, mirroring the default server sort.
+      return rows.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    },
+    [db, userId, sync?.state.lastSyncedAt],
+  );
+
+  useEffect(() => {
+    if (userId === null || offlineRows === undefined) return;
+    let cancelled = false;
+    void (async () => {
+      const present = new Set<string>();
+      for (const row of offlineRows) {
+        const exists = await store
+          .has(cacheKey(userId, row.bookId, 'book'))
+          .catch(() => false);
+        if (exists) present.add(row.bookId);
+      }
+      if (!cancelled) setCachedFileIds(present);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [offlineRows, store, userId]);
+
+  // Every successful shelf load refreshes the on-device snapshot used when the
+  // library API is unreachable. Only the `CachedShelfBook` fields are stored.
+  useEffect(() => {
+    const items = booksQuery.data?.items;
+    if (!items || items.length === 0 || userId === null) return;
+    void db.shelf
+      .bulkPut(items.map((item) => shelfSnapshotOf(item, userId)))
+      .catch(() => undefined);
+  }, [booksQuery.data, db, userId]);
 
   const markOfflinePending = useCallback((bookId: string, pending: boolean) => {
     setOfflinePending((current) => {
@@ -194,9 +242,16 @@ export function BookshelfPage() {
     user && user.libraryQuotaBytes > 0 ? user.libraryUsedBytes / user.libraryQuotaBytes : 0;
   const nearingQuota = quotaRatio > 0.9;
   const isAdmin = user?.role === 'admin';
-  const books = booksQuery.data?.items ?? [];
-  const total = booksQuery.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
+  // Offline, or after a failed library request, the shelf falls back to the
+  // metadata snapshot so books downloaded to this device stay openable.
+  const fallbackBooks = cachedShelfRows?.map(bookFromShelfSnapshot);
+  const usingCachedShelf =
+    booksQuery.data === undefined &&
+    fallbackBooks !== undefined &&
+    (booksQuery.isError || !online);
+  const books = booksQuery.data?.items ?? (usingCachedShelf ? (fallbackBooks ?? []) : []);
+  const total = booksQuery.data?.total ?? (usingCachedShelf ? books.length : 0);
+  const totalPages = usingCachedShelf ? 1 : Math.max(1, Math.ceil(total / filters.pageSize));
 
   // Prefer the refetched shelf entry so a reflow upload/removal is visible when
   // the dialog is reopened; the snapshot only covers a book filtered off-page.
@@ -260,11 +315,27 @@ export function BookshelfPage() {
         onViewChange={changeView}
       />
 
-      {booksQuery.isPending ? (
+      {usingCachedShelf && books.length > 0 ? (
+        <p role="status" className="text-xs tracking-widest text-muted">
+          当前离线，显示本机缓存的书架。
+        </p>
+      ) : null}
+
+      {usingCachedShelf && books.length === 0 ? (
+        <div
+          role="alert"
+          className="flex flex-col items-center gap-3 rounded-lg border border-highlight/30 bg-highlight/10 px-5 py-10 text-center"
+        >
+          <p className="text-sm text-highlight">当前离线，书架也还没有同步到本机。</p>
+          <Button variant="ghost" size="sm" onClick={() => void booksQuery.refetch()}>
+            重试
+          </Button>
+        </div>
+      ) : booksQuery.isPending && !usingCachedShelf ? (
         <p role="status" className="py-16 text-center text-sm tracking-widest text-muted">
           正在整理书架…
         </p>
-      ) : booksQuery.isError ? (
+      ) : booksQuery.isError && !usingCachedShelf ? (
         <div
           role="alert"
           className="flex flex-col items-center gap-3 rounded-lg border border-highlight/30 bg-highlight/10 px-5 py-10 text-center"
@@ -321,7 +392,7 @@ export function BookshelfPage() {
                   userId === null
                     ? undefined
                     : {
-                        cached: (row?.bytes ?? 0) > 0,
+                        cached: cachedFileIds.has(book.id),
                         pinned: row?.pinned === true,
                         pending: offlinePending.has(book.id),
                       }

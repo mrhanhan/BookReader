@@ -59,9 +59,9 @@ export function createOfflineSession(
 let shared: OfflineSession | null = null;
 
 /**
- * The app-wide session. It opens its own connection to the same local database
- * the sync engine uses; cache rows are only written through this connection,
- * so the live queries that read them stay consistent.
+ * Fallback for components rendered without a provider (isolated tests, or a
+ * route mounted outside the app shell). Production mounts `OfflineProvider` in
+ * `AppProviders`, which owns its own session instead of relying on this.
  */
 export function getOfflineSession(): OfflineSession {
   shared ??= createOfflineSession();
@@ -70,15 +70,21 @@ export function getOfflineSession(): OfflineSession {
 
 const OfflineContext = createContext<OfflineSession | null>(null);
 
-/** Provides an injected session in tests; production falls back to the shared one. */
+/**
+ * Owns the cache session for the app shell. It opens a second connection to
+ * the `bookr-sync` database because the sync engine owns its own; cache rows
+ * are written only through this connection, and the shelf's live queries read
+ * through the same one, so the two never fight over updates.
+ */
 export function OfflineProvider({
   children,
   session,
 }: {
   children: ReactNode;
+  /** Test injection; production creates the session the provider owns. */
   session?: OfflineSession;
 }) {
-  const [value] = useState(() => session ?? getOfflineSession());
+  const [value] = useState(() => session ?? createOfflineSession());
   return <OfflineContext.Provider value={value}>{children}</OfflineContext.Provider>;
 }
 

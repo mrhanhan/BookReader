@@ -95,6 +95,8 @@ it('falls back to the cached blob when the network fails', async () => {
   const { cache } = setup();
   await cache.cacheFromUrl(USER, BOOK, 'book', 'https://files.test/cached.pdf');
   await cache.cacheFromUrl(USER, BOOK, 'reflow', 'https://files.test/cached.bookr.json');
+  const cachedBookUrl = await cache.cachedUrl(USER, BOOK, 'book');
+  const cachedReflowUrl = await cache.cachedUrl(USER, BOOK, 'reflow');
 
   const resolved = await resolveBookSource({
     cache,
@@ -111,9 +113,8 @@ it('falls back to the cached blob when the network fails', async () => {
   });
 
   expect(resolved.offline).toBe(true);
-  expect(resolved.fileUrl).not.toBe('https://files.test/cached.pdf');
-  expect(resolved.fileUrl.length).toBeGreaterThan(0);
-  expect(resolved.reflowUrl).not.toBeNull();
+  expect(resolved.fileUrl).toBe(cachedBookUrl);
+  expect(resolved.reflowUrl).toBe(cachedReflowUrl);
 });
 
 it('rethrows the request error when the network fails and nothing is cached', async () => {
@@ -157,6 +158,7 @@ it('throws OfflineUnavailableError when offline and uncached', async () => {
 it('returns reflowUrl null when the pack is not cached offline', async () => {
   const { cache } = setup();
   await cache.cacheFromUrl(USER, BOOK, 'book', 'https://files.test/cached.pdf');
+  const cachedBookUrl = await cache.cachedUrl(USER, BOOK, 'book');
 
   const resolved = await resolveBookSource({
     cache,
@@ -169,8 +171,44 @@ it('returns reflowUrl null when the pack is not cached offline', async () => {
   });
 
   expect(resolved.offline).toBe(true);
-  expect(resolved.fileUrl.length).toBeGreaterThan(0);
+  expect(resolved.fileUrl).toBe(cachedBookUrl);
   expect(resolved.reflowUrl).toBeNull();
+});
+
+it('keeps online reading working when the cache backend fails', async () => {
+  const db = createSyncDb(`book-source-${++sequence}`);
+  openDbs.push(db);
+  const healthy = createMemoryStore();
+  const broken = {
+    ...healthy,
+    get: async (): Promise<Blob | null> => {
+      throw new Error('cache store unavailable');
+    },
+    has: async (): Promise<boolean> => {
+      throw new Error('cache store unavailable');
+    },
+  };
+  const cache = createCacheManager({ store: broken, db });
+
+  const resolved = await resolveBookSource({
+    cache,
+    online: () => true,
+    userId: USER,
+    bookId: BOOK,
+    reflowAvailable: true,
+    fetchFile: async () => ({ url: 'https://files.test/signed.pdf' }),
+    fetchReflow: async () => {
+      throw new Error('pack request failed');
+    },
+  });
+
+  // The signed URL is already in hand; a broken cache probe only loses the
+  // background refresh and the pack fallback, never the book itself.
+  expect(resolved).toEqual({
+    fileUrl: 'https://files.test/signed.pdf',
+    reflowUrl: null,
+    offline: false,
+  });
 });
 
 it('marks the opened book as just read so the LRU keeps it', async () => {
