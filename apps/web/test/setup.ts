@@ -282,6 +282,23 @@ export const handlers = [
   http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })),
   http.get('/api/auth/me', () => HttpResponse.json(reader)),
 
+  // Settings renders the AI section in several suites, so the defaults stay
+  // permissive: AI on, configured, with fresh quotas.
+  http.get('/api/ai/usage', () =>
+    HttpResponse.json({
+      enabled: true,
+      configured: true,
+      fakeProvider: false,
+      model: 'deepseek-chat',
+      daily: { used: 1000, reserved: 0, limit: 100_000 },
+      monthly: { used: 5000, reserved: 0, limit: 1_000_000 },
+    }),
+  ),
+  http.patch('/api/me/ai', async ({ request }) => {
+    const body = (await request.json()) as { enabled: boolean };
+    return HttpResponse.json({ enabled: body.enabled });
+  }),
+
   http.get('/api/books', ({ request }) => HttpResponse.json(listBooksFromUrl(request.url))),
   http.get('/api/books/:id', ({ params }) => {
     const found = fixtures.shelf.find((item) => item.id === params.id);

@@ -325,3 +325,58 @@ it('logs out after revoking the current device', async () => {
   expect(logoutCalled).toBe(true);
   expect(localStorage.getItem('bookr.tokens')).toBeNull();
 });
+
+it('shows AI usage, the privacy note and saves the AI toggle', async () => {
+  let enabled = true;
+  const patched: boolean[] = [];
+  server.use(
+    http.get('/api/ai/usage', () =>
+      HttpResponse.json({
+        enabled,
+        configured: true,
+        fakeProvider: false,
+        model: 'deepseek-chat',
+        daily: { used: 1_000, reserved: 0, limit: 100_000 },
+        monthly: { used: 5_000, reserved: 0, limit: 1_000_000 },
+      }),
+    ),
+    http.patch('/api/me/ai', async ({ request }) => {
+      const body = (await request.json()) as { enabled: boolean };
+      patched.push(body.enabled);
+      enabled = body.enabled;
+      return HttpResponse.json({ enabled });
+    }),
+  );
+
+  renderSettings(createEngine().engine);
+
+  const section = await screen.findByRole('region', { name: 'AI 伴读' });
+  expect(within(section).getByText(/今日 1,000 \/ 100,000 tokens/)).toBeInTheDocument();
+  expect(within(section).getByText(/不会发送整本书/)).toBeInTheDocument();
+
+  const toggle = within(section).getByRole('checkbox', { name: '启用 AI 伴读' });
+  expect(toggle).toBeChecked();
+  await userEvent.click(toggle);
+  await waitFor(() => expect(patched).toEqual([false]));
+  await waitFor(() => expect(toggle).not.toBeChecked());
+});
+
+it('explains when AI is not configured', async () => {
+  server.use(
+    http.get('/api/ai/usage', () =>
+      HttpResponse.json({
+        enabled: true,
+        configured: false,
+        fakeProvider: false,
+        model: null,
+        daily: { used: 0, reserved: 0, limit: 100_000 },
+        monthly: { used: 0, reserved: 0, limit: 1_000_000 },
+      }),
+    ),
+  );
+
+  renderSettings(createEngine().engine);
+  const section = await screen.findByRole('region', { name: 'AI 伴读' });
+  expect(within(section).getByText('AI 尚未配置，请联系管理员')).toBeInTheDocument();
+  expect(within(section).getByRole('checkbox', { name: '启用 AI 伴读' })).toBeDisabled();
+});

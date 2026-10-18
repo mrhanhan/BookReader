@@ -21,6 +21,8 @@ export interface AuthContextValue {
   logout: () => Promise<void>;
   /** Explains why the visitor landed on the login page without a session. */
   sessionNotice: string | null;
+  /** Re-reads /api/auth/me and updates the cached profile. */
+  refreshUser(): Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -171,9 +173,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, [queryClient]);
 
+  const refreshUser = useCallback(async () => {
+    // Failures are handed back to the caller and never end the session here:
+    // the next verified request decides whether the account is still valid.
+    const me = await fetchCurrentUser();
+    writeCachedUser(me);
+    setUser(me);
+  }, []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, login, register, logout, sessionNotice }),
-    [user, loading, login, register, logout, sessionNotice],
+    () => ({ user, loading, login, register, logout, sessionNotice, refreshUser }),
+    [user, loading, login, register, logout, sessionNotice, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
