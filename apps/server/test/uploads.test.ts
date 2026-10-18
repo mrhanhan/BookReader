@@ -1,4 +1,6 @@
+import { eq } from 'drizzle-orm';
 import { expect, it } from 'vitest';
+import { uploadSessions } from '../src/db/schema';
 import {
   authHeader,
   buildTestApp,
@@ -10,6 +12,7 @@ import {
   resetDb,
   seedBook,
   seedUser,
+  testDb,
 } from './helpers';
 
 const PDF_HEAD = Buffer.from('%PDF-1.7\n');
@@ -158,3 +161,54 @@ it('expires stale sessions and deletes their objects', async () => {
   expect(removed).toBe(1);
   expect(await fakeStorage.head(await findSessionObjectKey(created.uploadId))).toBeNull();
 });
+
+it('rejects a completion that races with an already completed upload', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const duplicateSha = sha('9');
+
+  const createSession = async (filename: string) =>
+    (
+      await app.inject({
+        method: 'POST',
+        url: '/api/uploads',
+        headers: await authHeader(user),
+        payload: { filename, size: PDF_HEAD.length, sha256: duplicateSha, contentType: 'application/pdf' },
+      })
+    ).json();
+
+  // Create-time dedupe only looks at books, so two pending sessions with the
+  // same content may coexist; the partial unique index decides the winner.
+  const first = await createSession('first.pdf');
+  const second = await createSession('second.pdf');
+  const firstKey = await findSessionObjectKey(first.uploadId);
+  const secondKey = await findSessionObjectKey(second.uploadId);
+  await fakeStorage.putObject(firstKey, PDF_HEAD, 'application/pdf');
+  await fakeStorage.putObject(secondKey, PDF_HEAD, 'application/pdf');
+
+  const firstRes = await app.inject({
+    method: 'POST',
+    url: `/api/uploads/${first.uploadId}/complete`,
+    headers: await authHeader(user),
+  });
+  expect(firstRes.statusCode).toBe(200);
+  const firstBookId = firstRes.json().book.id;
+
+  const secondRes = await app.inject({
+    method: 'POST',
+    url: `/api/uploads/${second.uploadId}/complete`,
+    headers: await authHeader(user),
+  });
+  expect(secondRes.statusCode).toBe(409);
+  expect(secondRes.json().error.code).toBe('DUPLICATE_BOOK');
+  expect(secondRes.json().error.details.existingBookId).toBe(firstBookId);
+  expect(await fakeStorage.head(secondKey)).toBeNull();
+
+  const [secondSession] = await testDb
+    .select({ status: uploadSessions.status })
+    .from(uploadSessions)
+    .where(eq(uploadSessions.id, second.uploadId));
+  expect(secondSession?.status).toBe('failed');
+});
+
