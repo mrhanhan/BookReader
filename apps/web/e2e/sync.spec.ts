@@ -9,7 +9,9 @@ import {
   readerAuth,
   registerFreshReader,
   revealChrome,
+  selectPdfText,
   uploadAndRename,
+  waitForPdfReady,
 } from './helpers';
 import type { AuthHeaders } from './helpers';
 
@@ -39,42 +41,6 @@ async function newDevice(
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ baseURL: E2E_BASE_URL });
   return { context, page: await context.newPage() };
-}
-
-async function waitForPdfSpan(page: Page, needle: string): Promise<void> {
-  await page.waitForFunction(
-    (text) =>
-      [...document.querySelectorAll('.bookr-text-layer span')].some((node) =>
-        node.textContent?.includes(text),
-      ),
-    needle,
-  );
-}
-
-/** Resolves once the first page canvas and its selectable text are rendered. */
-async function waitForPdfReady(page: Page): Promise<void> {
-  await expect(page.locator('.bookr-pdf-page canvas').first()).toBeVisible({
-    timeout: 15_000,
-  });
-  await waitForPdfSpan(page, SELECTED_PHRASE);
-}
-
-/** Selects the pdf.js text-layer span containing `needle`. */
-async function selectPdfText(page: Page, needle: string): Promise<void> {
-  await waitForPdfSpan(page, needle);
-  await page.evaluate((text) => {
-    const span = [...document.querySelectorAll('.bookr-text-layer span')].find((node) =>
-      node.textContent?.includes(text),
-    );
-    if (!span) throw new Error(`text layer span not found: ${text}`);
-    const range = document.createRange();
-    range.selectNodeContents(span);
-    const selection = window.getSelection();
-    if (!selection) throw new Error('selection unavailable');
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.dispatchEvent(new Event('selectionchange'));
-  }, needle);
 }
 
 /** Closes an open side panel so its header no longer covers the chrome. */

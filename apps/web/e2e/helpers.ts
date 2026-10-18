@@ -343,3 +343,47 @@ export async function revealChrome(page: Page): Promise<void> {
   await page.getByTestId('reader-content').click();
   await expect(toc).toBeVisible();
 }
+
+/**
+ * Resolves once a pdf.js text-layer span contains `needle`. The layer renders
+ * separately from the canvas, so the canvas being painted does not yet mean
+ * text can be selected.
+ */
+export async function waitForPdfSpan(page: Page, needle: string): Promise<void> {
+  await page.waitForFunction(
+    (text) =>
+      [...document.querySelectorAll('.bookr-text-layer span')].some((node) =>
+        node.textContent?.includes(text),
+      ),
+    needle,
+  );
+}
+
+/** Resolves once the first page canvas and its selectable text are rendered. */
+export async function waitForPdfReady(
+  page: Page,
+  needle: string = 'quick brown fox',
+): Promise<void> {
+  await expect(page.locator('.bookr-pdf-page canvas').first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await waitForPdfSpan(page, needle);
+}
+
+/** Selects the pdf.js text-layer span containing `needle`. */
+export async function selectPdfText(page: Page, needle: string): Promise<void> {
+  await waitForPdfSpan(page, needle);
+  await page.evaluate((text) => {
+    const span = [...document.querySelectorAll('.bookr-text-layer span')].find((node) =>
+      node.textContent?.includes(text),
+    );
+    if (!span) throw new Error(`text layer span not found: ${text}`);
+    const range = document.createRange();
+    range.selectNodeContents(span);
+    const selection = window.getSelection();
+    if (!selection) throw new Error('selection unavailable');
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+  }, needle);
+}

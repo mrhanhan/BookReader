@@ -47,6 +47,12 @@ function generateReaderFixtures(): void {
  * admin-only by design (and `create-admin` refuses once any user exists), so a
  * missing admin is an environment problem the operator must fix, not
  * something the test may paper over.
+ *
+ * `ai.spec.ts` additionally expects the disposable stack's server to be built
+ * with `AI_FAKE_PROVIDER=1` (set it in `.env`, then `docker compose up -d
+ * --build server web`), so answers are deterministic. That spec asserts the
+ * flag through `/api/ai/usage` in its own `beforeAll` and explains the fix; no
+ * assertion here is gated on AI being enabled.
  */
 export default async function globalSetup(): Promise<void> {
   assertDisposableTarget(baseURL);
