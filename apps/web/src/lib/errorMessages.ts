@@ -23,6 +23,11 @@ const MESSAGES: Record<ErrorCode, string> = {
   INVITE_INVALID: '邀请码无效或已过期',
   RATE_LIMITED: '尝试次数过多，请稍后再试',
   INTERNAL: '服务器出了点问题，请稍后重试',
+  AI_DISABLED: 'AI 已关闭',
+  AI_NOT_CONFIGURED: 'AI 尚未配置，请联系管理员',
+  AI_QUOTA_EXCEEDED: '今日或本月额度已用尽',
+  AI_UPSTREAM_FAILED: 'AI 服务暂时不可用，请稍后重试',
+  AI_TIMEOUT: 'AI 响应超时，请重试',
 };
 
 const LOGIN_OVERRIDES: Partial<Record<ErrorCode, string>> = {
