@@ -193,30 +193,61 @@ it('does not overwrite progress applied from the server before the first write',
   expect(repo.outbox).toHaveLength(0);
 });
 
-it('jumps to a newer server progress applied while the book is open', async () => {
-  repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR);
+it('opens at a newer server position once the first sync lands', async () => {
+  repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR, Date.parse('2026-01-01T00:00:00.000Z'));
+  syncEngine = createFakeSyncEngine({ status: 'syncing', lastSyncedAt: null });
   const engine = renderReader();
-
-  await waitFor(() => expect(engine.open).toHaveBeenCalled());
-  await screen.findByRole('button', { name: '目录' });
 
   await repo.applyServerChange(USER, progressEnvelope(NEWER_LOCATOR, '2026-01-02T00:00:00.000Z'));
   act(() => {
     syncEngine.setState({
       status: 'synced',
       pending: 0,
-      lastSyncedAt: null,
+      lastSyncedAt: Date.now(),
       conflicts: 0,
-      lastApplied: {
-        entityType: 'reading_progress',
-        entityId: BOOK_ID,
-        at: 1,
-        source: 'pull',
-      },
     });
   });
 
-  await waitFor(() => expect(engine.goTo).toHaveBeenCalledWith(NEWER_LOCATOR));
+  await waitFor(() =>
+    expect(engine.open).toHaveBeenCalledWith(
+      'https://files.test/book.pdf',
+      expect.any(HTMLElement),
+      expect.anything(),
+      expect.objectContaining({ initialLocator: NEWER_LOCATOR }),
+    ),
+  );
+});
+
+it('opens at the local position without waiting when sync is offline', async () => {
+  repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR);
+  syncEngine = createFakeSyncEngine({ status: 'offline', lastSyncedAt: null });
+  const engine = renderReader();
+
+  await waitFor(() =>
+    expect(engine.open).toHaveBeenCalledWith(
+      'https://files.test/book.pdf',
+      expect.any(HTMLElement),
+      expect.anything(),
+      expect.objectContaining({ initialLocator: OPEN_LOCATOR }),
+    ),
+  );
+});
+
+it('opens at the local position when the first sync times out', async () => {
+  repo.seedProgress(USER, BOOK_ID, OPEN_LOCATOR);
+  syncEngine = createFakeSyncEngine({ status: 'syncing', lastSyncedAt: null });
+  const engine = renderReader();
+
+  await waitFor(
+    () =>
+      expect(engine.open).toHaveBeenCalledWith(
+        'https://files.test/book.pdf',
+        expect.any(HTMLElement),
+        expect.anything(),
+        expect.objectContaining({ initialLocator: OPEN_LOCATOR }),
+      ),
+    { timeout: 3_000 },
+  );
 });
 
 it('keeps reading when the local progress write fails', async () => {

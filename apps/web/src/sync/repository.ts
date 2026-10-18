@@ -71,8 +71,6 @@ export interface LocalRepository {
   settingsFor(userId: string): Promise<LocalSettingsRow | null>;
   saveSettings(userId: string, settings: Record<string, unknown>): Promise<void>;
   pendingCount(userId: string): Promise<number>;
-  /** Whether the outbox still holds an unsent mutation of one entity. */
-  hasPending(userId: string, entityType: SyncEntityType, entityId: string): Promise<boolean>;
   applyServerChange(userId: string, change: SyncChangeEnvelope): Promise<'applied' | 'skipped'>;
   applySnapshot(userId: string, snapshot: SyncSnapshot): Promise<void>;
   getCursor(userId: string): Promise<number>;
@@ -740,10 +738,6 @@ export function createRepository(db: BookrDb): LocalRepository {
 
     async pendingCount(userId) {
       return db.outbox.where('userId').equals(userId).count();
-    },
-
-    async hasPending(userId, entityType, entityId) {
-      return (await pendingFor(db, userId, entityType, entityId)).length > 0;
     },
 
     applyServerChange(userId, change) {

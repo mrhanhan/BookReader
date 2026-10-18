@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Locator } from '@bookr/shared';
 import type { ReaderEngine } from '@bookr/reader-core';
 import { useSync } from '../../sync/SyncProvider';
@@ -32,12 +32,6 @@ export interface ReaderProgressState {
   /** 0–1 book position, driven by the engine's `relocated` events. */
   percent: number;
   saveState: ReaderSaveState;
-  /**
-   * Ignores the next relocation when it lands on `locator`. The reader calls
-   * this before navigating to a position the sync engine just applied, so
-   * following the server does not queue the same position back again.
-   */
-  suppressNext: (locator: Locator) => void;
 }
 
 function clampPercent(value: number): number {
@@ -86,13 +80,6 @@ export function useReaderProgress({
   // was opened. Writing it would queue a stale position before the first pull
   // can deliver a newer one from another device.
   const awaitingInitialRef = useRef(true);
-  // Set just before following a server-applied position; the relocation it
-  // causes must not become a local write.
-  const suppressedRef = useRef<Locator | null>(null);
-
-  const suppressNext = useCallback((locator: Locator) => {
-    suppressedRef.current = locator;
-  }, []);
 
   // Seed from the resolved local position once it is known; this runs before
   // the page's own effect calls `engine.open`.
@@ -100,7 +87,6 @@ export function useReaderProgress({
     locatorRef.current = initialLocator ?? null;
     dirtyRef.current = false;
     awaitingInitialRef.current = true;
-    suppressedRef.current = null;
     setPercent(clampPercent(initialLocator?.percent ?? 0));
   }, [userId, bookId, initialLocator]);
 
@@ -121,17 +107,6 @@ export function useReaderProgress({
 
     const record = (locator: Locator): void => {
       setPercent(clampPercent(locator.percent));
-
-      const suppressed = suppressedRef.current;
-      if (suppressed !== null && locatorsEqual(locator, suppressed)) {
-        // The reader navigated to the position the server just applied; the
-        // local store already holds it, so there is nothing to save.
-        suppressedRef.current = null;
-        locatorRef.current = locator;
-        dirtyRef.current = false;
-        return;
-      }
-      suppressedRef.current = null;
 
       if (awaitingInitialRef.current) {
         awaitingInitialRef.current = false;
@@ -211,5 +186,5 @@ export function useReaderProgress({
     };
   }, [bookId, engine, requestSync, repo, userId]);
 
-  return { percent, saveState: saveStateFor(syncState), suppressNext };
+  return { percent, saveState: saveStateFor(syncState) };
 }

@@ -93,16 +93,6 @@ describe('LocalRepository', () => {
     expect(await db.progress.count()).toBe(2);
   });
 
-  it('reports whether one entity still has a queued mutation', async () => {
-    expect(await repo.hasPending(USER, 'reading_progress', BOOK)).toBe(false);
-
-    await repo.saveProgress(USER, BOOK, locator);
-
-    expect(await repo.hasPending(USER, 'reading_progress', BOOK)).toBe(true);
-    expect(await repo.hasPending(USER, 'reading_progress', OTHER_BOOK)).toBe(false);
-    expect(await repo.hasPending(OTHER_USER, 'reading_progress', BOOK)).toBe(false);
-  });
-
   it('does not let a legacy import overwrite a position written meanwhile', async () => {
     await repo.saveProgress(USER, BOOK, laterLocator, Date.parse(T2));
 

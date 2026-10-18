@@ -5,7 +5,7 @@ import { createSyncApi } from '../api/sync';
 import { useAuth } from '../app/auth';
 import { createSyncDb } from './db';
 import { createSyncEngine } from './engine';
-import type { SyncEngine, SyncEngineOptions, SyncState } from './engine';
+import type { ConflictNotice, SyncEngine, SyncEngineOptions, SyncState } from './engine';
 import { createRepository } from './repository';
 import type { LocalRepository } from './repository';
 
@@ -20,12 +20,35 @@ export const DEFAULT_SYNC_STATE: SyncState = {
 /** A burst of local writes results in one push two seconds after the last one. */
 export const WRITE_SYNC_DELAY_MS = 2000;
 
+export type ConflictListener = (notice: ConflictNotice) => void;
+
+/** Resolves once the engine completes its first sync for this session. */
+interface FirstSyncGate {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+
+function createFirstSyncGate(): FirstSyncGate {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 export interface SyncContextValue {
   repo: LocalRepository;
   state: SyncState;
   syncNow: (reason?: string) => Promise<void>;
   /** Debounced sync request for local writes; the engine pushes once the burst ends. */
   requestSync: (reason?: string) => void;
+  /**
+   * Resolves when this session's first sync completes, or after `timeoutMs`
+   * when the engine is offline or still busy. Never rejects.
+   */
+  waitForFirstSync: (timeoutMs: number) => Promise<void>;
+  /** Conflict notifications resolved after the provider mounted. */
+  subscribeConflicts: (listener: ConflictListener) => () => void;
 }
 
 export const SyncContext = createContext<SyncContextValue | null>(null);
@@ -56,6 +79,13 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
   const createEngineRef = useRef(createEngine);
   createEngineRef.current = createEngine;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const conflictListenersRef = useRef(new Set<ConflictListener>());
+  // Created during render so a child that reads it before the provider's own
+  // mount effect runs still waits for this session's first sync.
+  const firstSyncRef = useRef<FirstSyncGate | null>(null);
+  if (firstSyncRef.current === null) {
+    firstSyncRef.current = createFirstSyncGate();
+  }
 
   // Applied changes can touch any of the sync-backed queries; the reader keys
   // annotations by book, which a stream event does not carry, so invalidate the
@@ -77,6 +107,9 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
     const userId = user?.id;
     if (userId === undefined) {
       setState(DEFAULT_SYNC_STATE);
+      const pending = firstSyncRef.current;
+      firstSyncRef.current = null;
+      pending?.resolve();
       return;
     }
 
@@ -98,13 +131,43 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
         : factory(userId, deps.repo);
 
     engineRef.current = engine;
-    const unsubscribe = engine.subscribe(setState);
+    const gate = firstSyncRef.current ?? createFirstSyncGate();
+    firstSyncRef.current = gate;
+    // Conflicts counted before this effect runs are the mount baseline; only
+    // later increases are reported to subscribers.
+    let previousConflicts = engine.getState().conflicts;
+
+    const unsubscribe = engine.subscribe((next) => {
+      setState(next);
+      if (
+        next.status === 'synced' ||
+        next.status === 'offline' ||
+        next.status === 'error'
+      ) {
+        gate.resolve();
+      }
+      if (next.conflicts > previousConflicts) {
+        previousConflicts = next.conflicts;
+        const notice = next.lastConflict;
+        if (notice !== undefined) {
+          for (const listener of conflictListenersRef.current) {
+            listener(notice);
+          }
+        }
+      } else {
+        previousConflicts = next.conflicts;
+      }
+    });
     setState(engine.getState());
     engine.start();
 
     return () => {
       unsubscribe();
       void engine.stop();
+      gate.resolve();
+      if (firstSyncRef.current === gate) {
+        firstSyncRef.current = null;
+      }
       if (engineRef.current === engine) {
         engineRef.current = null;
       }
@@ -135,9 +198,49 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
     }, WRITE_SYNC_DELAY_MS);
   }, []);
 
+  const waitForFirstSync = useCallback(async (timeoutMs: number): Promise<void> => {
+    // A remount (React StrictMode, a provider above us) may have cleared the
+    // gate between the render and this call; recreate it so the provider's
+    // next mount adopts the same promise.
+    let gate = firstSyncRef.current;
+    if (gate === null) {
+      gate = createFirstSyncGate();
+      firstSyncRef.current = gate;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        gate.promise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, timeoutMs));
+        }),
+      ]);
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    }
+  }, []);
+
+  const subscribeConflicts = useCallback((listener: ConflictListener) => {
+    const listeners = conflictListenersRef.current;
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }, []);
+
   const value = useMemo<SyncContextValue>(
-    () => ({ repo: deps.repo, state, syncNow, requestSync }),
-    [deps.repo, state, syncNow, requestSync],
+    () => ({
+      repo: deps.repo,
+      state,
+      syncNow,
+      requestSync,
+      waitForFirstSync,
+      subscribeConflicts,
+    }),
+    [deps.repo, state, syncNow, requestSync, waitForFirstSync, subscribeConflicts],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;

@@ -95,13 +95,19 @@ export async function readLocalProgress(
   }
 
   try {
-    await repo.importProgress(userId, bookId, legacy.locator, legacy.savedAt);
+    const imported = await repo.importProgress(userId, bookId, legacy.locator, legacy.savedAt);
     storage()?.removeItem(keyFor(userId, bookId));
+    // A sync pull may have won the race and written a row first; use whichever
+    // position the repository now holds rather than the legacy one.
+    const savedAt = Date.parse(imported.clientUpdatedAt);
+    return {
+      locator: imported.locator,
+      savedAt: Number.isNaN(savedAt) ? legacy.savedAt : savedAt,
+    };
   } catch {
     // Keeping the legacy entry lets the next visit retry the migration.
     return legacy;
   }
-  return legacy;
 }
 
 /**

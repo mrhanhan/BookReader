@@ -70,6 +70,29 @@ it('keeps one cached position per account for the same book', async () => {
   expect(await readLocalProgress(repo, 'user-b', 'b')).toBeNull();
 });
 
+it('uses the row a concurrent sync wrote during the legacy migration', async () => {
+  const legacyKey = `${PROGRESS_KEY_PREFIX}user-a.b`;
+  localStorage.setItem(legacyKey, JSON.stringify({ locator: pdf, savedAt: 1 }));
+
+  const pulled = { ...pdf, page: 9, percent: 0.8 };
+  const pulledAt = Date.parse('2026-05-01T00:00:00.000Z');
+  repo.seedProgress('user-a', 'b', pulled, pulledAt);
+
+  // The first read misses the row, then a pull writes it before the import.
+  const progressFor = repo.progressFor.bind(repo);
+  let reads = 0;
+  repo.progressFor = async (userId, bookId) => {
+    reads += 1;
+    return reads === 1 ? null : progressFor(userId, bookId);
+  };
+
+  const resolved = await readLocalProgress(repo, 'user-a', 'b');
+
+  expect(resolved?.locator).toEqual(pulled);
+  expect(resolved?.savedAt).toBe(pulledAt);
+  expect(localStorage.getItem(legacyKey)).toBeNull();
+});
+
 it('clears every account and book while keeping unrelated storage', () => {
   localStorage.setItem(`${PROGRESS_KEY_PREFIX}user-a.b`, JSON.stringify({ locator: pdf, savedAt: 1 }));
   localStorage.setItem(`${PROGRESS_KEY_PREFIX}user-b.c`, JSON.stringify({ locator: pdf, savedAt: 1 }));

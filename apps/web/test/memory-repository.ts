@@ -335,13 +335,6 @@ export function createMemoryRepository(): MemoryRepository {
       return outbox.filter((row) => row.userId === userId).length;
     },
 
-    async hasPending(userId, entityType, entityId) {
-      return outbox.some(
-        (row) =>
-          row.userId === userId && row.entityType === entityType && row.entityId === entityId,
-      );
-    },
-
     async applyServerChange(userId, change) {
       if (change.op === 'delete') {
         if (change.entityType === 'annotation') annotationRows.delete(change.entityId);

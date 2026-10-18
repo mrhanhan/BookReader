@@ -46,10 +46,9 @@ import {
 } from '../../offline/bookSource';
 import { useOfflineSession } from '../../offline/offlineContext';
 import { useSync } from '../../sync/SyncProvider';
-import type { SyncState } from '../../sync/engine';
 import { Toast } from '../bookshelf/Toast';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
-import { locatorsEqual, readLocalProgress } from './progressStore';
+import { readLocalProgress } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
 import { useReadingMode } from './useReadingMode';
@@ -82,6 +81,11 @@ const SYNC_CONFLICT_MESSAGES: Record<SyncEntityType, string> = {
 };
 /** Chrome hides after this much inactivity while no panel is open. */
 const CHROME_HIDE_DELAY_MS = 2_500;
+/**
+ * Longest the reader waits for this session's first sync before opening at the
+ * locally stored position. Offline and failed syncs resolve earlier.
+ */
+const FIRST_SYNC_WAIT_MS = 1_500;
 
 export interface ReaderPageProps {
   /** Tests inject a recording fake; the route uses the real factory. */
@@ -231,7 +235,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Local progress is namespaced per account; never read or write it before
   // the signed-in user is known.
   const userId = user?.id ?? null;
-  const { repo, state: syncState, requestSync } = useSync();
+  const { repo, requestSync, waitForFirstSync, subscribeConflicts } = useSync();
   const { cache } = useOfflineSession();
   const bookQuery = useBook(id ?? null);
   const book = bookQuery.data;
@@ -509,12 +513,14 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     readyRef.current = false;
   }, [bookId]);
 
-  // Resolve the file URL and the locally stored position in parallel, then
-  // compute the one position the reader should open at. The source resolver
-  // signs fresh URLs online, falls back to the device copy, and is the only
-  // path while offline. A local-store failure must fall back to opening at the
-  // start instead of blocking the book. Progress belongs to the signed-in
-  // account, so nothing is read until that account is known.
+  // Resolve the file URL while this session's first sync settles, then read
+  // the position the reader should open at. Waiting for the pull (bounded by
+  // FIRST_SYNC_WAIT_MS) keeps a stale local position from hiding a newer one
+  // from another device without delaying offline or timed-out opens. The
+  // source resolver signs fresh URLs online, falls back to the device copy,
+  // and is the only path while offline. A local-store failure must fall back
+  // to opening at the start instead of blocking the book. Progress belongs to
+  // the signed-in account, so nothing is read until that account is known.
   const wantsReflow = book?.reflowAvailable === true;
   useEffect(() => {
     if (!bookId || !userId) return;
@@ -522,8 +528,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
     void (async () => {
       try {
-        const [progress, resolved] = await Promise.all([
-          readLocalProgress(repo, userId, bookId).catch(() => null),
+        const [resolved] = await Promise.all([
           resolveBookSource({
             cache,
             online: isOnline,
@@ -533,7 +538,9 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
             fetchFile: (id) => fetchReaderFile(id),
             fetchReflow: (id) => fetchReflowFile(id),
           }),
+          waitForFirstSync(FIRST_SYNC_WAIT_MS),
         ]);
+        const progress = await readLocalProgress(repo, userId, bookId).catch(() => null);
         if (cancelled) return;
         setSource({ ...resolved, initialLocator: progress?.locator });
         setSourceEpoch((value) => value + 1);
@@ -550,12 +557,12 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId, cache, repo, userId, wantsReflow]);
+  }, [bookId, cache, repo, userId, waitForFirstSync, wantsReflow]);
 
   const initialLocator = source?.initialLocator;
 
   // Autosave must subscribe before `open` so the first relocation is captured.
-  const { percent, saveState, suppressNext } = useReaderProgress({
+  const { percent, saveState } = useReaderProgress({
     userId: userId ?? '',
     bookId: bookId ?? '',
     engine,
@@ -662,67 +669,6 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       unsubscribe();
     };
   }, [engine, kind, mode, sourceEpoch, fallbackToOriginal]);
-
-  // A progress change applied from another device (pull or stream) wins over
-  // the position this visit opened at. Follow it once the book is open, and
-  // only when nothing local is queued; otherwise the next autosave would
-  // overwrite the newer server position. These effects sit after `open` so a
-  // replaced engine is never navigated before it loads.
-  const pendingFollowRef = useRef<Locator | null>(null);
-  const handledAppliedRef = useRef<SyncState['lastApplied']>(undefined);
-
-  const applyPendingFollow = useCallback(() => {
-    const target = pendingFollowRef.current;
-    if (target === null || engine === null || !readyRef.current) {
-      return;
-    }
-    pendingFollowRef.current = null;
-    const current = currentLocatorRef.current;
-    if (current !== null && locatorsEqual(current, target)) {
-      return;
-    }
-    // The store already holds this position, so the relocation it causes must
-    // not queue a redundant write.
-    suppressNext(target);
-    ignoreRejection(() => engine.goTo(target));
-  }, [engine, suppressNext]);
-
-  useEffect(() => {
-    const applied = syncState.lastApplied;
-    if (applied === undefined || applied === handledAppliedRef.current) return;
-    if (applied.entityType !== 'reading_progress' || applied.entityId !== bookId) return;
-    if (!bookId || !userId) return;
-
-    handledAppliedRef.current = applied;
-    // A push echo carries this device's own position; only remote changes move
-    // the reader.
-    if (applied.source === 'push') return;
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [row, pending] = await Promise.all([
-          repo.progressFor(userId, bookId),
-          repo.hasPending(userId, 'reading_progress', bookId),
-        ]);
-        if (cancelled || pending || row === null) return;
-        pendingFollowRef.current = row.locator;
-        applyPendingFollow();
-      } catch {
-        // A failed local read must not break reading; the next sync retries.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [applyPendingFollow, bookId, repo, syncState.lastApplied, userId]);
-
-  // The applied change may arrive while the book is still opening; navigate as
-  // soon as the engine accepts it.
-  useEffect(() => {
-    applyPendingFollow();
-  }, [applyPendingFollow, status]);
 
   const [chromeVisible, setChromeVisible] = useState(true);
   const chromeVisibleRef = useRef(chromeVisible);
@@ -871,17 +817,16 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     if (bookmarksError) showToast(messageForApiError(bookmarksError));
   }, [bookmarksError, showToast]);
 
-  // A conflict resolved while the book is open maps to an entity-specific
-  // toast. Conflicts resolved while the reader is still loading (including
-  // before mount) are only a baseline, so they do not pop up on entry.
-  const handledConflictRef = useRef<SyncState['lastConflict']>(undefined);
-  useEffect(() => {
-    const conflict = syncState.lastConflict;
-    if (conflict === undefined || conflict === handledConflictRef.current) return;
-    handledConflictRef.current = conflict;
-    if (status !== 'ready') return;
-    showToast(SYNC_CONFLICT_MESSAGES[conflict.entityType]);
-  }, [showToast, status, syncState.lastConflict]);
+  // Conflicts resolved after the provider mounted map to an entity-specific
+  // toast; the provider never replays conflicts counted before mount, so the
+  // reader opens quietly even when the session already had some.
+  useEffect(
+    () =>
+      subscribeConflicts((notice) => {
+        showToast(SYNC_CONFLICT_MESSAGES[notice.entityType]);
+      }),
+    [showToast, subscribeConflicts],
+  );
 
   /** Applies an annotation change to the cache and mirrors it into the engine. */
   const applyAnnotations = useCallback(
