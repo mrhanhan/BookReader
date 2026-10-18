@@ -8,3 +8,4 @@ export * from './schemas/categories';
 export * from './schemas/reading';
 export * from './schemas/reflow';
 export * from './schemas/uploads';
+export * from './sync';
