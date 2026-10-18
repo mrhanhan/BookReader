@@ -1944,7 +1944,11 @@ test('reads a PDF, highlights, annotates, bookmarks and restores progress', asyn
   await page.getByLabel('页码').fill('3');
   await page.getByLabel('页码').press('Enter');
   await expect(page.getByText(/第 3 \/ 300 页/)).toBeVisible();
+  const flushed = page.waitForResponse(
+    (response) => response.url().includes('/progress') && response.request().method() === 'PUT',
+  );
   await page.getByRole('link', { name: '返回书架' }).click();
+  await flushed;
   await page.getByRole('link', { name: `阅读《${PDF_TITLE}》` }).click();
   await expect(page.getByText(/第 3 \/ 300 页/)).toBeVisible({ timeout: 15_000 });
 
