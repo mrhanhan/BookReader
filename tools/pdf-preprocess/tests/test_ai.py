@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from bookr_preprocess.ai import SYSTEM_PROMPT, DeepSeekCorrector
+from bookr_preprocess.ai import DeepSeekCorrector
+
+EXPECTED_SYSTEM_PROMPT = (
+    '你是中文图书 OCR 校对助手。修正明显的 OCR 错字、被硬换行切断的句子和多余空格，'
+    '保留原意、段落与标点。只输出校对后的正文，不要解释。'
+)
 
 
 def test_deepseek_request_shape_and_content():
@@ -30,8 +35,7 @@ def test_deepseek_request_shape_and_content():
     assert seen['body']['model'] == 'deepseek-chat'
     assert seen['body']['temperature'] == 0.2
     assert seen['body']['stream'] is False
-    assert seen['body']['messages'][0]['content'] == SYSTEM_PROMPT
-    assert 'OCR' in seen['body']['messages'][0]['content']
+    assert seen['body']['messages'][0]['content'] == EXPECTED_SYSTEM_PROMPT
     assert seen['body']['max_tokens'] >= 256
     assert seen['body']['messages'][0]['role'] == 'system'
     assert seen['body']['messages'][1]['content'] == '原文'
