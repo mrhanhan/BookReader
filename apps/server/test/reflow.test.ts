@@ -728,3 +728,52 @@ it('never echoes pack text in an invalid-pack error', async () => {
   expect(JSON.stringify(completed.json())).not.toContain(secret);
   expect(JSON.stringify(completed.json())).not.toContain('not valid JSON');
 });
+
+it('reclaims late writes to superseded sessions once their presign window is dead', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const owner = await seedUser('member');
+  const book = await seedBook({ uploadedBy: owner.id, format: 'pdf', sha256: sha('c') });
+
+  // A completed pack that the cleanup must never touch.
+  const stored = await uploadPack(app, owner, book.id, validPack(sha('c')));
+  expect(stored.completed.statusCode).toBe(200);
+
+  const first = await createUpload(app, owner, book.id, 64, sha('c'));
+  expect(first.statusCode).toBe(201);
+  const firstBody = first.json<{
+    uploadId: string;
+    upload: { fields: Record<string, string> };
+  }>();
+  const lateKey = firstBody.upload.fields.key!;
+
+  // The second create supersedes the first and expires its session.
+  const second = await createUpload(app, owner, book.id, 64, sha('c'));
+  expect(second.statusCode).toBe(201);
+
+  // Simulate a presigned POST landing after the supersede deleted the object.
+  await fakeStorage.putObject(lateKey, Buffer.from('{"late":true}'), 'application/json');
+  expect(fakeStorage.objects.has(lateKey)).toBe(true);
+
+  // Past the 24h window the presigned URL is certainly dead, so the sweep may
+  // reclaim both the late object and the terminal row.
+  await expireReflowSession(firstBody.uploadId, 60_000);
+  await expireReflowSession(stored.uploadId, 60_000);
+  expect(await cleanupExpiredReflowUploadsForTest()).toBe(0);
+
+  expect(fakeStorage.objects.has(lateKey)).toBe(false);
+  const abandonedRows = await testDb
+    .select({ id: reflowUploads.id })
+    .from(reflowUploads)
+    .where(eq(reflowUploads.id, firstBody.uploadId));
+  expect(abandonedRows).toHaveLength(0);
+
+  // Completed sessions are excluded by status even with a past expiry.
+  expect(fakeStorage.objects.has(stored.key)).toBe(true);
+  expect((await getBookRow(book.id))!.reflowKey).toBe(stored.key);
+  const [completed] = await testDb
+    .select({ status: reflowUploads.status })
+    .from(reflowUploads)
+    .where(eq(reflowUploads.id, stored.uploadId));
+  expect(completed!.status).toBe('completed');
+});

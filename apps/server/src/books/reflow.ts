@@ -8,7 +8,7 @@ import {
   type CreateReflowUploadResponse,
   type ReflowFileInfo,
 } from '@bookr/shared';
-import { and, eq, isNull, lt } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import type { AppDeps } from '../app';
 import { books, reflowUploads } from '../db/schema';
 import { AppError } from '../errors';
@@ -367,6 +367,22 @@ export async function getReflowFile(
 /** Marks abandoned sessions expired, then removes the objects they own. */
 export async function cleanupExpiredReflowUploads(deps: AppDeps): Promise<number> {
   const now = deps.clock.now();
+
+  // Terminal sessions whose 24-hour window has passed. Snapshotting before
+  // the `created -> expired` transition means a session expired by this sweep
+  // keeps its row until the next one: the first pass below still deletes its
+  // object, and its presigned POST died 15 minutes after creation, so nothing
+  // can arrive later.
+  const abandoned = await deps.db
+    .select({ id: reflowUploads.id, objectKey: reflowUploads.objectKey })
+    .from(reflowUploads)
+    .where(
+      and(
+        inArray(reflowUploads.status, ['expired', 'failed']),
+        lt(reflowUploads.expiresAt, now),
+      ),
+    );
+
   // Transition first, then delete: a session completed in the meantime is no
   // longer `created`, so the update skips it and its object stays in place.
   const expired = await deps.db
@@ -377,6 +393,22 @@ export async function cleanupExpiredReflowUploads(deps: AppDeps): Promise<number
 
   for (const session of expired) {
     await deps.storage.delete(session.objectKey).catch(() => undefined);
+  }
+
+  // Second pass: a presigned POST outlives the database transition. A
+  // superseded (`expired`) or rejected (`failed`) session still accepts writes
+  // until its 15-minute policy dies, so bytes can appear at the key after the
+  // first pass deleted it. Once the 24-hour window has passed the URL is
+  // certainly dead, and the late object and its row can be reclaimed.
+  // Completed rows and the key a book points at are never touched.
+  for (const session of abandoned) {
+    await deps.storage.delete(session.objectKey).catch(() => undefined);
+  }
+
+  if (abandoned.length > 0) {
+    await deps.db
+      .delete(reflowUploads)
+      .where(inArray(reflowUploads.id, abandoned.map((session) => session.id)));
   }
 
   return expired.length;
