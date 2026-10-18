@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import { DEFAULT_READER_SETTINGS } from '@bookr/reader-core';
@@ -15,7 +15,14 @@ import type { Locator } from '@bookr/shared';
 import { ReaderPage } from '../ReaderPage';
 import { READER_SETTINGS_KEY, saveReaderSettings } from '../readerSettings';
 import { setTokens } from '../../../api/client';
-import { book, renderWithProviders, server } from '../../../../test/setup';
+import { book, server } from '../../../../test/setup';
+import {
+  createFakeSyncEngine,
+  createMemoryRepository,
+  type FakeSyncEngine,
+  type MemoryRepository,
+} from '../../../../test/memory-repository';
+import { renderWithSync } from '../../../../test/sync-harness';
 import { createFakeEngine } from './fake-engine';
 import type { FakeReaderEngine } from './fake-engine';
 
@@ -25,6 +32,14 @@ const NEW_PDF_URL = 'https://fake-s3.local/book-v2.pdf';
 const REFLOW_URL = 'https://fake-s3.local/book.bookr.json';
 const NEW_REFLOW_URL = 'https://fake-s3.local/book-v2.bookr.json';
 const PAGE_COUNT = 300;
+
+let repo: MemoryRepository;
+let syncEngine: FakeSyncEngine;
+
+beforeEach(() => {
+  repo = createMemoryRepository();
+  syncEngine = createFakeSyncEngine();
+});
 
 function reflowBook({
   id = BOOK_ID,
@@ -142,6 +157,9 @@ async function renderReader({
 }: RenderOptions = {}) {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
   if (settings) saveReaderSettings(settings);
+  if (progress && typeof progress === 'object' && 'locator' in progress) {
+    repo.seedProgress('user-reader', BOOK_ID, (progress as { locator: Locator }).locator);
+  }
 
   server.use(
     http.get('/api/books/:id', ({ params }) =>
@@ -152,7 +170,6 @@ async function renderReader({
     http.get('/api/books/:id/file', () =>
       HttpResponse.json({ url: PDF_URL, format: 'pdf', expiresIn: 3600 }),
     ),
-    http.get('/api/books/:id/progress', () => HttpResponse.json({ progress })),
   );
   if (reflowAvailable) {
     server.use(
@@ -187,7 +204,7 @@ async function renderReader({
     ],
     { initialEntries: [`/books/${BOOK_ID}/read`] },
   );
-  const view = renderWithProviders(<RouterProvider router={router} />);
+  const view = renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
   return { ...recorder, view };
 }
 
@@ -416,7 +433,7 @@ it('never shows the mode toggle for an EPUB', async () => {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={() => engine} /> }],
     { initialEntries: ['/books/book-three-body/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
   expect(await screen.findByRole('button', { name: '目录' })).toBeInTheDocument();
@@ -531,9 +548,7 @@ it('resets fallback state when the book changes after a failed reflow', async ()
   await waitFor(() => expect(openCalls.at(-1)?.kind).toBe('pdf'));
   expect(await screen.findByText('无法加载重排包，已切回原版')).toBeInTheDocument();
 
-  // The next book has no saved position of its own.
-  server.use(http.get('/api/books/:id/progress', () => HttpResponse.json({ progress: null })));
-
+  // The next book has no local position of its own.
   await userEvent.click(screen.getByRole('button', { name: '换书' }));
 
   await waitFor(() =>

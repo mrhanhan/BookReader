@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Locator } from '@bookr/shared';
 import type { ReaderEngine } from '@bookr/reader-core';
-import { saveProgress } from '../../api/reading';
+import { useSync } from '../../sync/SyncProvider';
+import type { SyncState } from '../../sync/engine';
 import { writeLocalProgress } from './progressStore';
 
 /** The local cache is written at most once per this interval (leading + trailing). */
 export const LOCAL_WRITE_INTERVAL_MS = 5_000;
-/** Dirty progress is pushed to the server at most this often. */
-export const SERVER_SAVE_INTERVAL_MS = 30_000;
+/** A pending position is handed to the sync engine at most this often. */
+export const SYNC_REQUEST_INTERVAL_MS = 25_000;
 
 export type ReaderSaveState = 'saved' | 'saving' | 'error';
 
-/** Chinese labels shared by the chrome status line and any future sync UI. */
+/** Chinese labels shared by the chrome status line and the sync badge. */
 export const SAVE_STATE_LABELS: Record<ReaderSaveState, string> = {
   saved: '已保存',
   saving: '保存中',
@@ -19,7 +20,7 @@ export const SAVE_STATE_LABELS: Record<ReaderSaveState, string> = {
 };
 
 export interface UseReaderProgressOptions {
-  /** Signed-in account; the local cache is namespaced per user. */
+  /** Signed-in account; the local store is namespaced per user. */
   userId: string;
   bookId: string;
   /** Null until the book kind is known; the hook subscribes as soon as it exists. */
@@ -38,13 +39,26 @@ function clampPercent(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+/** The sync engine owns delivery; its state is the reader's status line. */
+export function saveStateFor(state: SyncState): ReaderSaveState {
+  switch (state.status) {
+    case 'synced':
+      return state.pending > 0 ? 'saving' : 'saved';
+    case 'syncing':
+    case 'pending':
+      return 'saving';
+    case 'offline':
+    case 'error':
+      return 'error';
+  }
+}
+
 /**
- * Persists reading progress without ever blocking the reader.
+ * Persists reading progress locally without ever blocking the reader.
  *
- * Local storage is the fast path (leading write plus a trailing write at most
- * every five seconds); the server is written every thirty seconds only when the
- * position changed, and once more when the page is hidden or the reader closes.
- * Network and storage failures only change the visible sync label.
+ * Every write lands in Dexie and its outbox (at most once per five seconds),
+ * and the sync engine delivers it. The twenty-five-second tick, page hide and
+ * unmount only request a sync; they never call the HTTP endpoint directly.
  */
 export function useReaderProgress({
   userId,
@@ -52,17 +66,16 @@ export function useReaderProgress({
   engine,
   initialLocator,
 }: UseReaderProgressOptions): ReaderProgressState {
+  const { repo, state: syncState, requestSync } = useSync();
   const [percent, setPercent] = useState(() => clampPercent(initialLocator?.percent ?? 0));
-  const [saveState, setSaveState] = useState<ReaderSaveState>('saved');
 
   const locatorRef = useRef<Locator | null>(initialLocator ?? null);
   const dirtyRef = useRef(false);
   const lastLocalWriteRef = useRef(0);
   const trailingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const generationRef = useRef(0);
 
-  // Seed from the resolved server/cache position once it is known; this runs
-  // before the page's own effect calls `engine.open`.
+  // Seed from the resolved local position once it is known; this runs before
+  // the page's own effect calls `engine.open`.
   useEffect(() => {
     locatorRef.current = initialLocator ?? null;
     dirtyRef.current = false;
@@ -71,12 +84,11 @@ export function useReaderProgress({
 
   useEffect(() => {
     if (!engine || !bookId || !userId) return;
-    const generation = ++generationRef.current;
 
-    const writeLocal = (locator: Locator): void => {
+    const write = (locator: Locator): void => {
       const now = Date.now();
       lastLocalWriteRef.current = now;
-      writeLocalProgress(userId, bookId, locator, now);
+      writeLocalProgress(repo, userId, bookId, locator, now);
     };
 
     const record = (locator: Locator): void => {
@@ -86,7 +98,7 @@ export function useReaderProgress({
 
       const elapsed = Date.now() - lastLocalWriteRef.current;
       if (elapsed >= LOCAL_WRITE_INTERVAL_MS) {
-        writeLocal(locator);
+        write(locator);
         return;
       }
       // The trailing write keeps the last position of a burst even when every
@@ -95,43 +107,29 @@ export function useReaderProgress({
         trailingRef.current = setTimeout(() => {
           trailingRef.current = null;
           const pending = locatorRef.current;
-          if (pending) writeLocal(pending);
+          if (pending) write(pending);
         }, LOCAL_WRITE_INTERVAL_MS - elapsed);
       }
     };
 
     const unsubscribe = engine.on('relocated', ({ locator }) => record(locator));
 
-    const flush = async (): Promise<void> => {
+    /** Writes the latest position (if any) and lets the engine push the outbox. */
+    const handOff = (): void => {
       const locator = locatorRef.current;
-      if (!locator) return;
-      // An idle tick must not renew a stale cache entry; only a changed
-      // position is written locally and pushed to the server.
-      if (!dirtyRef.current) return;
+      if (!locator || !dirtyRef.current) return;
 
-      writeLocal(locator);
+      write(locator);
       dirtyRef.current = false;
-      if (generationRef.current === generation) setSaveState('saving');
-      try {
-        await saveProgress(bookId, locator);
-        if (generationRef.current === generation) setSaveState('saved');
-      } catch {
-        // A failed sync keeps the position dirty for the next interval/flush.
-        dirtyRef.current = true;
-        if (generationRef.current === generation) setSaveState('error');
-      }
+      requestSync('progress');
     };
 
-    const interval = setInterval(() => {
-      void flush();
-    }, SERVER_SAVE_INTERVAL_MS);
+    const interval = setInterval(handOff, SYNC_REQUEST_INTERVAL_MS);
 
-    const onPageHide = (): void => {
-      void flush();
-    };
+    const onPageHide = (): void => handOff();
     const onVisibilityChange = (): void => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        void flush();
+        handOff();
       }
     };
 
@@ -147,11 +145,9 @@ export function useReaderProgress({
         clearTimeout(trailingRef.current);
         trailingRef.current = null;
       }
-      // Invalidate in-flight state updates, but still send the final position.
-      generationRef.current += 1;
-      void flush();
+      handOff();
     };
-  }, [bookId, engine, userId]);
+  }, [bookId, engine, requestSync, repo, userId]);
 
-  return { percent, saveState };
+  return { percent, saveState: saveStateFor(syncState) };
 }

@@ -1,15 +1,29 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import type { ReaderEngine } from '@bookr/reader-core';
 import type { MeDto, ReaderKind } from '@bookr/shared';
 import { ReaderPage } from '../ReaderPage';
-import { writeLocalProgress } from '../progressStore';
 import { useAuth } from '../../../app/auth';
 import { setTokens } from '../../../api/client';
-import { renderWithProviders, server } from '../../../../test/setup';
+import { server } from '../../../../test/setup';
+import {
+  createFakeSyncEngine,
+  createMemoryRepository,
+  type FakeSyncEngine,
+  type MemoryRepository,
+} from '../../../../test/memory-repository';
+import { renderWithSync } from '../../../../test/sync-harness';
+
+let repo: MemoryRepository;
+let syncEngine: FakeSyncEngine;
+
+beforeEach(() => {
+  repo = createMemoryRepository();
+  syncEngine = createFakeSyncEngine();
+});
 
 function fakeEngine(kind: ReaderKind = 'pdf') {
   const listeners = new Map<string, Set<(payload: unknown) => void>>();
@@ -45,22 +59,13 @@ function fakeEngine(kind: ReaderKind = 'pdf') {
 
 it('opens the file at the saved locator and shows the reading chrome', async () => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
+  repo.seedProgress('user-reader', 'book-csapp', { kind: 'pdf', page: 2, percent: 0.42 });
   server.use(
     http.get('/api/books/book-csapp/file', () =>
       HttpResponse.json({
         url: 'https://files.test/book.pdf',
         format: 'pdf',
         expiresIn: 3600,
-      }),
-    ),
-    http.get('/api/books/book-csapp/progress', () =>
-      HttpResponse.json({
-        progress: {
-          bookId: 'book-csapp',
-          locator: { kind: 'pdf', page: 2, percent: 0.42 },
-          percent: 0.42,
-          updatedAt: new Date().toISOString(),
-        },
       }),
     ),
   );
@@ -70,7 +75,7 @@ it('opens the file at the saved locator and shows the reading chrome', async () 
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   expect(await screen.findByRole('heading', { name: '深入理解计算机系统' })).toBeInTheDocument();
   await waitFor(() =>
@@ -89,14 +94,9 @@ it('opens the file at the saved locator and shows the reading chrome', async () 
   expect(screen.getByRole('button', { name: '目录' })).toBeInTheDocument();
 });
 
-it('opens from the local cache when the progress request fails', async () => {
+it('opens from the local store when there is no server position', async () => {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
-  writeLocalProgress(
-    'user-reader',
-    'book-csapp',
-    { kind: 'pdf', page: 6, percent: 0.55 },
-    Date.now(),
-  );
+  repo.seedProgress('user-reader', 'book-csapp', { kind: 'pdf', page: 6, percent: 0.55 });
   server.use(
     http.get('/api/books/book-csapp/file', () =>
       HttpResponse.json({
@@ -105,12 +105,6 @@ it('opens from the local cache when the progress request fails', async () => {
         expiresIn: 3600,
       }),
     ),
-    http.get('/api/books/book-csapp/progress', () =>
-      HttpResponse.json(
-        { error: { code: 'INTERNAL', message: 'progress is down' } },
-        { status: 500 },
-      ),
-    ),
   );
   const engine = fakeEngine();
   const factory = vi.fn(() => engine as unknown as ReaderEngine);
@@ -118,7 +112,7 @@ it('opens from the local cache when the progress request fails', async () => {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() =>
     expect(engine.open).toHaveBeenCalledWith(
@@ -138,7 +132,7 @@ it('destroys the engine when the reader unmounts', async () => {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  const view = renderWithProviders(<RouterProvider router={router} />);
+  const view = renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
   view.unmount();
@@ -153,7 +147,7 @@ it('passes pdf.js worker and asset URLs when opening a PDF', async () => {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
   const options = engine.open.mock.calls[0]?.[3] as Record<string, unknown>;
@@ -171,7 +165,7 @@ it('omits pdf.js resources when opening an EPUB', async () => {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-three-body/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() =>
     expect(engine.open).toHaveBeenCalledWith(
@@ -203,7 +197,7 @@ it('shows the file error and does not open the engine when the file request fail
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   expect(await screen.findByText('找不到这本书的文件')).toBeInTheDocument();
   expect(engine.open).not.toHaveBeenCalled();
@@ -241,18 +235,10 @@ it('does not open a second account at the first account cached position', async 
         expiresIn: 3600,
       }),
     ),
-    http.get('/api/books/book-csapp/progress', () =>
-      HttpResponse.json({ progress: null }),
-    ),
   );
 
-  // Account A has cached page 7 on this browser; account B has none.
-  writeLocalProgress(
-    'user-reader',
-    'book-csapp',
-    { kind: 'pdf', page: 7, percent: 0.6 },
-    Date.now(),
-  );
+  // Account A has page 7 in the local store; account B has none.
+  repo.seedProgress('user-reader', 'book-csapp', { kind: 'pdf', page: 7, percent: 0.6 });
 
   const engine = fakeEngine();
   const factory = vi.fn(() => engine as unknown as ReaderEngine);
@@ -285,7 +271,7 @@ it('does not open a second account at the first account cached position', async 
     ],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() =>
     expect(engine.open).toHaveBeenCalledWith(

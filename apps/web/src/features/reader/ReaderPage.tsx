@@ -35,20 +35,15 @@ import { useAuth } from '../../app/auth';
 import {
   annotationsQueryKey,
   bookmarksQueryKey,
-  createAnnotation,
-  deleteAnnotation,
-  deleteBookmark,
-  fetchAnnotations,
-  fetchBookmarks,
-  fetchProgress,
   fetchReaderFile,
 } from '../../api/reading';
 import type { ReaderFileInfo } from '../../api/reading';
 import { fetchReflowFile } from '../../api/reflow';
 import { messageForApiError } from '../../lib/errorMessages';
+import { useSync } from '../../sync/SyncProvider';
 import { Toast } from '../bookshelf/Toast';
 import { loadReaderSettings, saveReaderSettings } from './readerSettings';
-import { readLocalProgress, resolveInitialLocator } from './progressStore';
+import { readLocalProgress } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
 import { useReadingMode } from './useReadingMode';
@@ -73,6 +68,7 @@ const OPEN_FAILED_MESSAGE = '无法打开这本书，请确认文件完整';
 const REFLOW_MISSING_MESSAGE = '无法加载重排包，请切回原版';
 const REFLOW_REFRESH_FAILED_MESSAGE = '无法获取重排包，请稍后重试';
 const REFLOW_FALLBACK_MESSAGE = '无法加载重排包，已切回原版';
+const SYNC_CONFLICT_MESSAGE = '此批注已在另一台设备更新，旧版本已保留在历史中';
 /** Chrome hides after this much inactivity while no panel is open. */
 const CHROME_HIDE_DELAY_MS = 2_500;
 
@@ -213,6 +209,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   // Local progress is namespaced per account; never read or write it before
   // the signed-in user is known.
   const userId = user?.id ?? null;
+  const { repo, state: syncState, requestSync } = useSync();
   const bookQuery = useBook(id ?? null);
   const book = bookQuery.data;
   const bookId = book?.id ?? null;
@@ -250,13 +247,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
   const queryClient = useQueryClient();
   const annotationsQuery = useQuery({
     queryKey: annotationsQueryKey(bookId ?? ''),
-    queryFn: () => fetchAnnotations(bookId ?? ''),
-    enabled: bookId !== null && status === 'ready',
+    queryFn: () => repo.listAnnotations(userId ?? '', bookId ?? ''),
+    enabled: bookId !== null && userId !== null && status === 'ready',
   });
   const bookmarksQuery = useQuery({
     queryKey: bookmarksQueryKey(bookId ?? ''),
-    queryFn: () => fetchBookmarks(bookId ?? ''),
-    enabled: bookId !== null && status === 'ready',
+    queryFn: () => repo.listBookmarks(userId ?? '', bookId ?? ''),
+    enabled: bookId !== null && userId !== null && status === 'ready',
   });
   const annotations = annotationsQuery.data;
   const bookmarks = bookmarksQuery.data;
@@ -481,12 +478,13 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     readyRef.current = false;
   }, [bookId]);
 
-  // Fetch the signed URL and the saved progress in parallel, then compute the
-  // one position the reader should open at. Only the file request is fatal: a
-  // progress failure must fall back to this device's cache instead of blocking
-  // the book. The reflow pack URL is best-effort too: a failure leaves original
-  // mode readable and keeps the switch disabled. Progress belongs to the
-  // signed-in account, so nothing is queried until that account is known.
+  // Fetch the signed URL and the locally stored position in parallel, then
+  // compute the one position the reader should open at. Only the file request
+  // is fatal: a local-store failure must fall back to opening at the start
+  // instead of blocking the book. The reflow pack URL is best-effort too: a
+  // failure leaves original mode readable and keeps the switch disabled.
+  // Progress belongs to the signed-in account, so nothing is read until that
+  // account is known.
   const wantsReflow = book?.reflowAvailable === true;
   useEffect(() => {
     if (!bookId || !userId) return;
@@ -496,14 +494,14 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
       try {
         const [file, progress, reflow] = await Promise.all([
           fetchReaderFile(bookId),
-          fetchProgress(bookId).catch(() => null),
+          readLocalProgress(repo, userId, bookId).catch(() => null),
           wantsReflow ? fetchReflowFile(bookId).catch(() => null) : Promise.resolve(null),
         ]);
         if (cancelled) return;
         setSource({
           file,
           reflow,
-          initialLocator: resolveInitialLocator(progress, readLocalProgress(userId, bookId)),
+          initialLocator: progress?.locator,
         });
         setSourceEpoch((value) => value + 1);
       } catch (error) {
@@ -515,7 +513,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     return () => {
       cancelled = true;
     };
-  }, [bookId, userId, wantsReflow]);
+  }, [bookId, repo, userId, wantsReflow]);
 
   const initialLocator = source?.initialLocator;
 
@@ -775,6 +773,17 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
     if (bookmarksError) showToast(messageForApiError(bookmarksError));
   }, [bookmarksError, showToast]);
 
+  // The sync provider exposes conflicts as a counter; any increase while the
+  // reader is open maps to a conflict toast. The initial value is remembered so
+  // a conflict counted before mount does not pop up on entry.
+  const conflictsRef = useRef(syncState.conflicts);
+  useEffect(() => {
+    if (syncState.conflicts > conflictsRef.current) {
+      showToast(SYNC_CONFLICT_MESSAGE);
+    }
+    conflictsRef.current = syncState.conflicts;
+  }, [showToast, syncState.conflicts]);
+
   /** Applies an annotation change to the cache and mirrors it into the engine. */
   const applyAnnotations = useCallback(
     (updater: (items: AnnotationDto[]) => AnnotationDto[]) => {
@@ -794,33 +803,40 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           ? items.map((item) => (item.id === annotation.id ? annotation : item))
           : [annotation, ...items],
       );
-      if (bookId) void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+      if (bookId) {
+        void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+        requestSync('annotation');
+      }
     },
-    [applyAnnotations, bookId, queryClient],
+    [applyAnnotations, bookId, queryClient, requestSync],
   );
 
   const forgetAnnotation = useCallback(
     (annotationId: string) => {
       applyAnnotations((items) => items.filter((item) => item.id !== annotationId));
-      if (bookId) void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+      if (bookId) {
+        void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+        requestSync('annotation');
+      }
     },
-    [applyAnnotations, bookId, queryClient],
+    [applyAnnotations, bookId, queryClient, requestSync],
   );
 
   const removeAnnotation = useCallback(
     async (annotation: AnnotationDto) => {
-      if (!bookId) return;
-      // Remove optimistically so the row disappears before the round trip.
+      if (!bookId || !userId) return;
+      // Remove optimistically so the row disappears before the local write.
       applyAnnotations((items) => items.filter((item) => item.id !== annotation.id));
       try {
-        await deleteAnnotation(bookId, annotation.id);
+        await repo.deleteAnnotation(userId, bookId, annotation.id);
       } catch (error) {
         showToast(messageForApiError(error));
       } finally {
         void queryClient.invalidateQueries({ queryKey: annotationsQueryKey(bookId) });
+        requestSync('annotation');
       }
     },
-    [applyAnnotations, bookId, queryClient, showToast],
+    [applyAnnotations, bookId, queryClient, repo, requestSync, showToast, userId],
   );
 
   const applyBookmarks = useCallback(
@@ -839,24 +855,28 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
           ? items.map((item) => (item.id === bookmark.id ? bookmark : item))
           : [bookmark, ...items],
       );
-      if (bookId) void queryClient.invalidateQueries({ queryKey: bookmarksQueryKey(bookId) });
+      if (bookId) {
+        void queryClient.invalidateQueries({ queryKey: bookmarksQueryKey(bookId) });
+        requestSync('bookmark');
+      }
     },
-    [applyBookmarks, bookId, queryClient],
+    [applyBookmarks, bookId, queryClient, requestSync],
   );
 
   const removeBookmark = useCallback(
     async (bookmark: BookmarkDto) => {
-      if (!bookId) return;
+      if (!bookId || !userId) return;
       applyBookmarks((items) => items.filter((item) => item.id !== bookmark.id));
       try {
-        await deleteBookmark(bookId, bookmark.id);
+        await repo.deleteBookmark(userId, bookId, bookmark.id);
       } catch (error) {
         showToast(messageForApiError(error));
       } finally {
         void queryClient.invalidateQueries({ queryKey: bookmarksQueryKey(bookId) });
+        requestSync('bookmark');
       }
     },
-    [applyBookmarks, bookId, queryClient, showToast],
+    [applyBookmarks, bookId, queryClient, repo, requestSync, showToast, userId],
   );
 
   const jumpTo = useCallback(
@@ -869,15 +889,17 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
 
   const createHighlight = useCallback(
     async (color: AnnotationColor) => {
-      if (!selection || !bookId) return;
+      if (!selection || !bookId || !userId) return;
       const { locator, text } = selection;
       setSelection(null);
       try {
-        const created = await createAnnotation(bookId, {
+        const created = await repo.createAnnotation(userId, {
+          bookId,
           type: 'highlight',
           color,
           locator,
           selectedText: text,
+          noteText: null,
           tags: [],
         });
         upsertAnnotation(created);
@@ -885,7 +907,7 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
         showToast(messageForApiError(error));
       }
     },
-    [bookId, selection, showToast, upsertAnnotation],
+    [bookId, repo, selection, showToast, upsertAnnotation, userId],
   );
 
   const copySelection = useCallback(async () => {
@@ -1284,6 +1306,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               open
               mode={annotationDialog.mode}
               bookId={bookId ?? ''}
+              userId={userId ?? ''}
+              repo={repo}
               initial={
                 annotationDialog.mode === 'edit' ? annotationDialog.annotation : undefined
               }
@@ -1308,6 +1332,8 @@ export function ReaderPage({ engineFactory = createReaderEngine }: ReaderPagePro
               key={bookmarkDialog.mode === 'edit' ? bookmarkDialog.bookmark.id : 'create'}
               open
               bookId={bookId}
+              userId={userId ?? ''}
+              repo={repo}
               locator={
                 bookmarkDialog.mode === 'create'
                   ? bookmarkDialog.locator

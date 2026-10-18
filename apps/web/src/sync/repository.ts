@@ -29,6 +29,13 @@ export interface LocalRepository {
     locator: Locator,
     at?: number,
   ): Promise<LocalProgressRow>;
+  /** Imports a position from the legacy localStorage cache without creating a sync entry. */
+  importProgress(
+    userId: string,
+    bookId: string,
+    locator: Locator,
+    at: number,
+  ): Promise<LocalProgressRow>;
   listAnnotations(userId: string, bookId: string): Promise<LocalAnnotationRow[]>;
   createAnnotation(
     userId: string,
@@ -486,6 +493,21 @@ export function createRepository(db: BookrDb): LocalRepository {
         });
         return row;
       });
+    },
+
+    async importProgress(userId, bookId, locator, at) {
+      const clientUpdatedAt = clientTimeOf(at);
+      const row: LocalProgressRow = {
+        userId,
+        bookId,
+        locator,
+        percent: locator.percent,
+        updatedAt: clientUpdatedAt,
+        clientUpdatedAt,
+        dirty: false,
+      };
+      await db.progress.put(row);
+      return row;
     },
 
     async listAnnotations(userId, bookId) {

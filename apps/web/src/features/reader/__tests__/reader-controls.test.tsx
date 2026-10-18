@@ -1,13 +1,28 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { http, HttpResponse } from 'msw';
 import type { ReaderEngine, ReaderEngineKind } from '@bookr/reader-core';
 import { ReaderPage } from '../ReaderPage';
 import { setTokens } from '../../../api/client';
-import { book, renderWithProviders, server } from '../../../../test/setup';
+import { book, server } from '../../../../test/setup';
+import {
+  createFakeSyncEngine,
+  createMemoryRepository,
+  type FakeSyncEngine,
+  type MemoryRepository,
+} from '../../../../test/memory-repository';
+import { renderWithSync } from '../../../../test/sync-harness';
 import { createFakeEngine } from './fake-engine';
+
+let repo: MemoryRepository;
+let syncEngine: FakeSyncEngine;
+
+beforeEach(() => {
+  repo = createMemoryRepository();
+  syncEngine = createFakeSyncEngine();
+});
 
 async function renderReader() {
   setTokens({ accessToken: 'a', refreshToken: 'r', expiresIn: 900 });
@@ -25,7 +40,7 @@ async function renderReader() {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={() => engine} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
   await waitFor(() => expect(engine.open).toHaveBeenCalled());
   // The chrome only renders once `open` resolves; wait for that before acting.
   await screen.findByRole('button', { name: '目录' });
@@ -173,7 +188,7 @@ it('toggles the mode button label between 重排 and 原版', async () => {
     [{ path: '/books/:id/read', element: <ReaderPage engineFactory={factory} /> }],
     { initialEntries: ['/books/book-csapp/read'] },
   );
-  renderWithProviders(<RouterProvider router={router} />);
+  renderWithSync(<RouterProvider router={router} />, { repo, engine: syncEngine });
 
   await waitFor(() => expect(engines.get('pdf')?.open).toHaveBeenCalled());
   const toggle = await screen.findByRole('button', { name: '重排' });

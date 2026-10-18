@@ -3,13 +3,8 @@ import { HIGHLIGHT_HEX } from '@bookr/reader-core';
 import { MAX_TAGS, MAX_TAG_LENGTH, normalizeTags } from '@bookr/shared';
 import type { AnnotationColor, AnnotationDto, Locator } from '@bookr/shared';
 import { Button, Dialog, Input } from '@bookr/ui';
-import {
-  createAnnotation,
-  deleteAnnotation,
-  updateAnnotation,
-} from '../../api/reading';
-import type { UpdateAnnotationInput } from '../../api/reading';
 import { messageForApiError } from '../../lib/errorMessages';
+import type { LocalRepository } from '../../sync/repository';
 import { ANNOTATION_COLOR_OPTIONS } from './colors';
 
 /** Position and text captured by the selection menu for a new note. */
@@ -23,16 +18,18 @@ export interface AnnotationDialogProps {
   open: boolean;
   mode: 'create' | 'edit';
   bookId: string;
+  userId: string;
+  repo: LocalRepository;
   initial?: AnnotationDto;
   draft?: AnnotationDraft;
   onClose: () => void;
   onSaved: (annotation: AnnotationDto) => void;
   onDeleted?: (annotationId: string) => void;
-  /** Surfaces API failures and revision conflicts as a reader toast. */
+  /** Surfaces local-write failures as a reader toast. */
   onNotice?: (message: string) => void;
 }
 
-const CONFLICT_MESSAGE = '已在其他设备更新，旧版本已保留';
+const MISSING_MESSAGE = '这条批注已不存在';
 const TAG_LIMIT_MESSAGE = `标签最多 ${MAX_TAGS} 个，每个不超过 ${MAX_TAG_LENGTH} 字`;
 
 const textareaClass =
@@ -55,6 +52,8 @@ export function AnnotationDialog({
   open,
   mode,
   bookId,
+  userId,
+  repo,
   initial,
   draft,
   onClose,
@@ -66,7 +65,6 @@ export function AnnotationDialog({
   const [noteText, setNoteText] = useState(initial?.noteText ?? '');
   const [tagsText, setTagsText] = useState(initial?.tags.join('，') ?? '');
   const [color, setColor] = useState<AnnotationColor>(initial?.color ?? draft?.color ?? 'yellow');
-  const [revision, setRevision] = useState(initial?.revision ?? 1);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -101,30 +99,22 @@ export function AnnotationDialog({
     setBusy(true);
     try {
       if (mode === 'edit' && initial) {
-        const patch: UpdateAnnotationInput = {
-          revision,
-          color,
-          tags,
-        };
         // Highlights may clear their note by emptying the textarea; an existing
         // note always has text here because its Save button requires it.
-        patch.noteText =
-          initial.type === 'highlight' ? (trimmed.length > 0 ? trimmed : null) : trimmed;
-        const result = await updateAnnotation(bookId, initial.id, patch);
-        // A stale edit still lands, so the returned annotation is authoritative.
-        onSaved(result.annotation);
-        setRevision(result.annotation.revision);
-        if (result.conflict) {
-          notify(CONFLICT_MESSAGE);
-          // Adopt the server copy into the open form so the next save is based
-          // on the latest revision and text.
-          setNoteText(result.annotation.noteText ?? '');
-          setTagsText(result.annotation.tags.join('，'));
-          setColor(result.annotation.color);
+        const updated = await repo.updateAnnotation(userId, bookId, initial.id, {
+          color,
+          noteText:
+            initial.type === 'highlight' ? (trimmed.length > 0 ? trimmed : null) : trimmed,
+          tags,
+        });
+        if (!updated) {
+          notify(MISSING_MESSAGE);
           return;
         }
+        onSaved(updated);
       } else if (draft) {
-        const created = await createAnnotation(bookId, {
+        const created = await repo.createAnnotation(userId, {
+          bookId,
           type: 'note',
           color,
           locator: draft.locator,
@@ -147,7 +137,7 @@ export function AnnotationDialog({
     setNotice(null);
     setBusy(true);
     try {
-      await deleteAnnotation(bookId, initial.id);
+      await repo.deleteAnnotation(userId, bookId, initial.id);
       onDeleted?.(initial.id);
       onClose();
     } catch (error) {

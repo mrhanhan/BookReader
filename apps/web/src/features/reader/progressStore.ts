@@ -1,16 +1,17 @@
 import { locatorSchema } from '@bookr/shared';
 import type { Locator, ReadingProgressDto } from '@bookr/shared';
+import type { LocalRepository } from '../../sync/repository';
 
 /**
- * One localStorage entry per user and book, holding the last position seen on
- * this device. The user id is part of the key: several accounts share one
- * browser and must never read or overwrite each other's position.
+ * Legacy localStorage entries, one per user and book. Positions now live in
+ * Dexie; this prefix survives only so the first reader visit after the upgrade
+ * can migrate the old cache into the local store.
  */
 export const PROGRESS_KEY_PREFIX = 'bookr.reader.progress.';
 
 export interface LocalProgress {
   locator: Locator;
-  /** Epoch milliseconds, compared against the server's `updatedAt`. */
+  /** Epoch milliseconds of the local save. */
   savedAt: number;
 }
 
@@ -27,11 +28,8 @@ function keyFor(userId: string, bookId: string): string {
   return `${PROGRESS_KEY_PREFIX}${userId}.${bookId}`;
 }
 
-/**
- * Reads this device's cached position for one account. Corrupt JSON and
- * unknown shapes are treated as "no cache" rather than throwing at the reader.
- */
-export function readLocalProgress(userId: string, bookId: string): LocalProgress | null {
+/** Reads the pre-Dexie cache entry, treating corrupt data as "no cache". */
+function readLegacyProgress(userId: string, bookId: string): LocalProgress | null {
   const raw = storage()?.getItem(keyFor(userId, bookId));
   if (!raw) return null;
 
@@ -52,23 +50,53 @@ export function readLocalProgress(userId: string, bookId: string): LocalProgress
   return { locator: locator.data, savedAt: record.savedAt };
 }
 
-/** Caches a position locally; failures (quota, blocked storage) are swallowed. */
+/**
+ * Reads this device's cached position for one account. A position that only
+ * exists in the old localStorage cache is migrated into Dexie without creating
+ * a sync entry, then the legacy key is dropped so migration happens once.
+ */
+export async function readLocalProgress(
+  repo: LocalRepository,
+  userId: string,
+  bookId: string,
+): Promise<LocalProgress | null> {
+  const stored = await repo.progressFor(userId, bookId);
+  if (stored) {
+    const savedAt = Date.parse(stored.clientUpdatedAt);
+    return { locator: stored.locator, savedAt: Number.isNaN(savedAt) ? Date.now() : savedAt };
+  }
+
+  const legacy = readLegacyProgress(userId, bookId);
+  if (!legacy) {
+    return null;
+  }
+
+  try {
+    await repo.importProgress(userId, bookId, legacy.locator, legacy.savedAt);
+    storage()?.removeItem(keyFor(userId, bookId));
+  } catch {
+    // Keeping the legacy entry lets the next visit retry the migration.
+    return legacy;
+  }
+  return legacy;
+}
+
+/** Saves locally and queues the change for sync; failures never block reading. */
 export function writeLocalProgress(
+  repo: LocalRepository,
   userId: string,
   bookId: string,
   locator: Locator,
   savedAt: number,
 ): void {
-  try {
-    storage()?.setItem(keyFor(userId, bookId), JSON.stringify({ locator, savedAt }));
-  } catch {
-    // Reading must continue even when the cache cannot be written.
-  }
+  void repo.saveProgress(userId, bookId, locator, savedAt).catch(() => {
+    // The next throttled write retries; reading continues regardless.
+  });
 }
 
 /**
- * Drops every user's cached position. The auth provider runs this when a
- * session starts or ends so one account's position cannot leak into the next.
+ * Drops every user's legacy cached position. The auth provider runs this when
+ * a session starts or ends so one account's position cannot leak into the next.
  * A blocked storage must never break sign-in or sign-out.
  */
 export function clearReaderProgressCache(): void {
@@ -91,9 +119,8 @@ export function clearReaderProgressCache(): void {
 }
 
 /**
- * Picks where the reader should open. The newest of the server position and
- * this device's cache wins; a server position without local progress always
- * wins over nothing, and vice versa.
+ * Picks where the reader should open when both a server position and a legacy
+ * cache entry exist. Kept for the upgrade path and unit tests.
  */
 export function resolveInitialLocator(
   server: ReadingProgressDto | null,

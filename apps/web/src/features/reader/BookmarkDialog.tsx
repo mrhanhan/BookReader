@@ -1,18 +1,20 @@
 import { useState } from 'react';
 import type { BookmarkDto, Locator } from '@bookr/shared';
 import { Button, Dialog, Input } from '@bookr/ui';
-import { createBookmark, updateBookmark } from '../../api/reading';
 import { messageForApiError } from '../../lib/errorMessages';
+import type { LocalRepository } from '../../sync/repository';
 
 export interface BookmarkDialogProps {
   open: boolean;
   bookId: string;
+  userId: string;
+  repo: LocalRepository;
   /** Position captured when the dialog was opened. */
   locator: Locator;
   initial?: BookmarkDto;
   onClose: () => void;
   onSaved: (bookmark: BookmarkDto) => void;
-  /** Surfaces API failures as a reader toast. */
+  /** Surfaces local-write failures as a reader toast. */
   onNotice?: (message: string) => void;
 }
 
@@ -20,6 +22,8 @@ export interface BookmarkDialogProps {
 export function BookmarkDialog({
   open,
   bookId,
+  userId,
+  repo,
   locator,
   initial,
   onClose,
@@ -41,13 +45,22 @@ export function BookmarkDialog({
     setBusy(true);
     const trimmed = label.trim();
     try {
-      const saved = initial
-        ? await updateBookmark(bookId, initial.id, { label: trimmed === '' ? null : trimmed })
-        : await createBookmark(bookId, {
-            locator,
-            label: trimmed === '' ? null : trimmed,
-          });
-      onSaved(saved);
+      const normalized = trimmed === '' ? null : trimmed;
+      if (initial) {
+        const saved = await repo.updateBookmark(userId, bookId, initial.id, normalized);
+        if (!saved) {
+          notify('这个书签已不存在');
+          return;
+        }
+        onSaved(saved);
+      } else {
+        const saved = await repo.createBookmark(userId, {
+          bookId,
+          locator,
+          label: normalized,
+        });
+        onSaved(saved);
+      }
       onClose();
     } catch (error) {
       notify(messageForApiError(error));
