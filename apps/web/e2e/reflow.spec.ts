@@ -71,6 +71,10 @@ test('reads a PDF in reflow mode, keeps its page across modes and saves a reflow
   await setFontSize(page, 24);
   await expect(page.locator('.bookr-reflow')).toHaveCSS('font-size', '24px');
   await expect(page.getByText('第 120 / 300 页')).toBeVisible();
+  // The label alone could be stale; the anchor must still hold the exact block.
+  await expect(
+    page.getByText('Bookr reader fixture - page 120', { exact: true }),
+  ).toBeInViewport();
   await page
     .getByRole('complementary', { name: '阅读设置' })
     .getByRole('button', { name: '关闭' })
