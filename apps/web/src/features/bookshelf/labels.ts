@@ -8,6 +8,9 @@ export const FORMAT_LABELS: Record<BookFormat, string> = {
   azw3: 'AZW3',
 };
 
+/** Marks a book that has a preprocessed reflow pack on the shelf card. */
+export const REFLOW_BADGE_LABEL = '可重排';
+
 export const STATUS_LABELS: Record<BookStatus, string> = {
   unread: '未读',
   reading: '在读',

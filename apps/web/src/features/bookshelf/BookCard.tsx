@@ -6,6 +6,7 @@ import type { ShelfView } from './FilterBar';
 import {
   CONVERSION_LABELS,
   FORMAT_LABELS,
+  REFLOW_BADGE_LABEL,
   STATUS_LABELS,
   canRetryConversion,
 } from './labels';
@@ -78,9 +79,16 @@ export function BookCard({
             </h3>
             <p className="truncate text-sm text-muted">{book.author ?? '佚名'}</p>
           </div>
-          <span className="shrink-0 rounded-sm border border-border px-1.5 py-0.5 text-[10px] tracking-wider text-muted">
-            {FORMAT_LABELS[book.format]}
-          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <span className="rounded-sm border border-border px-1.5 py-0.5 text-[10px] tracking-wider text-muted">
+              {FORMAT_LABELS[book.format]}
+            </span>
+            {book.reflowAvailable ? (
+              <span className="rounded-sm border border-accent/40 px-1.5 py-0.5 text-[10px] tracking-wider text-accent">
+                {REFLOW_BADGE_LABEL}
+              </span>
+            ) : null}
+          </div>
         </div>
 
         <p className="truncate text-xs text-muted">

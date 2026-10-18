@@ -46,7 +46,7 @@ const error = (status: number, code: string, message: string) =>
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function book(overrides: Partial<BookDto> & Pick<BookDto, 'id' | 'title'>): BookDto {
+export function book(overrides: Partial<BookDto> & Pick<BookDto, 'id' | 'title'>): BookDto {
   const now = Date.now();
   return {
     author: null,

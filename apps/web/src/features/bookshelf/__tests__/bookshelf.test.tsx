@@ -6,7 +6,7 @@ import { http, HttpResponse } from 'msw';
 import type { BookDto } from '@bookr/shared';
 import { routes } from '../../../app/router';
 import { setTokens } from '../../../api/client';
-import { renderWithProviders, server } from '../../../../test/setup';
+import { book, renderWithProviders, server } from '../../../../test/setup';
 
 // The shelf lives behind RequireAuth, so seed a stored session before each test.
 // The default MSW `/api/auth/me` fixture resolves to the `reader` member.
@@ -178,6 +178,36 @@ it('shows a failed conversion and lets the uploader retry it', async () => {
     within(card).getByRole('button', { name: '重试转换《转换失败的书》' }),
   );
   expect(await screen.findByText('已重新开始转换《转换失败的书》')).toBeInTheDocument();
+});
+
+it('marks PDF books that have a reflow pack', async () => {
+  const reflowable = book({
+    id: 'book-reflowable',
+    title: '可重排的书',
+    format: 'pdf',
+    reflowAvailable: true,
+    reflowSchemaVersion: 1,
+    reflowPageCount: 300,
+  });
+  const plain = book({ id: 'book-plain', title: '普通 PDF', format: 'pdf' });
+  server.use(
+    http.get('/api/books', () =>
+      HttpResponse.json({ items: [reflowable, plain], total: 2, page: 1, pageSize: 24 }),
+    ),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  const withPack = (await screen.findByText('可重排的书')).closest(
+    '[data-testid="book-card"]',
+  ) as HTMLElement;
+  expect(within(withPack).getByText('可重排')).toBeInTheDocument();
+
+  const withoutPack = (await screen.findByText('普通 PDF')).closest(
+    '[data-testid="book-card"]',
+  ) as HTMLElement;
+  expect(within(withoutPack).queryByText('可重排')).toBeNull();
 });
 
 it('lets a member create a category while editing a book', async () => {
