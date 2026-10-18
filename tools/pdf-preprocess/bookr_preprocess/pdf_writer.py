@@ -36,14 +36,20 @@ def write_text_layer_pdf(
             if not 1 <= page_number <= len(document):
                 continue
             page = document[page_number - 1]
+            # OCR lines come from the rendered (displayed) page, while
+            # ``insert_text`` writes in the unrotated page space.
+            derotation = page.derotation_matrix
             for line in ocr_lines[page_number]:
                 text = line.text.strip()
                 if not text:
                     continue
                 height = max(0.1, line.y1 - line.y0)
+                point = pymupdf.Point(
+                    line.x0, line.y1 - 0.2 * height
+                ) * derotation
                 try:
                     page.insert_text(
-                        (line.x0, line.y1 - 0.2 * height),
+                        point,
                         text,
                         fontsize=max(4, 0.75 * height),
                         fontname=_line_fontname(text),

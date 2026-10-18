@@ -43,7 +43,6 @@ class BuildOptions:
     ocr_lang: str = "ch"
     dpi: int = 300
     ai_correct: bool = False
-    title: str | None = None
     text_pdf: str | None = None
     max_pages: int | None = None
 
@@ -352,15 +351,26 @@ def build_pack(
         quality=quality,
     )
     pack_dict = pack.to_dict()
-    if options.title:
-        pack_dict["title"] = options.title
 
     errors = validate_pack(pack_dict)
     if errors:
         raise PackValidationError(errors)
 
     if options.text_pdf and ocr_lines:
-        write_text_layer_pdf(source_path, options.text_pdf, ocr_lines)
+        expected = sum(len(lines) for lines in ocr_lines.values())
+        inserted = write_text_layer_pdf(source_path, options.text_pdf, ocr_lines)
+        if inserted < expected:
+            warnings.append(f"文字层插入失败 {expected - inserted} 行")
+            # Refresh the quality block so the pack carries the new warning.
+            quality = build_quality(
+                pages,
+                blocks_by_page,
+                fallback_pages,
+                ocr_pages,
+                warnings,
+            )
+            pack.quality = quality
+            pack_dict["quality"] = quality
 
     report = dict(quality)
     report.update(

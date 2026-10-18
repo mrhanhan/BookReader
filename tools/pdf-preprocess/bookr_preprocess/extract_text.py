@@ -113,8 +113,12 @@ class PyMuPdfExtractor:
 
     def extract_page(self, page: int) -> ExtractedPage:
         pdf_page = self._page(page)
+        # ``page.rect`` is the displayed (post-rotation) size while PyMuPDF's
+        # text and image rectangles stay in unrotated page space; rotate them
+        # so every rectangle the pack carries shares the displayed space.
         width = float(pdf_page.rect.width)
         height = float(pdf_page.rect.height)
+        rotation = pdf_page.rotation_matrix
 
         lines: list[RawLine] = []
         data = pdf_page.get_text("dict")
@@ -129,15 +133,16 @@ class PyMuPdfExtractor:
                 bbox = _union_bbox(spans) or tuple(pdf_line.get("bbox") or ())
                 if len(bbox) < 4:
                     continue
+                rect = self._pymupdf.Rect(bbox) * rotation
                 sizes = [float(span.get("size", 0.0) or 0.0) for span in spans]
                 font_size = max(sizes, default=0.0) or 10.0
                 lines.append(
                     RawLine(
                         text=text,
-                        x0=float(bbox[0]),
-                        y0=float(bbox[1]),
-                        x1=float(bbox[2]),
-                        y1=float(bbox[3]),
+                        x0=float(rect.x0),
+                        y0=float(rect.y0),
+                        x1=float(rect.x1),
+                        y1=float(rect.y1),
                         font_size=font_size,
                         bold=any(_span_is_bold(span) for span in spans),
                     )
@@ -157,6 +162,7 @@ class PyMuPdfExtractor:
     ) -> list[tuple[float, float, float, float]]:
         page_area = pdf_page.rect.width * pdf_page.rect.height
         minimum_area = 0.01 * page_area
+        rotation = pdf_page.rotation_matrix
         seen: set[tuple[float, float, float, float]] = set()
         rects: list[tuple[float, float, float, float]] = []
         for image in pdf_page.get_images(full=True):
@@ -165,7 +171,8 @@ class PyMuPdfExtractor:
                 placements = pdf_page.get_image_rects(xref)
             except Exception:  # noqa: BLE001 - a broken image must not fail a page
                 continue
-            for rect in placements:
+            for placed in placements:
+                rect = placed * rotation
                 if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                     continue
                 if rect.width * rect.height < minimum_area:

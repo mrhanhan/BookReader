@@ -15,6 +15,19 @@ from .schema import PackValidationError
 
 OCR_DEPENDENCY_MESSAGE = "OCR 需要安装可选依赖：pip install -e '.[ocr]'"
 AI_KEY_MESSAGE = "AI 纠错需要设置 DEEPSEEK_API_KEY"
+PATH_COLLISION_MESSAGE = "源 PDF、重排包、报告和文字层 PDF 不能使用同一路径"
+PYMUPDF_REQUIRED_MESSAGE = "PyMuPDF is required: pip install pymupdf"
+
+
+def _configure_stream(stream) -> None:
+    """Make Chinese summaries safe on consoles with a narrow encoding."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        pass
 
 
 def _load_ocr_backend(lang: str):
@@ -46,7 +59,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", help="输出重排包路径（必填）")
     parser.add_argument("--report", help="输出质量报告 JSON 路径")
     parser.add_argument("--text-pdf", help="输出带不可见文字层的 PDF 路径")
-    parser.add_argument("--title", help="写入重排包的标题")
     parser.add_argument(
         "--ocr",
         choices=("auto", "always", "never"),
@@ -71,19 +83,32 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_stream(sys.stdout)
+    _configure_stream(sys.stderr)
     args = _parser().parse_args(argv)
 
     if not args.input:
         print("请提供要处理的 PDF 文件", file=sys.stderr)
         return 2
-    source = Path(args.input)
+    source = Path(args.input).resolve()
     if not source.is_file():
         print(f"输入文件不存在：{source}", file=sys.stderr)
         return 2
     if not args.out:
         print("必须指定 --out 输出路径", file=sys.stderr)
         return 2
-    output = Path(args.out)
+    output = Path(args.out).resolve()
+    report_path = Path(args.report).resolve() if args.report else None
+    text_pdf_path = Path(args.text_pdf).resolve() if args.text_pdf else None
+
+    targets = [source, output]
+    targets.extend(
+        path for path in (report_path, text_pdf_path) if path is not None
+    )
+    if len(set(targets)) != len(targets):
+        print(PATH_COLLISION_MESSAGE, file=sys.stderr)
+        return 2
+
     if output.exists() and not args.force:
         print(f"输出文件已存在，使用 --force 覆盖：{output}", file=sys.stderr)
         return 2
@@ -107,16 +132,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(OCR_DEPENDENCY_MESSAGE, file=sys.stderr)
             return 3
 
-    if args.text_pdf:
-        Path(args.text_pdf).parent.mkdir(parents=True, exist_ok=True)
+    if text_pdf_path is not None:
+        text_pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         extractor = PyMuPdfExtractor(str(source))
     except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 3
-    except OSError as exc:
-        print(f"无法打开 PDF：{exc}", file=sys.stderr)
+        if PYMUPDF_REQUIRED_MESSAGE in str(exc):
+            print(str(exc), file=sys.stderr)
+            return 3
+        print(f"无法打开 PDF：{type(exc).__name__}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - corrupt PDFs must not traceback
+        print(f"无法打开 PDF：{type(exc).__name__}", file=sys.stderr)
         return 2
 
     options = BuildOptions(
@@ -124,8 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ocr_lang=args.ocr_lang,
         dpi=args.dpi,
         ai_correct=args.ai_correct,
-        title=args.title,
-        text_pdf=args.text_pdf,
+        text_pdf=str(text_pdf_path) if text_pdf_path is not None else None,
         max_pages=args.max_pages,
     )
 
@@ -142,7 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for error in exc.errors:
             print(f"- {error}", file=sys.stderr)
         return 2
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"生成重排包失败：{exc}", file=sys.stderr)
         return 2
     finally:
@@ -150,9 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         _write_json(output, result.pack_dict)
-        report_path = None
-        if args.report:
-            report_path = Path(args.report)
+        if report_path is not None:
             _write_json(
                 report_path,
                 {
@@ -173,8 +198,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"输出：{output}")
     if report_path is not None:
         print(f"报告：{report_path}")
-    if args.text_pdf and result.ocr_lines:
-        print(f"文本层 PDF：{args.text_pdf}")
+    if text_pdf_path is not None and result.ocr_lines:
+        print(f"文本层 PDF：{text_pdf_path}")
 
     if result.warnings:
         if args.verbose:

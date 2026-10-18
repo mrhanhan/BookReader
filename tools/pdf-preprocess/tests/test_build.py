@@ -110,23 +110,6 @@ def test_builds_text_pages_with_fallback_and_toc(tmp_path):
     assert result.report['textPdf'] is None
 
 
-def test_title_is_only_added_when_provided(tmp_path):
-    source = tmp_path / 'book.pdf'
-    source.write_bytes(b'%PDF-1.4 fake')
-    pages = [page(1, [line('正文。')], text_chars=3)]
-    extractor = FakeExtractor(pages)
-    assert 'title' not in build_pack(
-        source_path=str(source),
-        extractor=extractor,
-        options=BuildOptions(ocr='never'),
-    ).pack_dict
-    assert build_pack(
-        source_path=str(source),
-        extractor=extractor,
-        options=BuildOptions(ocr='never', title='示例书'),
-    ).pack_dict['title'] == '示例书'
-
-
 def test_auto_ocr_turns_a_scanned_page_into_text(tmp_path):
     source = tmp_path / 'scan.pdf'
     source.write_bytes(b'%PDF-1.4 scan')
@@ -381,3 +364,126 @@ def test_pymupdf_extractor_reads_text_size_and_outline(tmp_path):
         assert extractor.render_page_png(1, 72).startswith(b'\x89PNG')
     finally:
         extractor.close()
+
+
+def test_image_blocks_respect_text_overlap(tmp_path):
+    from bookr_preprocess.model import normalize_rect
+
+    source = tmp_path / 'book.pdf'
+    source.write_bytes(b'%PDF-1.4 fake')
+    lines = [
+        line('正文行', x0=72, x1=500, y0=100 + 14 * index, y1=112 + 14 * index)
+        for index in range(20)
+    ]
+    # The single paragraph covers y 100..378 and x 72..500.
+    result = build_pack(
+        source_path=str(source),
+        extractor=FakeExtractor([page(1, lines, text_chars=60, image_rects=[
+            (100, 150, 300, 300),   # 100% covered -> skipped
+            (100, 360, 300, 560),   #  9% covered -> kept
+            (100, 258, 300, 458),   # 60% covered -> skipped
+        ])]),
+        options=BuildOptions(ocr='never'),
+    )
+    blocks = result.pack_dict['pages'][0]['blocks']
+    assert [block['type'] for block in blocks] == ['paragraph', 'image']
+    assert blocks[1]['rect'] == normalize_rect(100, 360, 300, 560, 612, 792)
+
+
+def test_auto_ocr_uses_extracted_chars_when_none_and_ocrs_empty_pages(tmp_path):
+    source = tmp_path / 'scan.pdf'
+    source.write_bytes(b'%PDF-1.4 scan')
+    ocr_line = OcrLine('扫描正文', 0.1, 0.2, 0.9, 0.25, 0.93)
+
+    backend = FakeOcrBackend([ocr_line])
+    text_page = page(
+        1,
+        [line('字' * 150)],
+        image_rects=[(0, 0, 612, 792)],
+        text_chars=None,
+    )
+    build_pack(
+        source_path=str(source),
+        extractor=FakeExtractor([text_page]),
+        options=BuildOptions(ocr='auto'),
+        ocr_backend=backend,
+    )
+    assert backend.calls == []
+
+    backend = FakeOcrBackend([ocr_line])
+    empty_page = page(1, image_rects=[(0, 0, 612, 792)], text_chars=None)
+    result = build_pack(
+        source_path=str(source),
+        extractor=FakeExtractor([empty_page]),
+        options=BuildOptions(ocr='auto'),
+        ocr_backend=backend,
+    )
+    assert backend.calls == [(b'png', 'ch')]
+    assert result.pack_dict['quality']['ocrPages'] == [1]
+
+
+def test_text_layer_insertion_failures_are_reported(tmp_path, monkeypatch):
+    from bookr_preprocess import build as build_module
+
+    source = tmp_path / 'scan.pdf'
+    source.write_bytes(b'%PDF-1.4 scan')
+    lines = [
+        OcrLine('第一行', 0.1, 0.10, 0.5, 0.15, 0.9),
+        OcrLine('第二行', 0.1, 0.20, 0.5, 0.25, 0.9),
+    ]
+    calls = []
+
+    def fake_writer(source_path, output_path, ocr_lines):
+        calls.append(output_path)
+        return 1
+
+    monkeypatch.setattr(build_module, 'write_text_layer_pdf', fake_writer)
+    result = build_pack(
+        source_path=str(source),
+        extractor=FakeExtractor([page(1, image_rects=[(0, 0, 612, 792)], text_chars=0)]),
+        options=BuildOptions(ocr='auto', text_pdf=str(tmp_path / 'out.pdf')),
+        ocr_backend=FakeOcrBackend(lines),
+    )
+    assert calls == [str(tmp_path / 'out.pdf')]
+    assert '文字层插入失败 1 行' in result.warnings
+    assert '文字层插入失败 1 行' in result.pack_dict['quality']['warnings']
+
+
+def test_rotated_pages_use_the_displayed_coordinate_space(tmp_path):
+    pymupdf = pytest.importorskip('pymupdf')
+    from bookr_preprocess.extract_text import PyMuPdfExtractor
+    from bookr_preprocess.model import normalize_rect
+
+    path = tmp_path / 'rotated.pdf'
+    document = pymupdf.open()
+    pdf_page = document.new_page(width=400, height=600)
+    pdf_page.insert_text((50, 100), 'Rotated', fontsize=12)
+    pdf_page.set_rotation(90)
+    document.save(path)
+    document.close()
+
+    extractor = PyMuPdfExtractor(str(path))
+    try:
+        assert extractor.page_size(1) == (600.0, 400.0)
+        extracted = extractor.extract_page(1)
+    finally:
+        extractor.close()
+
+    raw = extracted.lines[0]
+    rect = normalize_rect(
+        raw.x0, raw.y0, raw.x1, raw.y1, extracted.width, extracted.height
+    )
+    assert rect['x'] + rect['w'] <= 1
+    assert rect['y'] + rect['h'] <= 1
+    # A 90° rotation moves the text from the left edge to the right half.
+    assert rect['x'] > 0.5
+    assert rect['y'] < 0.5
+
+    result = build_pack(
+        source_path=str(path),
+        extractor=PyMuPdfExtractor(str(path)),
+        options=BuildOptions(ocr='never'),
+    )
+    block = result.pack_dict['pages'][0]['blocks'][0]
+    assert block['type'] == 'paragraph'
+    assert block['rect']['x'] > 0.5
