@@ -1,5 +1,23 @@
 import type { ApiErrorBody, AuthTokens, ErrorCode } from '@bookr/shared';
 
+/** Normalizes a configured API origin, trimming whitespace and one trailing slash. */
+export function resolveApiBase(value: string | undefined): string {
+  const raw = (value ?? '').trim();
+  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+}
+
+/** Origin for API calls; empty for the same-origin web build. */
+const API_BASE = resolveApiBase(import.meta.env.VITE_API_BASE_URL);
+
+/**
+ * Resolves an API path against the configured origin. Absolute URLs (for
+ * example a presigned file) are already complete and pass through untouched.
+ */
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE}${path}`;
+}
+
 /** localStorage key holding the access and refresh tokens. */
 export const TOKEN_STORAGE_KEY = 'bookr.tokens';
 
@@ -94,7 +112,7 @@ function buildRequest(init: RequestInit | undefined, accessToken: string | null)
 }
 
 async function refreshSession(refreshToken: string): Promise<AuthTokens> {
-  const response = await fetch('/api/auth/refresh', {
+  const response = await fetch(apiUrl('/api/auth/refresh'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
@@ -139,7 +157,7 @@ function endSession(): void {
  */
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let tokens = getTokens();
-  let response = await fetch(path, buildRequest(init, tokens?.accessToken ?? null));
+  let response = await fetch(apiUrl(path), buildRequest(init, tokens?.accessToken ?? null));
 
   if (response.status === 401) {
     const latest = getTokens();
@@ -148,11 +166,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       // Another request refreshed while this one was in flight, so reuse the
       // new access token instead of replaying the rotated refresh token.
       tokens = latest;
-      response = await fetch(path, buildRequest(init, tokens.accessToken));
+      response = await fetch(apiUrl(path), buildRequest(init, tokens.accessToken));
     } else if (latest?.refreshToken) {
       try {
         tokens = await refreshOnce(latest.refreshToken);
-        response = await fetch(path, buildRequest(init, tokens.accessToken));
+        response = await fetch(apiUrl(path), buildRequest(init, tokens.accessToken));
       } catch (error) {
         endSession();
         throw error instanceof ApiError ? error : await errorFromResponse(response);
@@ -175,7 +193,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
 /** Posts JSON without refresh handling, for login, register and logout. */
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
