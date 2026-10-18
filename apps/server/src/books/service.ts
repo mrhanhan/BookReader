@@ -10,6 +10,8 @@ import { and, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import type { AppDeps } from '../app';
 import { auditLogs, books, bookCategories, categories, type BookRow, type NewBook } from '../db/schema';
 import { AppError } from '../errors';
+import { toBookProgress } from '../reading/dto';
+import { findProgressForBooks } from '../reading/repo';
 import { toBookDto } from './dto';
 import {
   findBookById,
@@ -116,33 +118,55 @@ export async function assertCanManageBook(
   await requireManageableBook(deps, actor, bookId);
 }
 
-/** Maps rows to DTOs, loading categories and uploader names in two queries. */
-async function toBookDtos(deps: AppDeps, rows: BookRow[]): Promise<BookDto[]> {
-  const categoriesByBook = await findCategoriesForBooks(
-    deps.db,
-    rows.map((row) => row.id),
-  );
-  const uploaderNames = await findUploaderNames(
-    deps.db,
-    rows.map((row) => row.uploadedBy),
-  );
+/**
+ * Maps rows to DTOs, loading categories, uploader names and the viewer's
+ * progress in three queries regardless of page size.
+ */
+async function toBookDtos(
+  deps: AppDeps,
+  rows: BookRow[],
+  viewerId: string,
+): Promise<BookDto[]> {
+  const bookIds = rows.map((row) => row.id);
+  const [categoriesByBook, uploaderNames, progressByBook] = await Promise.all([
+    findCategoriesForBooks(deps.db, bookIds),
+    findUploaderNames(
+      deps.db,
+      rows.map((row) => row.uploadedBy),
+    ),
+    findProgressForBooks(deps.db, viewerId, bookIds),
+  ]);
   return Promise.all(
     rows.map((row) =>
-      toBookDto(deps, row, categoriesByBook.get(row.id) ?? [], uploaderNames.get(row.uploadedBy)),
+      toBookDto(
+        deps,
+        row,
+        categoriesByBook.get(row.id) ?? [],
+        uploaderNames.get(row.uploadedBy),
+        toBookProgress(progressByBook.get(row.id)),
+      ),
     ),
   );
 }
 
-async function toSingleBookDto(deps: AppDeps, book: BookRow): Promise<BookDto> {
-  const [dto] = await toBookDtos(deps, [book]);
+async function toSingleBookDto(
+  deps: AppDeps,
+  book: BookRow,
+  viewerId: string,
+): Promise<BookDto> {
+  const [dto] = await toBookDtos(deps, [book], viewerId);
   return dto!;
 }
 
 /** Lists the shared shelf with filtering, sorting and pagination. */
-export async function listBooks(deps: AppDeps, query: ListBooksQuery): Promise<BookListPage> {
-  const { rows, total } = await listBooksPage(deps.db, query);
+export async function listBooks(
+  deps: AppDeps,
+  query: ListBooksQuery,
+  viewerId: string,
+): Promise<BookListPage> {
+  const { rows, total } = await listBooksPage(deps.db, query, viewerId);
   return {
-    items: await toBookDtos(deps, rows),
+    items: await toBookDtos(deps, rows, viewerId),
     total,
     page: query.page,
     pageSize: query.pageSize,
@@ -150,8 +174,12 @@ export async function listBooks(deps: AppDeps, query: ListBooksQuery): Promise<B
 }
 
 /** Returns one shelf book, excluding books in the trash. */
-export async function getBook(deps: AppDeps, bookId: string): Promise<BookDto> {
-  return toSingleBookDto(deps, await requireBook(deps, bookId));
+export async function getBook(
+  deps: AppDeps,
+  bookId: string,
+  viewerId: string,
+): Promise<BookDto> {
+  return toSingleBookDto(deps, await requireBook(deps, bookId), viewerId);
 }
 
 /** Metadata patch plus the optional replacement of the book's categories. */
@@ -238,7 +266,7 @@ export async function updateBook(
     throw error;
   }
 
-  return toSingleBookDto(deps, updated);
+  return toSingleBookDto(deps, updated, actor.id);
 }
 
 /** Moves a book to the trash and records who deleted it. */
@@ -332,12 +360,12 @@ export async function restoreBook(
   if (!restored) {
     throw new AppError(404, ERROR_CODES.NOT_FOUND);
   }
-  return toSingleBookDto(deps, restored);
+  return toSingleBookDto(deps, restored, actor.id);
 }
 
 /** Everything currently in the trash, shared by all members. */
-export async function listTrash(deps: AppDeps): Promise<BookDto[]> {
-  return toBookDtos(deps, await listDeletedBooks(deps.db));
+export async function listTrash(deps: AppDeps, viewerId: string): Promise<BookDto[]> {
+  return toBookDtos(deps, await listDeletedBooks(deps.db), viewerId);
 }
 
 interface DetectedImage {

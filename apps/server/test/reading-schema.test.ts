@@ -35,4 +35,5 @@ it('allows one progress row per user and book', async () => {
     .from(readingProgress)
     .where(eq(readingProgress.bookId, book.id));
   expect(rows).toHaveLength(1);
+  expect(rows[0]?.percent).toBe(0.7);
 });

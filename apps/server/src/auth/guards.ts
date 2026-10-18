@@ -10,6 +10,11 @@ import { verifyAccessToken } from './tokens';
 export interface AuthUser {
   id: string;
   role: Role;
+  /**
+   * Device session that issued the access token. Legacy tokens predate device
+   * binding, so it is only present when the token carried a `did` claim.
+   */
+  deviceId?: string;
 }
 
 declare module 'fastify' {
@@ -89,7 +94,11 @@ export function makeRequireAuth(deps: AppDeps): preHandlerHookHandler {
       }
     }
 
-    request.user = { id: user.id, role: user.role };
+    request.user = {
+      id: user.id,
+      role: user.role,
+      ...(claims.deviceId !== undefined ? { deviceId: claims.deviceId } : {}),
+    };
   };
 }
 

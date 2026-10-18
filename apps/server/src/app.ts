@@ -14,6 +14,7 @@ import type { AppConfig } from './config';
 import type { Database } from './db/client';
 import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
+import { registerReadingRoutes } from './reading/routes';
 import type { StorageService } from './storage/types';
 import { registerUploadRoutes } from './uploads/routes';
 
@@ -137,6 +138,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerAdminRoutes(app, deps);
   registerUploadRoutes(app, deps);
   registerBookRoutes(app, deps);
+  registerReadingRoutes(app, deps);
   registerCategoryRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {

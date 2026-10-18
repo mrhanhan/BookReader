@@ -6,16 +6,23 @@ import { users, type BookRow } from '../db/schema';
 /** Cover URLs stay valid for one hour; clients refetch the book to renew them. */
 const COVER_URL_EXPIRES_SECONDS = 3600;
 
+/** Clamps a progress fraction into [0, 1]. */
+function clampPercent(percent: number): number {
+  return Math.min(1, Math.max(0, percent));
+}
+
 /**
  * Maps a book row to the API shape, signing the cover key when present.
  * Shared by the upload pipeline and the bookshelf routes. Callers that list
- * many books pass the preloaded uploader name to avoid a query per book.
+ * many books pass the preloaded uploader name to avoid a query per book, and
+ * the viewer's progress so `progressPercent` is never another user's.
  */
 export async function toBookDto(
   deps: AppDeps,
   book: BookRow,
   categories: CategoryDto[],
   uploaderDisplayName?: string,
+  progress?: { percent: number },
 ): Promise<BookDto> {
   let displayName = uploaderDisplayName;
   if (displayName === undefined) {
@@ -42,7 +49,7 @@ export async function toBookDto(
       ? await deps.storage.presignGet(book.coverKey, COVER_URL_EXPIRES_SECONDS)
       : null,
     status: book.status,
-    progressPercent: 0,
+    progressPercent: Math.round(clampPercent(progress?.percent ?? 0) * 100),
     categories,
     uploadedBy: { id: book.uploadedBy, displayName },
     conversionStatus: book.conversionStatus,

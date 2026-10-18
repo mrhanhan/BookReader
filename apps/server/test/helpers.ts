@@ -14,7 +14,7 @@ import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
-import { signAccessToken } from '../src/auth/tokens';
+import { newRefreshToken, signAccessToken } from '../src/auth/tokens';
 import { FakeConverter } from '../src/books/conversion';
 import { runMetadataJob } from '../src/books/metadata';
 import { InProcessMetadataRunner } from '../src/books/metadata-runner';
@@ -27,6 +27,7 @@ import {
   annotations,
   bookmarks,
   books,
+  devices,
   invites,
   libraries,
   readingProgress,
@@ -143,6 +144,7 @@ export interface SeedBookInput {
   sha256?: string;
   fileKey?: string | null;
   coverKey?: string | null;
+  epubKey?: string | null;
   status?: BookStatus;
   metadataStatus?: MetadataStatus;
   conversionStatus?: BookConversionStatus;
@@ -185,6 +187,7 @@ export async function seedBook(input: SeedBookInput): Promise<BookRow> {
           ? `library/${libraryId}/books/${newId()}/original.${format}`
           : input.fileKey,
       coverKey: input.coverKey ?? null,
+      epubKey: input.epubKey ?? null,
       status: input.status ?? 'unread',
       metadataStatus: input.metadataStatus ?? 'done',
       conversionStatus: input.conversionStatus ?? 'none',
@@ -216,7 +219,7 @@ export interface SeedProgressInput {
  * means a repeated call replaces the row instead of inserting a duplicate.
  */
 export async function seedProgress(input: SeedProgressInput): Promise<ReadingProgressRow> {
-  const percent = input.percent ?? 0;
+  const percent = input.percent ?? input.locator?.percent ?? 0;
   const locator = input.locator ?? { kind: 'pdf', page: input.page ?? 1, percent };
   const deviceId = input.deviceId ?? null;
   const updatedAt = input.updatedAt ?? new Date();
@@ -366,18 +369,20 @@ export async function buildTestDeps(overrides: Partial<AppConfig> = {}): Promise
 /** Password every seeded test user shares. */
 export const SEEDED_PASSWORD = 'valid-password-1';
 
-/** A user inserted by `seedUser`. */
+/** A user inserted by `seedUser`, plus the device session its tokens bind to. */
 export interface SeededUser {
   id: string;
   username: string;
   password: string;
   role: Role;
+  deviceId: string;
 }
 
 let seededPasswordHash: Promise<string> | undefined;
 
 /**
- * Inserts a user with a real Argon2id hash so login flows can be exercised.
+ * Inserts a user with a real Argon2id hash so login flows can be exercised,
+ * plus one device row so access tokens can carry a `did` claim.
  * Users are global in this system, so no library row is created.
  */
 export async function seedUser(role: Role, username?: string): Promise<SeededUser> {
@@ -392,15 +397,47 @@ export async function seedUser(role: Role, username?: string): Promise<SeededUse
       role,
     })
     .returning();
-  return { id: user!.id, username: user!.username, password: SEEDED_PASSWORD, role: user!.role };
+
+  const refresh = newRefreshToken();
+  const [device] = await testDb
+    .insert(devices)
+    .values({
+      userId: user!.id,
+      refreshTokenHash: refresh.hash,
+      refreshExpiresAt: refresh.expiresAt,
+      lastSeenAt: new Date(),
+    })
+    .returning({ id: devices.id });
+  if (!device) {
+    throw new Error('seedUser could not insert a device');
+  }
+
+  return {
+    id: user!.id,
+    username: user!.username,
+    password: SEEDED_PASSWORD,
+    role: user!.role,
+    deviceId: device.id,
+  };
 }
 
-/** Builds an `Authorization` header carrying a valid access token for a user. */
+/**
+ * Builds an `Authorization` header carrying a valid access token for a user.
+ * Callers that only have an id and role still work; the token is then not
+ * device-bound, matching legacy clients.
+ */
 export async function authHeader(
-  user: Pick<SeededUser, 'id' | 'role'>,
+  user: Pick<SeededUser, 'id' | 'role'> & { deviceId?: string },
   secret: string = DEFAULT_CONFIG.jwtSecret,
 ): Promise<{ authorization: string }> {
-  const token = await signAccessToken({ sub: user.id, role: user.role }, secret);
+  const token = await signAccessToken(
+    {
+      sub: user.id,
+      role: user.role,
+      ...(user.deviceId !== undefined ? { deviceId: user.deviceId } : {}),
+    },
+    secret,
+  );
   return { authorization: `Bearer ${token}` };
 }
 

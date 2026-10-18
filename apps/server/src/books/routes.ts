@@ -25,12 +25,12 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.get('/api/books', { preHandler: requireAuth }, async (request) => {
     const query = listBooksQuerySchema.parse(request.query);
-    return listBooks(deps, query);
+    return listBooks(deps, query, request.user!.id);
   });
 
   app.get('/api/books/:id', { preHandler: requireAuth }, async (request) => {
     const { id } = bookIdParamsSchema.parse(request.params);
-    return { book: await getBook(deps, id) };
+    return { book: await getBook(deps, id, request.user!.id) };
   });
 
   // Files are shared like the shelf itself: any active member can open any
@@ -65,8 +65,8 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
     return reply.status(202).send({ queued: true });
   });
 
-  app.get('/api/trash', { preHandler: requireAuth }, async () => {
-    return { items: await listTrash(deps) };
+  app.get('/api/trash', { preHandler: requireAuth }, async (request) => {
+    return { items: await listTrash(deps, request.user!.id) };
   });
 
   // The permission check runs in `onRequest`, before the multipart body is

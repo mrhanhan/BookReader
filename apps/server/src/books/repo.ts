@@ -1,7 +1,28 @@
 import type { CategoryDto, ListBooksQuery } from '@bookr/shared';
-import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import type { Database } from '../db/client';
-import { bookCategories, books, categories, users, type BookRow } from '../db/schema';
+import {
+  bookCategories,
+  books,
+  categories,
+  readingProgress,
+  users,
+  type BookRow,
+} from '../db/schema';
 
 /** Escapes the wildcards of a LIKE pattern so query text matches literally. */
 function escapeLike(value: string): string {
@@ -49,7 +70,12 @@ function orderBy(sort: ListBooksQuery['sort']): SQL[] {
     case 'added':
       return [desc(books.createdAt), desc(books.id)];
     case 'recent':
-      return [desc(books.updatedAt), desc(books.id)];
+      // Per-user: the viewer's last read position wins, and books they have
+      // not opened fall back to import time.
+      return [
+        desc(sql`coalesce(${readingProgress.updatedAt}, ${books.createdAt})`),
+        desc(books.id),
+      ];
   }
 }
 
@@ -57,6 +83,7 @@ function orderBy(sort: ListBooksQuery['sort']): SQL[] {
 export async function listBooksPage(
   db: Database,
   query: ListBooksQuery,
+  viewerId: string,
 ): Promise<{ rows: BookRow[]; total: number }> {
   const where = and(...listConditions(query));
 
@@ -65,9 +92,15 @@ export async function listBooksPage(
     .from(books)
     .where(where);
 
+  // The join is always present so `sort=recent` can order by this viewer's
+  // progress; the composite primary key guarantees at most one matching row.
   const rows = await db
-    .select()
+    .select(getTableColumns(books))
     .from(books)
+    .leftJoin(
+      readingProgress,
+      and(eq(readingProgress.bookId, books.id), eq(readingProgress.userId, viewerId)),
+    )
     .where(where)
     .orderBy(...orderBy(query.sort))
     .limit(query.pageSize)
