@@ -318,9 +318,15 @@ importers:
       jsdom:
         specifier: ^30.1.3
         version: 30.1.3
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.2
       msw:
         specifier: ^2.15.0
         version: 2.15.0(@types/node@26.6.5)(typescript@5.9.3)
+      pdf-lib:
+        specifier: ^1.17.1
+        version: 1.17.1
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3

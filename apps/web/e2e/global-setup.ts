@@ -1,8 +1,13 @@
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { request } from '@playwright/test';
 
 const baseURL = process.env.E2E_BASE_URL ?? 'http://localhost:8180';
 const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'admin';
 const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? 'Admin-Test-Password-123';
+const fixturesScript = fileURLToPath(
+  new URL('../scripts/make-reader-fixtures.mjs', import.meta.url),
+);
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1']);
 
@@ -30,6 +35,14 @@ function assertDisposableTarget(target: string): void {
 }
 
 /**
+ * The reader spec uploads generated books; regenerating them keeps the binary
+ * fixtures out of git and guarantees every run uses the current generator.
+ */
+function generateReaderFixtures(): void {
+  execFileSync(process.execPath, [fixturesScript], { stdio: 'inherit' });
+}
+
+/**
  * The suite needs an existing administrator to mint invites. Registration is
  * admin-only by design (and `create-admin` refuses once any user exists), so a
  * missing admin is an environment problem the operator must fix, not
@@ -37,6 +50,7 @@ function assertDisposableTarget(target: string): void {
  */
 export default async function globalSetup(): Promise<void> {
   assertDisposableTarget(baseURL);
+  generateReaderFixtures();
 
   const context = await request.newContext({ baseURL });
   try {
