@@ -1380,8 +1380,8 @@ Order of operations inside `lines_to_blocks`:
 1. Drop empty text; drop lines in the top/bottom 6% whose trimmed text is a page number (`^[-–—]?\s*\d+\s*[-–—]?$`) or whose normalized form (digits → `#`, collapse whitespace) is in `repeated_margins`.
 2. Sort by `(round(y0, 1), x0)`.
 3. Determine `body = body_font_size(lines)` (character-weighted median) and `median_h`.
-4. Start a new block when: no current block; vertical gap > `1.6 * max(median_h, 0.8 * body)`; the line's size differs from the block's first line by more than 15%; or the line starts at least `1.5 * body` points right of the page's body left margin (indent) while the current block already has ≥1 line.
-5. `text = merge_lines([...])`.
+4. Start a new block when: no current block; vertical gap > `1.6 * max(median_h, 0.8 * body)`; the line's size differs from the block's first line by more than 15%; or the line starts at least `1.5 * body` points right of the page's **body left margin** (the mode of rounded `x0` values among body-sized lines, falling back to the minimum) while the current block already has ≥1 line.
+5. `text = merge_lines([...])`. `id`/`text` length limits are counted in Unicode code points, matching zod 4.6.7 (not UTF-16); only source offsets use UTF-16.
 6. Classify: `table` when ≥3 lines each containing ≥3 runs separated by gaps ≥ `2 * body` points and at least half the cells contain digits; `formula` when text length < 120 and it contains at least two of `= ∫ ∑ √ ± × ÷ ≠ ≤ ≥ ^ _` and has no `。！？`; `heading` when size ≥ `1.2 * body` and (len(text) ≤ 80 or any line bold); otherwise `paragraph`. Heading level: size ≥ `1.6 * body` → 1, ≥ `1.35` → 2, else 3.
 7. Rect = union of line boxes, normalized with `normalize_rect`.
 8. `sourceCharStart/End` from the page's source string, built as all filtered lines joined by `\n`, offsets in UTF-16; only text blocks get them.
@@ -1554,7 +1554,7 @@ Expected: FAIL — modules missing.
 
 - [ ] **Step 4: Implement `extract_text.py`**
 
-`PyMuPdfExtractor` imports `pymupdf` lazily; on ImportError raises `RuntimeError('PyMuPDF is required: pip install pymupdf')`. `extract_page` uses `page.get_text('dict')`; for every line, join spans with a single space when the horizontal gap between consecutive spans is at least `1.5 * min span size` (so table columns remain detectable), otherwise concatenate without a space; bbox from the line (or union of spans), `font_size = max(span['size'])`, `bold = any('Bold' in span['font'] or span['flags'] & 16 for span in spans)`. Set `text_chars = len(page.get_text('text').strip())`. `image_rects` uses `page.get_images(full=True)` then `page.get_image_rects(xref)`; keep unique rects with area ≥1% of the page. `outline()` uses `doc.get_toc(simple=True)` and maps `[level, title, page]` with `page >= 1`. `render_page_png` uses `page.get_pixmap(dpi=dpi, alpha=False).tobytes('png')`.
+`PyMuPdfExtractor` imports `pymupdf` lazily; on ImportError raises `RuntimeError('PyMuPDF is required: pip install pymupdf')`. `extract_page` uses `page.get_text('dict')`; for every line, join spans with **two spaces** when the horizontal gap between consecutive spans is at least `1.5 * min span size` (so the table heuristic can still see column gaps), otherwise concatenate without a space; bbox from the line (or union of spans), `font_size = max(span['size'])`, `bold = any('Bold' in span['font'] or span['flags'] & 16 for span in spans)`. Set `text_chars = len(page.get_text('text').strip())`. `image_rects` uses `page.get_images(full=True)` then `page.get_image_rects(xref)`; keep unique rects with area ≥1% of the page. `outline()` uses `doc.get_toc(simple=True)` and maps `[level, title, page]` with `page >= 1`. `render_page_png` uses `page.get_pixmap(dpi=dpi, alpha=False).tobytes('png')`.
 
 - [ ] **Step 5: Implement `build.py`**
 
