@@ -1,0 +1,4 @@
+@import "@bookr/ui/theme.css";
+
+/* Tailwind does not scan workspace packages by default. */
+@source "../../../packages/ui/src";

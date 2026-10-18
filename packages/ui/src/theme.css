@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/*
+ * Paper-ink palette. Keep these values in sync with `src/tokens.ts`; the tests
+ * pin paper, ink and accent so the two files cannot drift unnoticed.
+ */
+@theme {
+  --color-paper: #F6F1E7;
+  --color-surface: #FFFCF5;
+  --color-ink: #2B2620;
+  --color-muted: #6F6559;
+  --color-accent: #8C5A3B;
+  --color-border: #E3D8C5;
+  --color-highlight: #A8452F;
+
+  --font-serif: "Noto Serif SC", "Songti SC", "STSong", Georgia, serif;
+  --font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    min-height: 100vh;
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-serif);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
+
+  dialog::backdrop {
+    background-color: rgb(43 38 32 / 0.45);
+    backdrop-filter: blur(2px);
+  }
+}
