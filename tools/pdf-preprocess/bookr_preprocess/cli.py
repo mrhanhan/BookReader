@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Sequence
 
@@ -30,8 +31,29 @@ def _configure_stream(stream) -> None:
         pass
 
 
+_OCR_MODULES = ("numpy", "PIL", "paddleocr")
+
+
+def _ocr_dependencies_available() -> bool:
+    """Check the optional OCR packages without importing them eagerly.
+
+    ``PaddleOcrBackend`` builds its engine lazily, so constructing it cannot
+    tell us whether PaddleOCR is installed. A spec lookup keeps CLI startup
+    cheap for text PDFs while still letting ``--ocr always`` fail fast.
+    """
+    for name in _OCR_MODULES:
+        try:
+            if find_spec(name) is None:
+                return False
+        except (ImportError, ValueError):
+            return False
+    return True
+
+
 def _load_ocr_backend(lang: str):
     """Load PaddleOCR lazily; ``None`` means OCR is unavailable."""
+    if not _ocr_dependencies_available():
+        return None
     try:
         from .ocr import PaddleOcrBackend
 

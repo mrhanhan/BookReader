@@ -89,12 +89,19 @@ def test_cli_ocr_always_without_backend_returns_3(tmp_path, monkeypatch, capsys)
     from bookr_preprocess import cli
 
     pdf = make_text_pdf(tmp_path / 'in.pdf', ['Page one text'])
-    monkeypatch.setattr(cli, '_load_ocr_backend', lambda lang: None)
+    monkeypatch.setattr(cli, '_ocr_dependencies_available', lambda: False)
     assert main([
         str(pdf), '--out', str(tmp_path / 'o.json'), '--ocr', 'always',
     ]) == 3
     assert "pip install -e '.[ocr]'" in capsys.readouterr().err
     assert not (tmp_path / 'o.json').exists()
+
+
+def test_ocr_loader_returns_none_when_optional_modules_are_missing(monkeypatch):
+    from bookr_preprocess import cli
+
+    monkeypatch.setattr(cli, 'find_spec', lambda name: None)
+    assert cli._load_ocr_backend('ch') is None
 
 
 def test_cli_ocr_auto_without_backend_still_builds(tmp_path, monkeypatch):
