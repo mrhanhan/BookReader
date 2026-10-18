@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp, type AppDeps, type Clock } from '../src/app';
 import { hashPassword } from '../src/auth/password';
 import { signAccessToken } from '../src/auth/tokens';
+import { cleanupTrash } from '../src/books/service';
 import type { AppConfig } from '../src/config';
 import { createDb } from '../src/db/client';
 import { assertTestDatabase } from '../src/db/guard';
@@ -205,6 +206,17 @@ export async function expireSession(uploadId: string, msAgo: number): Promise<vo
 /** Runs the expired-session sweep against the shared test dependencies. */
 export async function cleanupExpiredUploadsForTest(): Promise<number> {
   return cleanupExpiredUploads(await buildTestDeps());
+}
+
+/** Runs the trash purge against the shared test dependencies. */
+export async function cleanupTrashForTest(): Promise<number> {
+  return cleanupTrash(await buildTestDeps());
+}
+
+/** Reads a book row by id, including soft-deleted rows. */
+export async function getBookRow(bookId: string): Promise<BookRow | undefined> {
+  const [row] = await testDb.select().from(books).where(eq(books.id, bookId)).limit(1);
+  return row;
 }
 
 /** Dependency object shared by the app and background jobs in tests. */

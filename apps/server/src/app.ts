@@ -1,8 +1,11 @@
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import { ERROR_CODES, type ApiErrorBody, type ErrorCode } from '@bookr/shared';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { registerAuthRoutes } from './auth/routes';
+import { registerBookRoutes } from './books/routes';
+import { COVER_MAX_BYTES } from './books/service';
 import type { AppConfig } from './config';
 import type { Database } from './db/client';
 import { AppError, defaultMessageFor } from './errors';
@@ -116,10 +119,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   app.register(cors, { origin: deps.config.corsOrigin });
 
+  // Cover uploads accept a single image capped at 5 MiB; the service checks
+  // the bytes themselves before anything is stored.
+  app.register(multipart, { limits: { fileSize: COVER_MAX_BYTES, files: 1 } });
+
   app.get('/healthz', async () => ({ status: 'ok' }));
 
   registerAuthRoutes(app, deps);
   registerUploadRoutes(app, deps);
+  registerBookRoutes(app, deps);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
