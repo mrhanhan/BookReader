@@ -1,4 +1,5 @@
 import { clamp } from '../locator';
+import type { PdfLayoutMode } from '../types';
 
 export interface PageSize {
   width: number;
@@ -121,6 +122,33 @@ export function spreadPages(page: number, pageCount: number): number[] {
     pages.push(start + 1);
   }
   return pages;
+}
+
+/**
+ * Pages that must be painted before a paged reader reports that it has opened.
+ * Single mode shows only the current page. Two-page mode opens on the spread
+ * around the current page; page 1 is paired with page 2 so the first spread is
+ * never half-painted, and a short document clamps to its last page.
+ */
+export function pagesToRenderInitially(
+  mode: PdfLayoutMode,
+  currentPage: number,
+  pageCount: number,
+): number[] {
+  const count = Number.isFinite(pageCount) ? Math.max(1, Math.floor(pageCount)) : 1;
+  const current = clamp(Number.isFinite(currentPage) ? Math.floor(currentPage) : 1, 1, count);
+
+  if (mode !== 'double') {
+    return [current];
+  }
+  if (current <= 1) {
+    const pages = [1];
+    if (count >= 2) {
+      pages.push(2);
+    }
+    return pages;
+  }
+  return spreadPages(current, count);
 }
 
 export interface FocusScrollOptions {

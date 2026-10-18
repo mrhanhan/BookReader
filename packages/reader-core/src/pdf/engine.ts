@@ -31,7 +31,7 @@ import {
   computeScale,
   focusScrollTop,
   pageFromScroll,
-  spreadPages,
+  pagesToRenderInitially,
   type PageSize,
 } from './layout';
 import { buildPdfToc, type PdfOutlineNode } from './outline';
@@ -219,12 +219,23 @@ export class PdfReaderEngine implements ReaderEngine {
       this.crop = this.effectiveCrop(settings);
 
       this.buildDom(container);
-      this.rebuildLayout();
+      // In paged modes the whole opening spread is created and painted before
+      // `open` resolves; a single-page first paint would leave the facing page
+      // blank until the reader navigates.
+      const openingPages = this.mode === 'continuous'
+        ? [1]
+        : pagesToRenderInitially(this.mode, this.currentPage, this.pageCount);
+      this.rebuildLayout(this.mode === 'continuous' ? undefined : openingPages);
       this.attachListeners();
 
-      // Start the first paint before waiting on metadata and the outline; a
-      // large outline must not delay the reader.
-      const firstRender = this.renderPage(1);
+      // Start the first spread's paint before waiting on metadata and the
+      // outline; a large outline must not delay the reader. A page that fails
+      // to render reports `render-failed` but must not fail the whole open.
+      const firstRender = Promise.all(
+        openingPages.map((pageNumber) =>
+          this.renderPage(pageNumber).catch((error) => this.emitRenderFailure(error)),
+        ),
+      );
       const [title, toc] = await Promise.all([this.readTitle(), this.readToc()]);
       this.ensureAlive();
       await firstRender;
@@ -326,7 +337,7 @@ export class PdfReaderEngine implements ReaderEngine {
 
     const count = Math.max(1, this.pageCount);
     if (this.mode === 'double') {
-      const pages = spreadPages(this.currentPage, count);
+      const pages = pagesToRenderInitially('double', this.currentPage, count);
       const target = (pages[pages.length - 1] ?? this.currentPage) + 1;
       if (target > count) {
         return;
@@ -354,7 +365,7 @@ export class PdfReaderEngine implements ReaderEngine {
 
     const count = Math.max(1, this.pageCount);
     if (this.mode === 'double') {
-      const first = spreadPages(this.currentPage, count)[0] ?? 1;
+      const first = pagesToRenderInitially('double', this.currentPage, count)[0] ?? 1;
       const target = first - 1;
       if (target < 1) {
         return;
@@ -580,7 +591,7 @@ export class PdfReaderEngine implements ReaderEngine {
     }
   }
 
-  private rebuildLayout(): void {
+  private rebuildLayout(initialPages?: number[]): void {
     const pagesHost = this.pagesHost;
     const scrollHost = this.scrollHost;
     if (!pagesHost || !scrollHost || !this.pdf) {
@@ -623,11 +634,11 @@ export class PdfReaderEngine implements ReaderEngine {
       }
       this.observeSlots();
     } else {
-      this.createPagedSlots();
+      this.createPagedSlots(initialPages);
     }
   }
 
-  private createPagedSlots(): void {
+  private createPagedSlots(pages?: number[]): void {
     const pagesHost = this.pagesHost;
     if (!pagesHost) {
       return;
@@ -641,7 +652,7 @@ export class PdfReaderEngine implements ReaderEngine {
     this.visiblePages.clear();
     pagesHost.replaceChildren();
 
-    for (const pageNumber of this.pagesForCurrent()) {
+    for (const pageNumber of pages ?? this.pagesForCurrent()) {
       const slot = this.createSlot(pageNumber);
       this.slots.set(pageNumber, slot);
       pagesHost.append(slot.outer);
@@ -651,7 +662,7 @@ export class PdfReaderEngine implements ReaderEngine {
   private pagesForCurrent(): number[] {
     const count = Math.max(1, this.pageCount);
     const current = clamp(Math.floor(this.currentPage), 1, count);
-    return this.mode === 'single' ? [current] : spreadPages(current, count);
+    return pagesToRenderInitially(this.mode, current, count);
   }
 
   private updateScale(): void {

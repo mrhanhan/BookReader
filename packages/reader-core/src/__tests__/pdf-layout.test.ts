@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { computeScale, focusScrollTop, pageFromScroll, spreadPages, spreadStart } from '../pdf/layout';
+import {
+  computeScale,
+  focusScrollTop,
+  pageFromScroll,
+  pagesToRenderInitially,
+  spreadPages,
+  spreadStart,
+} from '../pdf/layout';
 
 const page = { width: 600, height: 800 };
 const viewport = { width: 1000, height: 900 };
@@ -38,6 +45,17 @@ describe('pdf layout', () => {
     expect(spreadPages(10, 10)).toEqual([9, 10]);
     expect(spreadPages(3, 3)).toEqual([3]);
     expect(spreadPages(1, 1)).toEqual([1]);
+  });
+
+  it('paints the whole opening spread before a paged reader opens', () => {
+    expect(pagesToRenderInitially('single', 1, 10)).toEqual([1]);
+    expect(pagesToRenderInitially('double', 1, 10)).toEqual([1, 2]);
+    expect(pagesToRenderInitially('double', 3, 10)).toEqual([3, 4]);
+    // The spread clamps at the last page instead of asking for a missing one.
+    expect(pagesToRenderInitially('double', 10, 10)).toEqual([9, 10]);
+    expect(pagesToRenderInitially('double', 9, 9)).toEqual([9]);
+    expect(pagesToRenderInitially('double', 1, 1)).toEqual([1]);
+    expect(pagesToRenderInitially('single', 99, 10)).toEqual([10]);
   });
 
   it('places a locator rect on the focus line, allowing for crop', () => {
