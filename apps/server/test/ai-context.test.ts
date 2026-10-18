@@ -93,5 +93,11 @@ it('caps history by count and tokens and keeps chronological order', () => {
 it('renders a stable prompt version and locator labels', () => {
   expect(PROMPT_VERSION).toBe('p5.1');
   expect(describeLocator(locator)).toBe('第 12 页（全书 40%）');
+  expect(describeLocator({ kind: 'reflow', sourcePage: 7, percent: 0.5 })).toBe(
+    '源页 7（全书 50%）',
+  );
+  expect(describeLocator({ kind: 'epub', cfi: 'epubcfi(/6/4!/4/2)', percent: 0.42 })).toBe(
+    '全书 42%',
+  );
   expect(describeLocator(undefined)).toBe('未提供位置');
 });

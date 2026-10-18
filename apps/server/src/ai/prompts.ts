@@ -40,21 +40,14 @@ export function describeLocator(locator: Locator | undefined): string {
     return '未提供位置';
   }
 
-  let label: string;
-  switch (locator.kind) {
-    case 'pdf':
-      label = `第 ${locator.page} 页`;
-      break;
-    case 'reflow':
-      label = `源页 ${locator.sourcePage}`;
-      break;
-    case 'epub':
-      label = `进度 ${Math.round(locator.percent * 100)}%`;
-      break;
+  // EPUB has no page number, so whole-book progress is the only location label.
+  if (locator.kind === 'epub') {
+    return `全书 ${Math.round(locator.percent * 100)}%`;
   }
 
+  const label = locator.kind === 'pdf' ? `第 ${locator.page} 页` : `源页 ${locator.sourcePage}`;
   if (typeof locator.percent === 'number') {
-    label += `（全书 ${Math.round(locator.percent * 100)}%）`;
+    return `${label}（全书 ${Math.round(locator.percent * 100)}%）`;
   }
   return label;
 }
