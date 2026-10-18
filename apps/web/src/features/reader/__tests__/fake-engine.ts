@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import type { ReaderEngine, ReaderEngineKind, ReaderEventMap } from '@bookr/reader-core';
+import type { Locator } from '@bookr/shared';
 
 /**
  * Recording reader engine shared by the reader UI suites. Every engine method
@@ -20,7 +21,7 @@ export function createFakeEngine(kind: ReaderEngineKind = 'pdf') {
     goToPercent: vi.fn(async (..._args: Parameters<ReaderEngine['goToPercent']>) => {}),
     next: vi.fn(async () => {}),
     previous: vi.fn(async () => {}),
-    currentLocator: vi.fn(() => ({ kind: 'pdf' as const, page: 2, percent: 0.42 })),
+    currentLocator: vi.fn((): Locator => ({ kind: 'pdf' as const, page: 2, percent: 0.42 })),
     setSettings: vi.fn((..._args: Parameters<ReaderEngine['setSettings']>) => {}),
     setHighlights: vi.fn((..._args: Parameters<ReaderEngine['setHighlights']>) => {}),
     on: vi.fn((event: string, listener: (payload: unknown) => void) => {

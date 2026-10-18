@@ -560,10 +560,6 @@
 
 /* ---- reflow view -------------------------------------------------------- */
 
-.reader-content[data-reader-kind='reflow'] {
-  overflow: hidden;
-}
-
 .bookr-reflow-scroll {
   position: absolute;
   inset: 0;

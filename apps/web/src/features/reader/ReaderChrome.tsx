@@ -10,8 +10,10 @@ export type ReaderPanelName = 'toc' | 'settings' | 'annotations' | 'bookmarks';
 export interface ReaderChromeProps {
   book: BookDto;
   kind: ReaderEngineKind;
-  /** The book has a stored pack and its signed URL has been resolved. */
+  /** The book has a stored pack. */
   reflowAvailable: boolean;
+  /** The signed pack URL resolved; false after a failed fetch until a retry. */
+  reflowReady: boolean;
   onToggleReflow: () => void;
   documentInfo: ReaderDocumentInfo | null;
   /** Current 1-based source page; ignored for EPUB. */
@@ -41,6 +43,7 @@ export function ReaderChrome({
   book,
   kind,
   reflowAvailable,
+  reflowReady,
   onToggleReflow,
   documentInfo,
   page,
@@ -99,7 +102,13 @@ export function ReaderChrome({
               type="button"
               aria-pressed={kind === 'reflow'}
               disabled={!reflowAvailable}
-              title={reflowAvailable ? undefined : '尚未上传重排包'}
+              title={
+                !reflowAvailable
+                  ? '尚未上传重排包'
+                  : !reflowReady
+                    ? '重排包地址获取失败，点击重试'
+                    : undefined
+              }
               onClick={onToggleReflow}
             >
               {kind === 'reflow' ? '原版' : '重排'}
