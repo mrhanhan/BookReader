@@ -55,6 +55,9 @@ def write_text_layer_pdf(
                         fontname=_line_fontname(text),
                         render_mode=3,  # invisible but selectable/searchable
                         color=(0, 0, 0),
+                        # Glyphs are drawn in unrotated page space; rotate them
+                        # so they run along the displayed (OCR) line.
+                        rotate=page.rotation,
                     )
                 except Exception:  # noqa: BLE001 - skip an unrenderable line
                     continue

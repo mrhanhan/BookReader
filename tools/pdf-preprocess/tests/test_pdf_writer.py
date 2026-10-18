@@ -56,22 +56,42 @@ def test_text_layer_pdf_without_lines_is_still_written(tmp_path):
     assert pymupdf.open(tmp_path / 'out.pdf').page_count == 2
 
 
-def test_text_layer_insertion_follows_page_rotation(tmp_path):
+@pytest.mark.parametrize(
+    'rotation, line_box',
+    [
+        (90, (420, 100, 520, 112)),
+        (180, (60, 500, 160, 512)),
+        (270, (100, 100, 200, 112)),
+    ],
+)
+@pytest.mark.parametrize('text', ['on edge', '扫描正文'])
+def test_text_layer_insertion_follows_page_rotation(tmp_path, rotation, line_box, text):
     source = tmp_path / 'rotated.pdf'
     document = pymupdf.open()
     page = document.new_page(width=400, height=600)
-    page.set_rotation(90)
+    page.set_rotation(rotation)
     document.save(source)
     document.close()
 
     # Coordinates are in displayed space, as produced by OCR on the render.
-    lines = {1: [RawLine('on right', 420, 100, 520, 112, 11, confidence=0.9)]}
+    x0, y0, x1, y1 = line_box
+    lines = {1: [RawLine(text, x0, y0, x1, y1, 11, confidence=0.9)]}
     output = tmp_path / 'searchable.pdf'
     assert write_text_layer_pdf(str(source), str(output), lines) == 1
 
     rotated = pymupdf.open(output)[0]
-    word = rotated.get_text('words')[0]
-    displayed = pymupdf.Rect(word[:4]) * rotated.rotation_matrix
-    assert displayed.x0 == pytest.approx(420, abs=5)
-    assert displayed.y0 == pytest.approx(100, abs=15)
-    assert displayed.x0 / rotated.rect.width > 0.5
+    extracted = [
+        pymupdf.Rect(line['bbox']) * rotated.rotation_matrix
+        for block in rotated.get_text('dict')['blocks']
+        for line in block.get('lines', [])
+    ]
+    assert len(extracted) == 1
+    displayed = extracted[0]
+    assert text in rotated.get_text()
+    # The glyph run must be horizontal in displayed space, not mirrored onto
+    # the unrotated axis; compare both ends, not just the anchor.
+    assert displayed.width > displayed.height
+    assert displayed.x0 == pytest.approx(x0, abs=1)
+    assert displayed.x1 > displayed.x0 + 10
+    assert displayed.y0 == pytest.approx(y0, abs=3)
+    assert displayed.y1 == pytest.approx(y1, abs=3)
