@@ -1,5 +1,6 @@
 import { newId } from '@bookr/shared';
-import { createUnavailableAiClientFactory } from './ai/types';
+import { FakeAiClient } from './ai/fake';
+import { OpenAiCompatibleClient } from './ai/gateway';
 import type { AppDeps } from './app';
 import { CalibreConverter } from './books/conversion';
 import { ProcessMetadataRunner } from './books/metadata-runner';
@@ -28,6 +29,11 @@ export function createDeps(
     converter: new CalibreConverter(),
     metadataRunner: new ProcessMetadataRunner(),
     syncHub: createSyncHub(),
-    aiClientFactory: createUnavailableAiClientFactory(),
+    aiClientFactory: (aiConfig) =>
+      aiConfig.fakeProvider
+        ? new FakeAiClient()
+        : new OpenAiCompatibleClient(aiConfig.baseUrl, aiConfig.apiKey, {
+            timeoutMs: config.ai.requestTimeoutMs,
+          }),
   };
 }

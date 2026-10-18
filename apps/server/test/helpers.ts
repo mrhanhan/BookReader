@@ -391,7 +391,10 @@ export async function getBookRow(bookId: string): Promise<BookRow | undefined> {
 }
 
 /** Dependency object shared by the app and background jobs in tests. */
-export async function buildTestDeps(overrides: TestConfigOverrides = {}): Promise<AppDeps> {
+export async function buildTestDeps(
+  overrides: TestConfigOverrides = {},
+  extra: Partial<Pick<AppDeps, 'aiClientFactory'>> = {},
+): Promise<AppDeps> {
   const clock: Clock = { now: () => new Date() };
   return {
     config: buildTestConfig(overrides),
@@ -403,7 +406,7 @@ export async function buildTestDeps(overrides: TestConfigOverrides = {}): Promis
     converter: fakeConverter,
     metadataRunner: new InProcessMetadataRunner(),
     syncHub: createSyncHub(),
-    aiClientFactory: createUnavailableAiClientFactory(),
+    aiClientFactory: extra.aiClientFactory ?? createUnavailableAiClientFactory(),
   };
 }
 
@@ -494,8 +497,9 @@ export async function buildTestApp(overrides: TestConfigOverrides = {}): Promise
 export async function createTestApp(
   overrides: TestConfigOverrides = {},
   options: BuildAppOptions = {},
+  extra: Partial<Pick<AppDeps, 'aiClientFactory'>> = {},
 ): Promise<{ app: FastifyInstance; deps: AppDeps }> {
-  const deps = await buildTestDeps(overrides);
+  const deps = await buildTestDeps(overrides, extra);
   return { app: buildApp(deps, options), deps };
 }
 
