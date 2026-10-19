@@ -25,8 +25,21 @@ function formatLocalDate(date: Date, timezone: string): string {
 
 /** Book heading of one note block: `## 《title》` with an optional author. */
 function bookHeading(row: NoteQueryRow): string {
-  const author = row.book.author?.trim();
-  return author ? `## 《${row.book.title}》 · ${author}` : `## 《${row.book.title}》`;
+  // A newline in imported metadata must not split the heading into two lines.
+  const title = row.book.title.replace(/\s+/g, ' ').trim();
+  const author = row.book.author?.replace(/\s+/g, ' ').trim();
+  return author ? `## 《${title}》 · ${author}` : `## 《${title}》`;
+}
+
+/**
+ * Keeps a note from opening a new Markdown block (heading, quote, list or
+ * thematic break) when it is rendered as plain export text.
+ */
+function escapeMarkdownLine(line: string): string {
+  return line.replace(
+    /^(\s*)(#{1,6}(?=\s)|>|[-*+](?=\s)|\d+\.(?=\s)|---+\s*$)/,
+    (_match, indent: string, marker: string) => `${indent}\\${marker}`,
+  );
 }
 
 /**
@@ -43,7 +56,7 @@ function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
 
   const noteText = row.annotation.noteText;
   if (noteText !== null && noteText.trim() !== '') {
-    lines.push('', ...noteText.split(/\r\n|\r|\n/));
+    lines.push('', ...noteText.split(/\r\n|\r|\n/).map(escapeMarkdownLine));
   }
 
   const tags = row.annotation.tags ?? [];

@@ -1,6 +1,7 @@
 import { newId } from '@bookr/shared';
+import { eq } from 'drizzle-orm';
 import { expect, it } from 'vitest';
-import type { AnnotationRow } from '../src/db/schema';
+import { annotations, type AnnotationRow } from '../src/db/schema';
 import { buildNotesMarkdown } from '../src/notes/export';
 import type { NoteQueryRow } from '../src/notes/repo';
 import {
@@ -10,6 +11,8 @@ import {
   seedAnnotation,
   seedBook,
   seedUser,
+  testDb,
+  type SeedAnnotationInput,
 } from './helpers';
 
 const FIXED_NOW = new Date('2026-10-19T02:00:00Z');
@@ -19,6 +22,21 @@ async function fixedApp() {
   const { app, deps } = await createTestApp();
   deps.clock = { now: () => FIXED_NOW };
   return app;
+}
+
+/** Seeds an annotation, then pins its creation time (the shared helper cannot). */
+async function seedNote(
+  input: SeedAnnotationInput & { createdAt?: Date },
+): Promise<AnnotationRow> {
+  const row = await seedAnnotation(input);
+  if (!input.createdAt) {
+    return row;
+  }
+  await testDb
+    .update(annotations)
+    .set({ createdAt: input.createdAt })
+    .where(eq(annotations.id, row.id));
+  return { ...row, createdAt: input.createdAt };
 }
 
 function noteRow(overrides: Partial<AnnotationRow> = {}): NoteQueryRow {
@@ -35,7 +53,7 @@ function noteRow(overrides: Partial<AnnotationRow> = {}): NoteQueryRow {
       tags: [],
       revision: 1,
       deletedAt: null,
-      createdAt: new Date('2026-10-01T00:00:00Z'),
+      createdAt: new Date('2026-10-18T00:00:00Z'),
       updatedAt: new Date('2026-10-18T00:00:00Z'),
       clientUpdatedAt: null,
       ...overrides,
@@ -53,7 +71,7 @@ it('exports grouped Markdown with book, position, quote, note, tags and date', a
     title: '深入理解计算机系统',
     author: 'Randal E. Bryant',
   });
-  await seedAnnotation({
+  await seedNote({
     userId: alice.id,
     bookId: book.id,
     type: 'highlight',
@@ -61,7 +79,9 @@ it('exports grouped Markdown with book, position, quote, note, tags and date', a
     selectedText: '原文第一行\n原文第二行',
     noteText: '批注文字',
     tags: ['历史', '方法论'],
-    updatedAt: new Date('2026-10-18T12:00:00Z'),
+    // The date line shows when the note was written, not when it was edited.
+    createdAt: new Date('2026-10-18T12:00:00Z'),
+    updatedAt: new Date('2026-10-19T12:00:00Z'),
   });
 
   const response = await app.inject({
@@ -164,21 +184,27 @@ it('groups notes from the same book under one heading in creation order', async 
   const app = await fixedApp();
   const alice = await seedUser('member', 'alice');
   const book = await seedBook({ uploadedBy: alice.id, title: '同一本书', author: '作者乙' });
-  const first = await seedAnnotation({
+  const first = await seedNote({
     userId: alice.id,
     bookId: book.id,
     locator: { kind: 'pdf', page: 3, percent: 0.1 },
     selectedText: '先创建的划线',
     tags: ['历史'],
+    createdAt: new Date('2026-10-10T04:00:00Z'),
+    // Deliberately newer than the second note's edit, so an updatedAt sort
+    // would reverse the expected creation order.
+    updatedAt: new Date('2026-10-22T04:00:00Z'),
   });
-  const second = await seedAnnotation({
+  const second = await seedNote({
     userId: alice.id,
     bookId: book.id,
     locator: { kind: 'pdf', page: 8, percent: 0.5 },
     selectedText: '后创建的划线',
     tags: ['历史'],
+    createdAt: new Date('2026-10-12T04:00:00Z'),
+    updatedAt: new Date('2026-10-21T04:00:00Z'),
   });
-  expect(first.createdAt.getTime()).toBeLessThanOrEqual(second.createdAt.getTime());
+  expect(first.createdAt.getTime()).toBeLessThan(second.createdAt.getTime());
 
   const response = await app.inject({
     method: 'GET',
@@ -196,6 +222,13 @@ it('groups notes from the same book under one heading in creation order', async 
   expect(body.indexOf(first.selectedText)).toBeGreaterThan(-1);
   expect(body.indexOf(first.selectedText)).toBeLessThan(body.indexOf(second.selectedText));
   expect(body.match(/^---$/gm)).toHaveLength(1);
+  // Dates come from createdAt, not updatedAt.
+  expect(body).toContain('*2026-10-10*');
+  expect(body).toContain('*2026-10-12*');
+  expect(body.indexOf('*2026-10-10*')).toBeLessThan(body.indexOf('*2026-10-12*'));
+  expect(body).not.toContain('2026-10-20');
+  expect(body).not.toContain('2026-10-21');
+  expect(body).not.toContain('2026-10-22');
 });
 
 it('caps the export and says so', () => {
@@ -221,6 +254,27 @@ it('caps the export and says so', () => {
   expect(markdown.match(/^## 《书名》$/gm)).toHaveLength(1);
   expect(markdown.match(/^---$/gm)).toHaveLength(1);
   expect(markdown.endsWith('*2026-10-18*\n')).toBe(true);
+});
+
+it('escapes markdown-significant note lines and collapses the book title', () => {
+  const row = noteRow({ noteText: '## 伪造书名\n---\n* 列表\n> 引用' });
+  row.book = { id: 'book-id', title: '第一行\n第二行', author: '作者', format: 'pdf' };
+
+  const markdown = buildNotesMarkdown({
+    notes: [row],
+    total: 1,
+    truncated: false,
+    generatedAt: FIXED_NOW,
+    timezone: 'Asia/Shanghai',
+  });
+
+  expect(markdown.match(/^## /gm)).toHaveLength(1);
+  expect(markdown).toContain('## 《第一行 第二行》 · 作者');
+  expect(markdown).toContain('\\## 伪造书名');
+  expect(markdown).toContain('\\---');
+  expect(markdown).toContain('\\* 列表');
+  expect(markdown).toContain('\\> 引用');
+  expect(markdown).not.toContain('\n## 伪造书名');
 });
 
 it('sets a UTF-8 filename in content-disposition', async () => {
