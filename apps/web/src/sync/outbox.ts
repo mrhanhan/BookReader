@@ -6,21 +6,25 @@ import type { OutboxRow } from './types';
  * Appends one unsent mutation. New rows are immediately due; the sync engine
  * owns retry accounting through `attempts` and `nextAttemptAt`.
  *
- * Reading progress is a single position per book, so a queued upsert is
- * updated in place: a burst of page turns then travels as one row carrying the
- * newest locator instead of a backlog of stale positions.
+ * Reading progress is a single position per book and a reading session is a
+ * cumulative heartbeat, so a queued upsert is updated in place: a burst of
+ * page turns or thirty-second beats then travels as one row carrying the
+ * newest values instead of a backlog of stale positions.
  */
 export async function enqueue(
   db: BookrDb,
   change: Omit<OutboxRow, 'attempts' | 'nextAttemptAt'>,
 ): Promise<void> {
-  if (change.entityType === 'reading_progress' && change.op === 'upsert') {
+  const mergeable =
+    change.op === 'upsert' &&
+    (change.entityType === 'reading_progress' || change.entityType === 'reading_session');
+  if (mergeable) {
     const existing = await db.outbox
       .where('userId')
       .equals(change.userId)
       .filter(
         (row) =>
-          row.entityType === 'reading_progress' &&
+          row.entityType === change.entityType &&
           row.entityId === change.entityId &&
           row.op === 'upsert',
       )

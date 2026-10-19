@@ -59,6 +59,7 @@ import {
 import { readLocalProgress } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
+import { useReadingSession } from './useReadingSession';
 import { useReadingMode } from './useReadingMode';
 import { useReaderGestures } from './useReaderGestures';
 import type { ReaderSwipeHandlers, ReaderZoomHandlers } from './useReaderGestures';
@@ -844,6 +845,17 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     bookId: bookId ?? '',
     engine,
     initialLocator,
+  });
+
+  // Reading time is counted only while this book's engine is open and the tab
+  // is in the foreground; sessions travel through the sync outbox.
+  useReadingSession({
+    userId,
+    bookId,
+    enabled: status === 'ready',
+    engine,
+    repo,
+    requestSync,
   });
 
   useEffect(() => {

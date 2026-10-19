@@ -14,6 +14,7 @@ import type {
   LocalAnnotationRow,
   LocalBookmarkRow,
   LocalProgressRow,
+  LocalReadingSessionRow,
   LocalSettingsRow,
   OutboxRow,
 } from '../src/sync/types';
@@ -29,6 +30,7 @@ export interface MemoryRepository extends LocalRepository {
   readonly annotationRows: Map<string, LocalAnnotationRow>;
   readonly bookmarkRows: Map<string, LocalBookmarkRow>;
   readonly settingsRows: Map<string, LocalSettingsRow>;
+  readonly readingSessionRows: Map<string, LocalReadingSessionRow>;
   seedProgress(userId: string, bookId: string, locator: Locator, at?: number): LocalProgressRow;
   seedAnnotation(
     userId: string,
@@ -70,6 +72,7 @@ export function createMemoryRepository(): MemoryRepository {
   const annotationRows = new Map<string, LocalAnnotationRow>();
   const bookmarkRows = new Map<string, LocalBookmarkRow>();
   const settingsRows = new Map<string, LocalSettingsRow>();
+  const readingSessionRows = new Map<string, LocalReadingSessionRow>();
   const cursors = new Map<string, number>();
   const lastSynced = new Map<string, number>();
   const outbox: OutboxRow[] = [];
@@ -82,7 +85,10 @@ export function createMemoryRepository(): MemoryRepository {
     payload: unknown,
     clientUpdatedAt: string,
   ): void {
-    if (entityType === 'reading_progress' && op === 'upsert') {
+    if (
+      op === 'upsert' &&
+      (entityType === 'reading_progress' || entityType === 'reading_session')
+    ) {
       const existing = outbox.find(
         (row) =>
           row.userId === userId &&
@@ -125,6 +131,36 @@ export function createMemoryRepository(): MemoryRepository {
     annotationRows,
     bookmarkRows,
     settingsRows,
+    readingSessionRows,
+
+    async saveReadingSession(userId, input) {
+      const clientUpdatedAt = iso();
+      readingSessionRows.set(input.id, {
+        id: input.id,
+        userId,
+        bookId: input.bookId,
+        startedAt: input.startedAt,
+        endedAt: input.endedAt,
+        activeSeconds: input.activeSeconds,
+        pagesRead: input.pagesRead,
+        clientUpdatedAt,
+        dirty: true,
+      });
+      enqueue(
+        userId,
+        'reading_session',
+        input.id,
+        'upsert',
+        {
+          bookId: input.bookId,
+          startedAt: input.startedAt,
+          endedAt: input.endedAt,
+          activeSeconds: input.activeSeconds,
+          pagesRead: input.pagesRead,
+        },
+        clientUpdatedAt,
+      );
+    },
 
     async progressFor(userId, bookId) {
       return progressRows.get(key(userId, bookId)) ?? null;
@@ -339,12 +375,25 @@ export function createMemoryRepository(): MemoryRepository {
       if (change.op === 'delete') {
         if (change.entityType === 'annotation') annotationRows.delete(change.entityId);
         if (change.entityType === 'bookmark') bookmarkRows.delete(change.entityId);
+        if (change.entityType === 'reading_session') readingSessionRows.delete(change.entityId);
         dropOutbox(userId, change.entityType, change.entityId);
         return 'applied';
       }
 
       const payload = (change.payload ?? {}) as Record<string, unknown>;
-      if (change.entityType === 'reading_progress') {
+      if (change.entityType === 'reading_session') {
+        readingSessionRows.set(change.entityId, {
+          id: change.entityId,
+          userId,
+          bookId: String(payload['bookId']),
+          startedAt: String(payload['startedAt']),
+          endedAt: String(payload['endedAt']),
+          activeSeconds: Number(payload['activeSeconds']),
+          pagesRead: Number(payload['pagesRead']),
+          clientUpdatedAt: String(payload['clientUpdatedAt'] ?? change.clientUpdatedAt),
+          dirty: false,
+        });
+      } else if (change.entityType === 'reading_progress') {
         const bookId = String(payload['bookId'] ?? change.entityId);
         const locator = payload['locator'] as Locator;
         progressRows.set(key(userId, bookId), {

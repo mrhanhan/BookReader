@@ -596,6 +596,13 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
         }
         return;
       }
+      case 'reading_session': {
+        const row = await db.readingSessions.get(entityId);
+        if (row?.dirty === true && row.userId === userId) {
+          await db.readingSessions.update(entityId, { dirty: false });
+        }
+        return;
+      }
     }
   }
 

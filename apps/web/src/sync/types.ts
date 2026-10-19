@@ -31,6 +31,19 @@ export interface LocalBookmarkRow extends BookmarkDto {
   dirty: boolean;
 }
 
+/** Local reading-time session, mirrored into the outbox until acknowledged. */
+export interface LocalReadingSessionRow {
+  id: string;
+  userId: string;
+  bookId: string;
+  startedAt: string;
+  endedAt: string;
+  activeSeconds: number;
+  pagesRead: number;
+  clientUpdatedAt: string;
+  dirty: boolean;
+}
+
 /** Reader settings are one document per user. */
 export interface LocalSettingsRow {
   userId: string;

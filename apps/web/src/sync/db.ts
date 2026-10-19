@@ -4,6 +4,7 @@ import type {
   LocalAnnotationRow,
   LocalBookmarkRow,
   LocalProgressRow,
+  LocalReadingSessionRow,
   LocalSettingsRow,
   OfflineBookRow,
   OutboxRow,
@@ -26,6 +27,7 @@ export class BookrDb extends Dexie {
   meta!: Table<SyncMetaRow, string>;
   offlineBooks!: Table<OfflineBookRow, [string, string]>;
   shelf!: Table<CachedShelfBook, [string, string]>;
+  readingSessions!: Table<LocalReadingSessionRow, string>;
 
   constructor(name = 'bookr-sync') {
     super(name);
@@ -60,6 +62,12 @@ export class BookrDb extends Dexie {
     });
     this.version(5).stores({
       shelf: '[userId+id], userId, id',
+    });
+
+    // Reading sessions are append-mostly: one row per session segment, kept
+    // until the outbox acknowledges the final heartbeat.
+    this.version(6).stores({
+      readingSessions: 'id, userId, bookId, startedAt',
     });
   }
 }

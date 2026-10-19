@@ -68,6 +68,17 @@ export interface LocalRepository {
     label: string | null,
   ): Promise<LocalBookmarkRow | null>;
   deleteBookmark(userId: string, bookId: string, id: string): Promise<void>;
+  saveReadingSession(
+    userId: string,
+    input: {
+      id: string;
+      bookId: string;
+      startedAt: string;
+      endedAt: string;
+      activeSeconds: number;
+      pagesRead: number;
+    },
+  ): Promise<void>;
   settingsFor(userId: string): Promise<LocalSettingsRow | null>;
   saveSettings(userId: string, settings: Record<string, unknown>): Promise<void>;
   pendingCount(userId: string): Promise<number>;
@@ -94,6 +105,15 @@ interface AnnotationPayload extends AnnotationDto {
 
 interface BookmarkPayload extends BookmarkDto {
   clientUpdatedAt: string;
+}
+
+interface ReadingSessionPayload {
+  bookId: string;
+  startedAt: string;
+  endedAt: string;
+  activeSeconds: number;
+  pagesRead: number;
+  clientUpdatedAt?: string;
 }
 
 interface SettingsPayload {
@@ -230,6 +250,35 @@ function readBookmarkPayload(value: unknown): BookmarkPayload | null {
     updatedAt,
     clientUpdatedAt:
       typeof value['clientUpdatedAt'] === 'string' ? value['clientUpdatedAt'] : updatedAt,
+  };
+}
+
+function readReadingSessionPayload(value: unknown): ReadingSessionPayload | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const bookId = value['bookId'];
+  const startedAt = value['startedAt'];
+  const endedAt = value['endedAt'];
+  const activeSeconds = value['activeSeconds'];
+  const pagesRead = value['pagesRead'];
+  if (
+    typeof bookId !== 'string' ||
+    typeof startedAt !== 'string' ||
+    typeof endedAt !== 'string' ||
+    typeof activeSeconds !== 'number' ||
+    typeof pagesRead !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    bookId,
+    startedAt,
+    endedAt,
+    activeSeconds,
+    pagesRead,
+    clientUpdatedAt:
+      typeof value['clientUpdatedAt'] === 'string' ? value['clientUpdatedAt'] : undefined,
   };
 }
 
@@ -479,6 +528,44 @@ async function applySettingsChange(
   });
 }
 
+async function applyReadingSessionChange(
+  db: BookrDb,
+  userId: string,
+  change: SyncChangeEnvelope,
+): Promise<'applied' | 'skipped'> {
+  return db.transaction('rw', db.readingSessions, db.outbox, async () => {
+    const local = await db.readingSessions.get(change.entityId);
+    const pending = await pendingFor(db, userId, 'reading_session', change.entityId);
+    if (!serverWins(pending, local?.clientUpdatedAt, change.clientUpdatedAt)) {
+      return 'skipped';
+    }
+
+    if (change.op === 'delete') {
+      await db.readingSessions.delete(change.entityId);
+      await dropOutboxFor(db, userId, 'reading_session', change.entityId);
+      return 'applied';
+    }
+
+    const payload = readReadingSessionPayload(change.payload);
+    if (payload === null) {
+      return 'skipped';
+    }
+    await db.readingSessions.put({
+      id: change.entityId,
+      userId,
+      bookId: payload.bookId,
+      startedAt: payload.startedAt,
+      endedAt: payload.endedAt,
+      activeSeconds: payload.activeSeconds,
+      pagesRead: payload.pagesRead,
+      clientUpdatedAt: payload.clientUpdatedAt ?? change.clientUpdatedAt,
+      dirty: false,
+    });
+    await dropOutboxFor(db, userId, 'reading_session', change.entityId);
+    return 'applied';
+  });
+}
+
 /** Local-first store used by the reader, the settings page and the sync engine. */
 export function createRepository(db: BookrDb): LocalRepository {
   return {
@@ -711,6 +798,38 @@ export function createRepository(db: BookrDb): LocalRepository {
           entityId: id,
           op: 'delete',
           payload: undefined,
+          clientUpdatedAt,
+        });
+      });
+    },
+
+    async saveReadingSession(userId, input) {
+      const clientUpdatedAt = clientTimeOf();
+      await db.transaction('rw', db.readingSessions, db.outbox, async () => {
+        await db.readingSessions.put({
+          id: input.id,
+          userId,
+          bookId: input.bookId,
+          startedAt: input.startedAt,
+          endedAt: input.endedAt,
+          activeSeconds: input.activeSeconds,
+          pagesRead: input.pagesRead,
+          clientUpdatedAt,
+          dirty: true,
+        });
+        await enqueue(db, {
+          id: newId(),
+          userId,
+          entityType: 'reading_session',
+          entityId: input.id,
+          op: 'upsert',
+          payload: {
+            bookId: input.bookId,
+            startedAt: input.startedAt,
+            endedAt: input.endedAt,
+            activeSeconds: input.activeSeconds,
+            pagesRead: input.pagesRead,
+          },
           clientUpdatedAt,
         });
       });
