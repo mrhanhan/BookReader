@@ -418,7 +418,7 @@ export async function storageOverview(deps: AppDeps): Promise<StorageOverview> {
       .select({ id: books.id, title: books.title, size: books.size })
       .from(books)
       .where(isNull(books.deletedAt))
-      .orderBy(desc(books.size), books.createdAt)
+      .orderBy(desc(books.size), books.createdAt, books.id)
       .limit(TOP_BOOKS_LIMIT),
   ]);
 

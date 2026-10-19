@@ -97,9 +97,10 @@ export async function registerUser(deps: AppDeps, input: RegisterInput): Promise
   const refresh = newRefreshToken();
 
   const session = await deps.db.transaction(async (tx) => {
-    // The registration toggle is read inside the same transaction that locks
-    // and consumes the invite, so a concurrent "close registration" request
-    // cannot slip a new account in between the check and the insert.
+    // Read the registration toggle through the transaction client so the
+    // check participates in the same transaction that locks and consumes the
+    // invite; reading it outside would use a value from a different statement
+    // and could already be stale by the time the invite is redeemed.
     const settings = await readSystemSettings(tx);
     if (!settings.registrationEnabled) {
       throw new AppError(403, ERROR_CODES.FORBIDDEN, undefined, '注册暂未开放');

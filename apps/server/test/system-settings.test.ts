@@ -56,8 +56,13 @@ it('blocks registration while disabled and applies the default timezone when ena
   });
   expect(blocked.statusCode).toBe(403);
   expect((await testDb.select().from(users)).some((row) => row.username === 'blocked')).toBe(false);
+  const [inviteRow] = await testDb.select().from(invites).where(eq(invites.code, 'ABCDEFGHJK'));
+  expect(inviteRow?.usedAt).toBeNull();
+  expect(inviteRow?.usedBy).toBeNull();
 
   await app.inject({ method: 'PATCH', url: '/api/admin/settings', headers: await authHeader(admin), payload: { registrationEnabled: true, defaultTimezone: 'America/New_York' } });
+  const [existing] = await testDb.select().from(users).where(eq(users.id, admin.id));
+  expect(existing?.timezone).toBe('Asia/Shanghai');
   const created = await app.inject({
     method: 'POST', url: '/api/auth/register',
     payload: { inviteCode: 'ABCDEFGHJK', username: 'newbie', password: 'a-long-password', displayName: '新人' },
