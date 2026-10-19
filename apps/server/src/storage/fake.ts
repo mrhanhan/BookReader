@@ -36,6 +36,10 @@ export class FakeStorage implements StorageService {
     return body ? { size: body.length } : null;
   }
 
+  async checkBucket(): Promise<void> {
+    // The in-memory store is always "reachable".
+  }
+
   async readFirstBytes(key: string, length: number): Promise<Buffer> {
     return Buffer.from(this.requireObject(key).subarray(0, length));
   }

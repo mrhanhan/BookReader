@@ -3,6 +3,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -26,19 +27,6 @@ function isNotFound(error: unknown): boolean {
     candidate.name === 'NoSuchKey' ||
     candidate.$metadata?.httpStatusCode === 404
   );
-}
-
-/**
- * A missing bucket (NoSuchBucket) also carries HTTP 404, but it is a broken
- * deployment, not a missing object: `ensureBucket` creates the bucket at
- * startup, so treating it as "object absent" would make /readyz report a
- * healthy storage backend. Only object-level misses count.
- */
-function isMissingObject(error: unknown): boolean {
-  if (!isNotFound(error)) {
-    return false;
-  }
-  return (error as { name?: string }).name !== 'NoSuchBucket';
 }
 
 function toBuffer(body: unknown): Buffer {
@@ -136,6 +124,16 @@ export class S3Storage implements StorageService {
     );
   }
 
+  async checkBucket(): Promise<void> {
+    // A list request is a GET, so a missing bucket answers with an explicit
+    // NoSuchBucket error body. HeadObject cannot be used here: HEAD responses
+    // carry no body, and the SDK collapses a missing bucket into
+    // `NotFound`/404, which is indistinguishable from a missing object.
+    await this.client.send(
+      new ListObjectsV2Command({ Bucket: this.bucket, MaxKeys: 1 }),
+    );
+  }
+
   async head(key: string): Promise<StoredObjectInfo | null> {
     try {
       const response = await this.client.send(
@@ -143,7 +141,7 @@ export class S3Storage implements StorageService {
       );
       return { size: response.ContentLength ?? 0 };
     } catch (error) {
-      if (isMissingObject(error)) {
+      if (isNotFound(error)) {
         return null;
       }
       throw error;

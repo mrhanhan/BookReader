@@ -14,9 +14,9 @@ it('reports ready with a reachable database and storage', async () => {
 
 it('reports degraded when storage fails, without leaking details', async () => {
   const built = await createTestApp();
-  // FakeStorage 是测试进程共享的单例，不能改它的方法；用原型链包一层只覆盖 head。
+  // FakeStorage 是测试进程共享的单例，不能改它的方法；用原型链包一层只覆盖 checkBucket。
   built.deps.storage = Object.create(built.deps.storage, {
-    head: { value: async () => { throw new Error('secret endpoint http://minio:9000'); } },
+    checkBucket: { value: async () => { throw new Error('secret endpoint http://minio:9000'); } },
   });
   const response = await built.app.inject({ method: 'GET', url: '/readyz' });
   expect(response.statusCode).toBe(503);
@@ -27,7 +27,7 @@ it('reports degraded when storage fails, without leaking details', async () => {
 it('reports degraded when the storage bucket is missing', async () => {
   const built = await createTestApp();
   built.deps.storage = Object.create(built.deps.storage, {
-    head: {
+    checkBucket: {
       value: async () => {
         const error = new Error('The specified bucket does not exist');
         error.name = 'NoSuchBucket';

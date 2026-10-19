@@ -37,6 +37,13 @@ export interface StorageService {
     expiresInSeconds: number,
   ): Promise<PresignedPost>;
   presignGet(key: string, expiresInSeconds: number): Promise<string>;
+  /**
+   * Verifies that the configured bucket is reachable. Resolves when it is,
+   * throws on any failure (missing bucket, credentials, transport). Readiness
+   * uses this instead of `head`: a HEAD response carries no error body, so a
+   * missing bucket is indistinguishable from a missing object there.
+   */
+  checkBucket(): Promise<void>;
   head(key: string): Promise<StoredObjectInfo | null>;
   readFirstBytes(key: string, length: number): Promise<Buffer>;
   getObject(key: string): Promise<Buffer>;

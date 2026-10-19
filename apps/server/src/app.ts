@@ -163,8 +163,9 @@ async function databaseReachable(deps: AppDeps): Promise<boolean> {
 
 async function storageReachable(deps: AppDeps): Promise<boolean> {
   try {
-    // A missing probe object still proves the backend answered.
-    await withTimeout(deps.storage.head('__readyz_probe__'), READYZ_TIMEOUT_MS);
+    // Probing the bucket itself distinguishes "empty but healthy" from
+    // "bucket missing", which a HEAD for a probe object cannot do.
+    await withTimeout(deps.storage.checkBucket(), READYZ_TIMEOUT_MS);
     return true;
   } catch {
     return false;

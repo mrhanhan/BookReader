@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { S3Client } from '@aws-sdk/client-s3';
+import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../src/config';
 import { S3Storage } from '../src/storage/s3';
@@ -106,29 +107,30 @@ describe('S3Storage endpoints', () => {
     expect(requests.every(({ host }) => host === internalHost)).toBe(true);
   });
 
-  it('treats a missing bucket as an error but a missing key as absent', async () => {
+  it('checkBucket fails when the bucket is missing', async () => {
     const client = (
       storage as unknown as { client: { send: (command: unknown) => Promise<unknown> } }
     ).client;
     const originalSend = client.send;
+    const sent: unknown[] = [];
     try {
       const noSuchBucket = Object.assign(new Error('bucket missing'), {
         name: 'NoSuchBucket',
         $metadata: { httpStatusCode: 404 },
       });
-      client.send = async () => {
+      client.send = async (command: unknown) => {
+        sent.push(command);
         throw noSuchBucket;
       };
-      await expect(storage.head('library/book.pdf')).rejects.toBe(noSuchBucket);
-
-      const noSuchKey = Object.assign(new Error('object missing'), {
-        name: 'NoSuchKey',
-        $metadata: { httpStatusCode: 404 },
+      await expect(storage.checkBucket()).rejects.toBe(noSuchBucket);
+      // A list (GET) probe is what makes a missing bucket observable; HEAD
+      // responses have no body and surface as a generic NotFound.
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toBeInstanceOf(ListObjectsV2Command);
+      expect((sent[0] as ListObjectsV2Command).input).toMatchObject({
+        Bucket: 'bookr',
+        MaxKeys: 1,
       });
-      client.send = async () => {
-        throw noSuchKey;
-      };
-      await expect(storage.head('library/book.pdf')).resolves.toBeNull();
     } finally {
       client.send = originalSend;
     }
