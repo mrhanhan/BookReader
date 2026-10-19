@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Dialog, EmptyState, Input, cn } from '@bookr/ui';
 import { useInvites, useMembers, useRevokeInvite, useStorageOverview, useUpdateMember } from '../../api/admin';
-import type { AdminInvite, AdminMember } from '../../api/admin';
+import type { AdminInvite, AdminMember, UpdateMemberInput } from '../../api/admin';
 import { useAuth } from '../../app/auth';
 import { messageForApiError } from '../../lib/errorMessages';
 import { formatBytes, formatDateTime } from '../../lib/format';
 import { Toast } from '../bookshelf/Toast';
+import { AdminTabs } from './AdminTabs';
 import { InviteDialog } from './InviteDialog';
 
 /** A short, shared sentence for a failed administration request. */
@@ -90,6 +91,25 @@ function StorageOverviewSection() {
           </li>
         ))}
       </ul>
+
+      <div className="mt-5">
+        <h3 className="text-sm font-medium text-ink">最大的 10 本书</h3>
+        {overview.topBooks.length === 0 ? (
+          <p className="mt-1 text-xs text-muted">书库里还没有图书。</p>
+        ) : (
+          <ol className="mt-2 divide-y divide-border rounded-md border border-border">
+            {overview.topBooks.map((book, index) => (
+              <li key={book.id} className="flex items-baseline gap-3 px-3 py-2 text-xs">
+                <span className="w-5 shrink-0 tabular-nums text-muted">{index + 1}</span>
+                <span className="min-w-0 flex-1 truncate text-ink">{book.title}</span>
+                <span className="shrink-0 tabular-nums text-muted">
+                  {formatBytes(book.sizeBytes)}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
     </section>
   );
 }
@@ -101,6 +121,7 @@ interface MemberRowProps {
   isCurrentUser: boolean;
   onToggle: (member: AdminMember, isActive: boolean) => void;
   onSaveQuota: (member: AdminMember, bytes: number) => void;
+  onEdit: (member: AdminMember) => void;
   onResetPassword: (member: AdminMember) => void;
 }
 
@@ -111,6 +132,7 @@ function MemberRow({
   isCurrentUser,
   onToggle,
   onSaveQuota,
+  onEdit,
   onResetPassword,
 }: MemberRowProps) {
   const [quota, setQuota] = useState(() => String(member.uploadQuotaBytes));
@@ -225,15 +247,26 @@ function MemberRow({
         </div>
       </td>
       <td className={cn(cellClass, 'text-right')}>
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label={`重置 ${member.displayName} 的密码`}
-          disabled={busy}
-          onClick={() => onResetPassword(member)}
-        >
-          重置密码
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`编辑 ${member.displayName}`}
+            disabled={busy}
+            onClick={() => onEdit(member)}
+          >
+            编辑
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`重置 ${member.displayName} 的密码`}
+            disabled={busy}
+            onClick={() => onResetPassword(member)}
+          >
+            重置密码
+          </Button>
+        </div>
       </td>
     </tr>
   );
@@ -308,6 +341,122 @@ function ResetPasswordDialog({ member, onClose, onReset }: ResetPasswordDialogPr
   );
 }
 
+interface EditMemberDialogProps {
+  member: AdminMember;
+  onClose: () => void;
+  onSaved: (member: AdminMember) => void;
+}
+
+/**
+ * AI access and token allowances for one member. Blank limits stay unchanged,
+ * which keeps the dialog safe to open just to flip the switch.
+ */
+function EditMemberDialog({ member, onClose, onSaved }: EditMemberDialogProps) {
+  const updateMember = useUpdateMember();
+  const [aiEnabled, setAiEnabled] = useState(member.aiEnabled);
+  const [daily, setDaily] = useState('');
+  const [monthly, setMonthly] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  function submit() {
+    setError(null);
+    const patch: UpdateMemberInput = { aiEnabled };
+
+    const dailyText = daily.trim();
+    if (dailyText !== '') {
+      const value = Number(dailyText);
+      if (!/^\d+$/.test(dailyText) || !Number.isSafeInteger(value) || value <= 0) {
+        setError('每日 token 上限必须是正整数');
+        return;
+      }
+      patch.aiDailyTokenLimit = value;
+    }
+
+    const monthlyText = monthly.trim();
+    if (monthlyText !== '') {
+      const value = Number(monthlyText);
+      if (!/^\d+$/.test(monthlyText) || !Number.isSafeInteger(value) || value <= 0) {
+        setError('每月 token 上限必须是正整数');
+        return;
+      }
+      patch.aiMonthlyTokenLimit = value;
+    }
+
+    updateMember.mutate(
+      { id: member.id, patch },
+      {
+        onSuccess: () => {
+          onSaved(member);
+          onClose();
+        },
+        onError: (cause) => setError(messageForApiError(cause)),
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="编辑成员"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={updateMember.isPending}>
+            取消
+          </Button>
+          <Button onClick={submit} loading={updateMember.isPending}>
+            保存
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-muted">
+          正在编辑 <span className="text-ink">{member.displayName}</span>。留空的上限保持原值不变。
+        </p>
+
+        <label className="flex w-fit items-center gap-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            checked={aiEnabled}
+            disabled={updateMember.isPending}
+            onChange={(event) => setAiEnabled(event.target.checked)}
+            className="size-4 rounded border-border accent-accent"
+          />
+          启用 AI 伴读
+        </label>
+
+        <Input
+          label="每日 token 上限"
+          type="text"
+          inputMode="numeric"
+          value={daily}
+          disabled={updateMember.isPending}
+          placeholder="留空表示不修改"
+          hint={`当前 ${member.aiDailyTokenLimit.toLocaleString('zh-CN')} tokens`}
+          onChange={(event) => setDaily(event.target.value)}
+        />
+        <Input
+          label="每月 token 上限"
+          type="text"
+          inputMode="numeric"
+          value={monthly}
+          disabled={updateMember.isPending}
+          placeholder="留空表示不修改"
+          hint={`当前 ${member.aiMonthlyTokenLimit.toLocaleString('zh-CN')} tokens`}
+          onChange={(event) => setMonthly(event.target.value)}
+        />
+
+        {error ? (
+          <p role="alert" className={alertClass}>
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
 /** Administration for members, invites and the shared storage pool. */
 export function MembersPage() {
   const { user } = useAuth();
@@ -318,6 +467,7 @@ export function MembersPage() {
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [resetting, setResetting] = useState<AdminMember | null>(null);
+  const [editing, setEditing] = useState<AdminMember | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const dismissToast = useCallback(() => setNotice(null), []);
@@ -362,6 +512,8 @@ export function MembersPage() {
         <h1 className="font-serif text-2xl text-ink">成员与邀请</h1>
         <p className="mt-1 text-sm text-muted">照看书房的成员、启用邀请与共享空间。</p>
       </div>
+
+      <AdminTabs />
 
       {pageError ? (
         <p role="alert" className={alertClass}>
@@ -428,6 +580,7 @@ export function MembersPage() {
                     isCurrentUser={user?.id === member.id}
                     onToggle={toggleActive}
                     onSaveQuota={saveQuota}
+                    onEdit={setEditing}
                     onResetPassword={setResetting}
                   />
                 ))}
@@ -509,6 +662,15 @@ export function MembersPage() {
           member={resetting}
           onClose={() => setResetting(null)}
           onReset={(member) => setNotice(`已重置 ${member.displayName} 的密码`)}
+        />
+      ) : null}
+
+      {editing ? (
+        <EditMemberDialog
+          key={editing.id}
+          member={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(member) => setNotice(`已更新 ${member.displayName} 的 AI 设置`)}
         />
       ) : null}
 

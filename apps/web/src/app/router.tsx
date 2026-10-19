@@ -1,9 +1,12 @@
 import { createBrowserRouter, Navigate, Outlet, useLocation, useParams } from 'react-router';
 import type { RouteObject } from 'react-router';
 import type { ReactNode } from 'react';
+import { AdminSettingsPage } from '../features/admin/AdminSettingsPage';
+import { AuditPage } from '../features/admin/AuditPage';
+import { BackupsPage } from '../features/admin/BackupsPage';
+import { MembersPage } from '../features/admin/MembersPage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RegisterPage } from '../features/auth/RegisterPage';
-import { MembersPage } from '../features/admin/MembersPage';
 import { BookshelfPage } from '../features/bookshelf/BookshelfPage';
 import { TrashPage } from '../features/bookshelf/TrashPage';
 import { NotesPage } from '../features/notes/NotesPage';
@@ -85,6 +88,30 @@ export const routes: RouteObject[] = [
             element: (
               <RequireAdmin>
                 <MembersPage />
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'admin/settings',
+            element: (
+              <RequireAdmin>
+                <AdminSettingsPage />
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'admin/audit',
+            element: (
+              <RequireAdmin>
+                <AuditPage />
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'admin/backups',
+            element: (
+              <RequireAdmin>
+                <BackupsPage />
               </RequireAdmin>
             ),
           },

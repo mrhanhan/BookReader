@@ -4,7 +4,9 @@ import { LIBRARY_QUOTA_BYTES, MEMBER_UPLOAD_QUOTA_BYTES } from '@bookr/shared';
 import type {
   AnnotationColor,
   AnnotationDto,
+  AuditLogEntryDto,
   AuthTokens,
+  BackupStatusDto,
   BookDto,
   BookmarkDto,
   BookStatus,
@@ -13,6 +15,7 @@ import type {
   MeDto,
   NoteDto,
   ReadingStatsDto,
+  SystemSettingsDto,
 } from '@bookr/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '@testing-library/react';
@@ -22,7 +25,12 @@ import { setupServer } from 'msw/node';
 import { createElement } from 'react';
 import type { ReactElement } from 'react';
 import { afterAll, afterEach, beforeAll } from 'vitest';
-import type { AdminInvite, AdminMember, StorageOverview } from '../src/api/admin';
+import type {
+  AdminAiConfig,
+  AdminInvite,
+  AdminMember,
+  StorageOverview,
+} from '../src/api/admin';
 import { AuthProvider } from '../src/app/auth';
 
 const tokens: AuthTokens = {
@@ -43,6 +51,25 @@ export const reader: MeDto = {
   libraryUsedBytes: 0,
   libraryQuotaBytes: LIBRARY_QUOTA_BYTES,
 };
+
+/** The administrator used by administration suites. */
+export const adminUser: MeDto = {
+  id: 'user-admin',
+  username: 'keeper',
+  displayName: '掌灯人',
+  role: 'admin',
+  timezone: 'Asia/Shanghai',
+  aiEnabled: false,
+  uploadUsedBytes: 0,
+  uploadQuotaBytes: 20 * 1024 * 1024 * 1024,
+  libraryUsedBytes: 0,
+  libraryQuotaBytes: LIBRARY_QUOTA_BYTES,
+};
+
+/** Signs the session in as an administrator for the current test. */
+export function signInAsAdmin(overrides: Partial<MeDto> = {}): void {
+  server.use(http.get('/api/auth/me', () => HttpResponse.json({ ...adminUser, ...overrides })));
+}
 
 const error = (status: number, code: string, message: string) =>
   HttpResponse.json({ error: { code, message } }, { status });
@@ -163,6 +190,88 @@ function annotationFromNote(item: NoteDto) {
 }
 
 /**
+ * Backup status fixture: a healthy server export and a recent backup-PC
+ * heartbeat. Tests override individual fields to exercise the warning banners.
+ */
+export function backupStatus(overrides: Partial<BackupStatusDto> = {}): BackupStatusDto {
+  const successAt = '2026-10-18T03:00:00.000Z';
+  return {
+    lastSuccessAt: successAt,
+    lastServerExportAt: successAt,
+    lastBackupPcAt: '2026-10-18T04:30:00.000Z',
+    backupStale: false,
+    backupPcSilent: false,
+    diskFreeBytes: 320 * 1024 * 1024 * 1024,
+    diskTotalBytes: 512 * 1024 * 1024 * 1024,
+    diskLow: false,
+    reports: [
+      {
+        id: 'report-1',
+        source: 'server-export',
+        status: 'success',
+        startedAt: '2026-10-18T02:55:00.000Z',
+        finishedAt: successAt,
+        bytes: 2.5 * 1024 * 1024 * 1024,
+        diskFreeBytes: 320 * 1024 * 1024 * 1024,
+        diskTotalBytes: 512 * 1024 * 1024 * 1024,
+        message: '服务器导出完成',
+        receivedAt: successAt,
+      },
+      {
+        id: 'report-2',
+        source: 'backup-pc',
+        status: 'success',
+        startedAt: '2026-10-18T04:20:00.000Z',
+        finishedAt: '2026-10-18T04:30:00.000Z',
+        bytes: 2 * 1024 * 1024 * 1024,
+        diskFreeBytes: 900 * 1024 * 1024 * 1024,
+        diskTotalBytes: 1024 * 1024 * 1024 * 1024,
+        message: '备份机拉取完成',
+        receivedAt: '2026-10-18T04:30:00.000Z',
+      },
+    ],
+    alerts: [],
+    ...overrides,
+  };
+}
+
+/** Audit-log fixture: 25 rows so the page size of 20 yields two pages. */
+function auditEntries(now: number): AuditLogEntryDto[] {
+  const actions = [
+    'auth.login',
+    'book.delete',
+    'admin.settings.update',
+    'admin.member.update',
+    'admin.invite.create',
+    'admin.invite.revoke',
+    'ai.config.update',
+    'custom.unknown',
+  ];
+  return Array.from({ length: 25 }, (_, index) => ({
+    id: `audit-${index + 1}`,
+    userId: index % 7 === 0 ? null : 'user-admin',
+    displayName: index % 7 === 0 ? null : '掌灯人',
+    action: actions[index % actions.length] ?? 'auth.login',
+    target: index === 1 ? 'book-three-body' : null,
+    metadata: index === 1 ? { title: '三体', size: 3 * 1024 * 1024 } : null,
+    createdAt: new Date(now - index * 60 * 60 * 1000).toISOString(),
+  }));
+}
+
+/** Unconfigured provider; tests may override to assert the saved-key copy. */
+function aiConfigFixture(): AdminAiConfig {
+  return {
+    configured: false,
+    fakeProvider: false,
+    baseUrl: null,
+    chatModel: null,
+    reasonerModel: null,
+    hasApiKey: false,
+    updatedAt: null,
+  };
+}
+
+/**
  * Mutable fixture state shared by the handlers. Tests can exercise real
  * shelves by deleting/restoring through the UI; `resetFixtures` restores the
  * seed between tests because `server.resetHandlers()` only drops overrides.
@@ -230,6 +339,9 @@ function createFixtureState() {
       role: 'admin',
       isActive: true,
       uploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
+      aiEnabled: false,
+      aiDailyTokenLimit: 100_000,
+      aiMonthlyTokenLimit: 1_000_000,
       usedBytes: 0,
       createdAt: new Date(now - 90 * DAY_MS).toISOString(),
     },
@@ -240,6 +352,9 @@ function createFixtureState() {
       role: 'member',
       isActive: true,
       uploadQuotaBytes: MEMBER_UPLOAD_QUOTA_BYTES,
+      aiEnabled: true,
+      aiDailyTokenLimit: 100_000,
+      aiMonthlyTokenLimit: 1_000_000,
       usedBytes: 28 * 1024 * 1024,
       createdAt: new Date(now - 60 * DAY_MS).toISOString(),
     },
@@ -250,6 +365,9 @@ function createFixtureState() {
       role: 'member',
       isActive: true,
       uploadQuotaBytes: 10 * 1024 * 1024 * 1024,
+      aiEnabled: false,
+      aiDailyTokenLimit: 20_000,
+      aiMonthlyTokenLimit: 200_000,
       usedBytes: 3 * 1024 * 1024,
       createdAt: new Date(now - 30 * DAY_MS).toISOString(),
     },
@@ -289,6 +407,14 @@ function createFixtureState() {
     trash: [trashed] as BookDto[],
     members,
     invites,
+    settings: {
+      registrationEnabled: true,
+      defaultTimezone: 'Asia/Shanghai',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    } as SystemSettingsDto,
+    audit: auditEntries(now),
+    ai: aiConfigFixture(),
+    backup: backupStatus(),
     // Reader annotations and bookmarks start empty so Task 10's reader tests
     // keep seeing empty lists until a test seeds or creates its own.
     annotations: [] as AnnotationDto[],
@@ -410,6 +536,11 @@ function storageFromMembers(members: AdminMember[]): StorageOverview {
     totalBytes: LIBRARY_QUOTA_BYTES,
     usedBytes: perMember.reduce((sum, member) => sum + member.usedBytes, 0),
     perMember,
+    topBooks: [
+      { id: 'book-csapp', title: '深入理解计算机系统', sizeBytes: 28 * 1024 * 1024 },
+      { id: 'book-algorithms', title: '算法导论', sizeBytes: 12 * 1024 * 1024 },
+      { id: 'book-ddia', title: '设计数据密集型应用', sizeBytes: 5 * 1024 * 1024 },
+    ],
   };
 }
 
@@ -750,6 +881,9 @@ export const handlers = [
     const patch = (await request.json()) as {
       isActive?: boolean;
       uploadQuotaBytes?: number;
+      aiEnabled?: boolean;
+      aiDailyTokenLimit?: number;
+      aiMonthlyTokenLimit?: number;
       password?: string;
     };
     const member = fixtures.members.find((item) => item.id === params.id);
@@ -757,6 +891,13 @@ export const handlers = [
 
     if (patch.isActive !== undefined) member.isActive = patch.isActive;
     if (patch.uploadQuotaBytes !== undefined) member.uploadQuotaBytes = patch.uploadQuotaBytes;
+    if (patch.aiEnabled !== undefined) member.aiEnabled = patch.aiEnabled;
+    if (patch.aiDailyTokenLimit !== undefined) {
+      member.aiDailyTokenLimit = patch.aiDailyTokenLimit;
+    }
+    if (patch.aiMonthlyTokenLimit !== undefined) {
+      member.aiMonthlyTokenLimit = patch.aiMonthlyTokenLimit;
+    }
     // Passwords are hashed server-side; the summary never carries them.
     return HttpResponse.json({ ...member });
   }),
@@ -786,6 +927,52 @@ export const handlers = [
   http.get('/api/admin/storage', () =>
     HttpResponse.json(storageFromMembers(fixtures.members)),
   ),
+  http.get('/api/admin/settings', () => HttpResponse.json(fixtures.settings)),
+  http.patch('/api/admin/settings', async ({ request }) => {
+    const patch = (await request.json()) as {
+      registrationEnabled?: boolean;
+      defaultTimezone?: string;
+    };
+    if (patch.registrationEnabled !== undefined) {
+      fixtures.settings.registrationEnabled = patch.registrationEnabled;
+    }
+    if (patch.defaultTimezone !== undefined) {
+      fixtures.settings.defaultTimezone = patch.defaultTimezone;
+    }
+    fixtures.settings.updatedAt = new Date().toISOString();
+    return HttpResponse.json(fixtures.settings);
+  }),
+  http.get('/api/admin/audit', ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const page = Number(params.get('page') ?? 1);
+    const pageSize = Number(params.get('pageSize') ?? 30);
+    const start = (page - 1) * pageSize;
+    return HttpResponse.json({
+      items: fixtures.audit.slice(start, start + pageSize),
+      page,
+      pageSize,
+      total: fixtures.audit.length,
+    });
+  }),
+  http.get('/api/admin/backup', () => HttpResponse.json(fixtures.backup)),
+  http.get('/api/admin/ai', () => HttpResponse.json(fixtures.ai)),
+  http.put('/api/admin/ai', async ({ request }) => {
+    const patch = (await request.json()) as {
+      baseUrl?: string;
+      chatModel?: string;
+      reasonerModel?: string;
+      apiKey?: string;
+    };
+    if (patch.baseUrl !== undefined) fixtures.ai.baseUrl = patch.baseUrl;
+    if (patch.chatModel !== undefined) fixtures.ai.chatModel = patch.chatModel;
+    if (patch.reasonerModel !== undefined) fixtures.ai.reasonerModel = patch.reasonerModel;
+    if (patch.apiKey !== undefined) {
+      fixtures.ai.configured = true;
+      fixtures.ai.hasApiKey = true;
+    }
+    fixtures.ai.updatedAt = new Date().toISOString();
+    return HttpResponse.json(fixtures.ai);
+  }),
 ];
 
 export const server = setupServer(...handlers);
