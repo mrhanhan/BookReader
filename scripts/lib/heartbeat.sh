@@ -50,11 +50,14 @@ _heartbeat_is_uint() {
 
 # backup-export.sh exports MSYS_NO_PATHCONV=1 so container paths reach Docker
 # unchanged, which also stops Git Bash from translating /dev/null into the
-# Windows device. Windows curl then fails to open the path (exit 23) and the
-# report is silently lost, so pick the platform null device explicitly.
+# Windows device. Windows curl then fails to open the output path (exit 23)
+# *after* the request has been sent, so a delivered report is reported as
+# failed and the warning hides the real cause. Pick the platform null device
+# explicitly. Cygwin is deliberately absent: its curl is a Cygwin binary where
+# /dev/null already works and "nul" would be an ordinary file name.
 _heartbeat_null_device() {
   case "$(uname -s 2>/dev/null || printf unknown)" in
-    MINGW* | MSYS* | CYGWIN*) printf nul ;;
+    MINGW* | MSYS*) printf nul ;;
     *) printf /dev/null ;;
   esac
 }

@@ -289,6 +289,12 @@ cd /srv/bookr
 
 通过标准：8 张核心表（`users`、`books`、`reading_progress`、`annotations`、`bookmarks`、`reading_sessions`、`daily_stats`、`categories`）恢复后的行数不少于记录值（正常应相等）；演练最新 dump 时，MinIO 对象数与总字节还须和 manifest 完全一致，且数据库引用的对象在备份镜像中确实存在。任何一项不满足即判定 FAIL 并以非 0 退出。
 
+已知边界（判断 FAIL 时先对照）：
+
+- 导出先采集 dump、再镜像对象（见 `scripts/backup-export.sh`）。若某个在 dump 时刻仍被存活图书引用的对象，在两者之间的分钟级窗口内被删除（换封面、删除或替换重排包都会删掉旧对象），而它又尚未被更早的导出镜像过，演练会报该键缺失，而备份其实完好。镜像累积不删（`mc mirror` 不带 `--remove`），命中概率很低。
+- 对象校验只覆盖 `books` 引用的对象；上传会话与重排会话的临时对象不在范围内（已完成的会话对象就是该书的 `file_key`，已被覆盖）。
+- 只校验对象存在，不校验内容完整性：被截断或 0 字节的对象不会被发现（manifest 目前只记录 dump 的 `db_sha256`）。
+
 演练后清理：
 
 - 默认自动删除临时库；脚本异常中断时可手动执行：
