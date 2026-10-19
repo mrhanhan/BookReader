@@ -60,6 +60,7 @@ export function NoteAnalysisPanel({
   const [saved, setSaved] = useState<NoteAnalysisDto | null>(null);
   const [savedLoading, setSavedLoading] = useState(false);
   const mounted = useRef(true);
+  const historyRetry = useRef<number | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   // Opening B while A is in flight must discard A's late response.
@@ -70,6 +71,10 @@ export function NoteAnalysisPanel({
     headingRef.current?.focus();
     return () => {
       mounted.current = false;
+      if (historyRetry.current !== null) {
+        window.clearTimeout(historyRetry.current);
+        historyRetry.current = null;
+      }
     };
   }, []);
 
@@ -104,7 +109,8 @@ export function NoteAnalysisPanel({
           // The server persists an aborted analysis after the socket closes;
           // one quiet retry picks up the interrupted row that the first list
           // request usually races.
-          window.setTimeout(() => {
+          historyRetry.current = window.setTimeout(() => {
+            historyRetry.current = null;
             if (mounted.current) void refreshHistory();
           }, 900);
         }

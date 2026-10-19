@@ -37,7 +37,7 @@ function bookHeading(row: NoteQueryRow): string {
  */
 function escapeMarkdownLine(line: string): string {
   return line.replace(
-    /^(\s*)(`{3,}|#{1,6}(?=\s)|>|[-*+](?=\s)|\d+\.(?=\s)|---+\s*$)/,
+    /^(\s*)(`{3,}|~{3,}|#{1,6}(?=\s)|>|[-*+](?=\s)|\d+\.(?=\s)|[-=]{3,}\s*$)/,
     (_match, indent: string, marker: string) => `${indent}\\${marker}`,
   );
 }
@@ -59,17 +59,12 @@ function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
     lines.push('', ...noteText.split(/\r\n|\r|\n/).map(escapeMarkdownLine));
   }
 
-  const tags = row.annotation.tags ?? [];
+  const tags = (row.annotation.tags ?? [])
+    .map((tag) => tag.replace(/\s+/g, ' ').trim())
+    .filter((tag) => tag !== '');
   if (tags.length > 0) {
     // Tags may come from older rows with embedded newlines; keep the label on one line.
-    lines.push(
-      '',
-      `标签：${tags
-        .map((tag) => tag.replace(/\s+/g, ' ').trim())
-        .filter((tag) => tag !== '')
-        .map((tag) => `#${tag}`)
-        .join(' ')}`,
-    );
+    lines.push('', `标签：${tags.map((tag) => `#${tag}`).join(' ')}`);
   }
 
   lines.push('', `*${formatLocalDate(row.annotation.createdAt, timezone)}*`);

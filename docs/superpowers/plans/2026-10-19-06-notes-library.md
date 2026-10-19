@@ -1261,7 +1261,7 @@ git commit -m "docs: record notes library delivery"
 ## 交付记录
 
 - **分支**：`feat/p6-notes-library`（从 `95ce541` 起；期间合并了 Web UI 响应式改造 `3182f49`）。
-- **主要提交**：共享契约与迁移 `8631ead`/`a51e9e5`/`41d8f88`；查询与导出 `bb75320`/`988f9b8`/`d6c2077`；Web 客户端与 SSE `a452a7e`/`bbed9a2`；阅读器跳转 `7a5ec98`/`7d3388c`；分析服务端 `e47d346`/`c42aa3b`；笔记库页面 `d38a9e0`/`44b2ec1`；分析面板 `dbbae55`/`cfda903`/`c271b74`；E2E `24fe9eb`；终审修复 `b9884fd`/`e54fdec`。
+- **主要提交**：共享契约与迁移 `8631ead`/`a51e9e5`/`41d8f88`；查询与导出 `bb75320`/`988f9b8`/`d6c2077`；Web 客户端与 SSE `a452a7e`/`bbed9a2`；阅读器跳转 `7a5ec98`/`7d3388c`；分析服务端 `e47d346`/`c42aa3b`；笔记库页面 `d38a9e0`/`44b2ec1`；分析面板 `dbbae55`/`cfda903`/`c271b74`；E2E `24fe9eb`；终审修复 `b9884fd`/`e54fdec`；交付文档 `815cabe`。
 - **最终验证**：`turbo run typecheck test --force` 12/12；Server 43 文件 / 311 用例；Web 43 文件 / 375 用例；Reader-core 18 文件 / 149 用例；Shared 9 文件 / 57 用例；Playwright 16/16（46.5s，其中笔记库 3 条）；Compose 4/4 healthy，`/healthz` 200。
 - **审查结论**：每个任务均经过独立复审；终审（Opus 全分支）提出 3 个阻断项——请求日志泄漏搜索词/标签、跨源部署未暴露 `Content-Disposition`、停止分析后历史刷新与服务端落库竞争——均已修复并补测试；另修掉大写 `?note=` 误判、导出代码围栏/标签换行、极端分页/NUL 输入与编辑框超长输入。
 - **残留边界**：
