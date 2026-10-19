@@ -671,6 +671,9 @@ export const handlers = [
   // Cross-book notes library. Filters and paging mirror the server so tests
   // can watch the URL without stubbing the whole response.
   http.get('/api/notes', ({ request }) => HttpResponse.json(listNotesFromUrl(request.url))),
+  // The analysis drawer starts from an empty history; streaming suites inject
+  // a fake transport instead of driving SSE through MSW.
+  http.get('/api/notes/analyses', () => HttpResponse.json({ items: [] })),
   http.get('/api/notes/tags', () => {
     const counts = new Map<string, number>();
     for (const item of fixtures.notes) {

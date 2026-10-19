@@ -5,6 +5,8 @@ import { Link } from 'react-router';
 import { useBooks } from '../../api/books';
 import { downloadNotesExport } from '../../api/notes';
 import { messageForApiError } from '../../lib/errorMessages';
+import { NoteAnalysisPanel } from './NoteAnalysisPanel';
+import type { NoteAnalysisApi } from './useNoteAnalysis';
 import { NoteCard } from './NoteCard';
 import { NoteEditDialog } from './NoteEditDialog';
 import {
@@ -20,11 +22,17 @@ type NotesView = 'list' | 'group';
 const CONFLICT_MESSAGE = '这条笔记已在另一台设备更新，已显示最新版本';
 const OFFLINE_MESSAGE = '离线时无法浏览笔记库，联网后会自动恢复。';
 
+export interface NotesPageProps {
+  /** Tests inject a fake stream; production uses the real analysis API. */
+  analysisApi?: NoteAnalysisApi;
+}
+
 /** The cross-book notes library: filters, grouped browsing, edit and export. */
-export function NotesPage() {
+export function NotesPage({ analysisApi }: NotesPageProps = {}) {
   const [filters, setFilters] = useState<NotesFilterState>(DEFAULT_NOTES_FILTERS);
   const [view, setView] = useState<NotesView>('list');
   const [editing, setEditing] = useState<NoteDto | null>(null);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const [conflictNotice, setConflictNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -140,8 +148,14 @@ export function NotesPage() {
           <p className="mt-1 text-sm text-muted">你写在所有书里的划线与批注</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Task 7 mounts the AI analysis panel here. */}
-          <div className="notes-analysis-slot" />
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={analysisOpen}
+            onClick={() => setAnalysisOpen((open) => !open)}
+          >
+            分析笔记
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -293,6 +307,15 @@ export function NotesPage() {
           note={editing}
           onClose={() => setEditing(null)}
           onSaved={handleSaved}
+        />
+      ) : null}
+
+      {analysisOpen ? (
+        <NoteAnalysisPanel
+          filters={noteFilters}
+          online={online}
+          api={analysisApi}
+          onClose={() => setAnalysisOpen(false)}
         />
       ) : null}
     </section>
