@@ -1,6 +1,6 @@
 # 笔记库与 AI 分析（P6）实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在共享书架上做出一个跨书的全局笔记库：全文检索划线原文与批注、按书/标签/类型/时间筛选、按书分组、跳回原文、就地编辑与删除、导出 Markdown；并能在当前筛选范围（或单本书）上调用 `deepseek-reasoner` 做主题归纳、观点梳理、待办提取，结果流式返回并保存为可回看的分析记录。
 
@@ -173,7 +173,7 @@ export const NOTE_ANALYSIS_STREAM_EVENTS = ['meta', 'delta', 'done', 'error'] as
 - `noteAnalysisRequestSchema` = `{ kind: z.enum(NOTE_ANALYSIS_KINDS), filters: noteFiltersSchema.optional() }`.
 - `AnnotationColor` is already exported from `./schemas/reading`; import the type rather than re-spelling the union if the export exists.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `packages/shared/src/__tests__/notes.test.ts`:
 
@@ -198,21 +198,21 @@ it('validates analysis requests')
 // { kind: 'todos', filters: { tag: '方法论' } } parses
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm --filter @bookr/shared test -- notes`
 Expected: FAIL because `../src/notes` does not exist.
 
-- [ ] **Step 3: Implement `packages/shared/src/notes.ts` and export it**
+- [x] **Step 3: Implement `packages/shared/src/notes.ts` and export it**
 
 Add `export * from './notes';` to `packages/shared/src/index.ts`. Keep the exported names exactly as listed above.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pnpm --filter @bookr/shared test -- notes`
 Expected: PASS.
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/shared
@@ -294,7 +294,7 @@ ALTER TABLE "note_analyses" ADD CONSTRAINT "note_analyses_user_id_users_id_fk"
   FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 ```
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `apps/server/test/notes-schema.test.ts`:
 
@@ -312,12 +312,12 @@ it('creates the note search indexes')
 // contains annotations_user_updated_idx and annotations_tags_idx
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pnpm --filter @bookr/server test -- notes-schema`
 Expected: FAIL because `noteAnalyses` is not exported.
 
-- [ ] **Step 3: Add the schema and generate the migration**
+- [x] **Step 3: Add the schema and generate the migration**
 
 ```bash
 cd apps/server
@@ -326,12 +326,12 @@ pnpm exec drizzle-kit generate --name notes
 
 提交 `drizzle/0006_notes.sql` 与 `drizzle/meta/0006_snapshot.json`、`drizzle/meta/_journal.json`。生成器超过 2 分钟无输出时，停止它并在报告中标记 BLOCKED；不要手改 snapshot。
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pnpm --filter @bookr/server test -- notes-schema`
 Expected: PASS.
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/server
@@ -454,7 +454,7 @@ export function notesExportFilename(input: {
 - 日期用 `Intl.DateTimeFormat('en-CA', { timeZone: timezone, year:'numeric', month:'2-digit', day:'2-digit' })` 生成 `YYYY-MM-DD`（`en-CA` 输出即 ISO 形式；若运行时输出顺序不同，用 `formatToParts` 拼接）。
 - 文件名：单本筛选（`filters.bookId` 且能读到书名）为 `笔记-<书名>-YYYYMMDD.md`，否则 `笔记库-YYYYMMDD.md`。书名中的 `[\\/:*?"<>|]` 与控制字符替换为 `_`，压缩空白，截断到 50 字符；结果为空则用 `笔记库`。`filename*` 用 `encodeURIComponent` 后再把 `'()*` 转成百分号编码。
 
-- [ ] **Step 1: Write the failing list tests**
+- [x] **Step 1: Write the failing list tests**
 
 `apps/server/test/notes-list.test.ts`，至少覆盖：
 
@@ -481,21 +481,21 @@ it('returns tag counts ordered by frequency')
 // GET /api/notes/tags → [{ tag:'方法论', count:2 }, ...]，排除他人/回收站笔记
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm --filter @bookr/server test -- notes-list`
 Expected: FAIL（路由 404）。
 
-- [ ] **Step 3: Implement repo/service/routes and register them**
+- [x] **Step 3: Implement repo/service/routes and register them**
 
 在 `apps/server/src/app.ts` 的 `registerReadingRoutes` 之后加入 `registerNotesRoutes(app, deps);`。注意 `describeLocator` 移动后，`apps/server/test/ai-context.test.ts` 里从 `../src/ai/prompts` 的导入必须仍然可用（`prompts.ts` 重新导出）。
 
-- [ ] **Step 4: Run list tests to verify they pass**
+- [x] **Step 4: Run list tests to verify they pass**
 
 Run: `pnpm --filter @bookr/server test -- notes-list`
 Expected: PASS.
 
-- [ ] **Step 5: Write the failing export tests**
+- [x] **Step 5: Write the failing export tests**
 
 `apps/server/test/notes-export.test.ts`：
 
@@ -519,19 +519,19 @@ it('requires authentication')
 // 无 token → 401
 ```
 
-- [ ] **Step 6: Run export tests to verify they fail**
+- [x] **Step 6: Run export tests to verify they fail**
 
 Run: `pnpm --filter @bookr/server test -- notes-export`
 Expected: FAIL.
 
-- [ ] **Step 7: Implement the export builder, route and headers**
+- [x] **Step 7: Implement the export builder, route and headers**
 
-- [ ] **Step 8: Run both test files to verify they pass**
+- [x] **Step 8: Run both test files to verify they pass**
 
 Run: `pnpm --filter @bookr/server test -- notes-list notes-export`
 Expected: PASS.
 
-- [ ] **Step 9: Typecheck and commit**
+- [x] **Step 9: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/server
@@ -662,7 +662,7 @@ export async function executeNoteAnalysis(
 - 日志只含 `userId`、`analysisId`、`kind`、`promptTokens`、`completionTokens`、`aborted`、`errorName`。
 - `ai/sse.ts` 导出 `SSE_HEADERS` 与 `writeSseFrame(raw, event, data, onBackpressure?)`；`chat.ts` 改为导入它们，行为不变（P5 的 `ai-chat.test.ts` 必须继续通过），并改用 `requireAiActor`/`requireAiConfig` 做前置校验。
 
-- [ ] **Step 1: Write the failing context tests**
+- [x] **Step 1: Write the failing context tests**
 
 `apps/server/test/notes-analysis-context.test.ts`：
 
@@ -683,17 +683,17 @@ it('builds a bounded title')
 // analysisTitle('themes', '一本书'.repeat(60)).length === 80
 ```
 
-- [ ] **Step 2: Run context tests to verify they fail**
+- [x] **Step 2: Run context tests to verify they fail**
 
 Run: `pnpm --filter @bookr/server test -- notes-analysis-context`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement analysis-context.ts and make the context tests pass**
+- [x] **Step 3: Implement analysis-context.ts and make the context tests pass**
 
 Run: `pnpm --filter @bookr/server test -- notes-analysis-context`
 Expected: PASS.
 
-- [ ] **Step 4: Write the failing analysis route tests**
+- [x] **Step 4: Write the failing analysis route tests**
 
 `apps/server/test/notes-analysis.test.ts`，使用 `createTestApp(..., { aiClientFactory: () => fake })` + 真实监听（同 `ai-chat.test.ts`）：
 
@@ -724,12 +724,12 @@ it("hides another member's analyses")
 // bob GET/DELETE alice 的 id → 404；GET /api/notes/analyses 列表只含自己的
 ```
 
-- [ ] **Step 5: Run analysis tests to verify they fail**
+- [x] **Step 5: Run analysis tests to verify they fail**
 
 Run: `pnpm --filter @bookr/server test -- notes-analysis`
 Expected: FAIL.
 
-- [ ] **Step 6: Implement availability, sse extraction, analysis repo/service/routes, and register**
+- [x] **Step 6: Implement availability, sse extraction, analysis repo/service/routes, and register**
 
 在 `app.ts` 中 `registerNotesRoutes` 之后加入 `registerNoteAnalysisRoutes(app, deps);`。在 `helpers.ts` 增加：
 
@@ -741,12 +741,12 @@ export async function seedNoteAnalysis(input: {
 }): Promise<NoteAnalysisRow>;
 ```
 
-- [ ] **Step 7: Run the full AI + notes server suites**
+- [x] **Step 7: Run the full AI + notes server suites**
 
 Run: `pnpm --filter @bookr/server test -- notes-analysis ai-chat`
 Expected: PASS（证明 SSE 提取没有破坏 P5）。
 
-- [ ] **Step 8: Typecheck and commit**
+- [x] **Step 8: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/server
@@ -808,7 +808,7 @@ export async function deleteNoteAnalysis(id: string): Promise<void>;
 - 事件名只处理 `meta`/`delta`/`done`/`error`，未知事件忽略。
 - 把 SSE 解析器移到 `lib/sse.ts` 后，`features/reader/ai/stream.ts` 保留 `AiStreamProtocolError` 这个类名作为 `SseProtocolError` 的别名导出，避免改动 P5 的调用方与测试。
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/api/__tests__/notes.test.ts`（使用 MSW 或 `vi.stubGlobal('fetch')`，与现有 API 测试保持一致）：
 
@@ -837,19 +837,19 @@ it('rejects an incomplete stream')
 // 只收到 meta 后流结束 → rejects with SseProtocolError('AI 流意外结束')
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm --filter @bookr/web test -- notes.test`
 Expected: FAIL.
 
-- [ ] **Step 3: Extract the SSE parser and implement `api/notes.ts`**
+- [x] **Step 3: Extract the SSE parser and implement `api/notes.ts`**
 
-- [ ] **Step 4: Run the notes and AI stream tests**
+- [x] **Step 4: Run the notes and AI stream tests**
 
 Run: `pnpm --filter @bookr/web test -- notes.test stream.test`
 Expected: PASS（证明提取没有破坏 P5 的解析器）。
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/web
@@ -903,7 +903,7 @@ git commit -m "feat(web): add notes api client and shared sse parser"
 - 默认 `GET /api/notes` 返回两条夹具；`GET /api/notes/tags` 返回 `[{ tag:'方法论', count:2 }]`；`/api/books` 已存在。
 - 默认 `PATCH`/`DELETE /api/books/:id/annotations/:id` 返回成功（`PATCH` 返回 `{ annotation: note({...}), conflict: false }`）。
 
-- [ ] **Step 1: Write the failing page tests**
+- [x] **Step 1: Write the failing page tests**
 
 `apps/web/src/features/notes/__tests__/notes-page.test.tsx`：
 
@@ -938,21 +938,21 @@ it('shows the empty and offline states')
 // 并 window.dispatchEvent(new Event('offline')) → 提示可见且导出禁用
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm --filter @bookr/web test -- notes-page`
 Expected: FAIL（路由不存在）。
 
-- [ ] **Step 3: Implement the hooks, filters, cards, dialog, page and navigation**
+- [x] **Step 3: Implement the hooks, filters, cards, dialog, page and navigation**
 
 编辑/删除后除了失效 `['notes']`，还失效 `['annotations', bookId]`，让本地阅读器在下一次同步后刷新；不要直接写 Dexie。
 
-- [ ] **Step 4: Run page tests and the existing bookshelf tests**
+- [x] **Step 4: Run page tests and the existing bookshelf tests**
 
 Run: `pnpm --filter @bookr/web test -- notes-page bookshelf`
 Expected: PASS（导航新增不影响既有用例）。
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/web
@@ -1025,7 +1025,7 @@ export function NoteAnalysisPanel(props: NoteAnalysisPanelProps): JSX.Element;
 - 运行期间切换筛选不自动重跑；面板保留当前结果，由用户再次点击开始。
 - `NotesPage` 增加 `analysisApi?: NoteAnalysisApi` 可选 prop 并透传给面板；默认用 `noteAnalysisApi`。
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/features/notes/__tests__/note-analysis.test.tsx`（直接渲染 `<NotesPage analysisApi={fake} />`，外套 memory router 与 providers；MSW 提供 `/api/notes`、`/api/notes/tags`、`/api/books`）：
 
@@ -1052,19 +1052,19 @@ it('disables analysis while offline')
 // 并 window.dispatchEvent(new Event('offline')) → 开始按钮禁用，提示可见
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm --filter @bookr/web test -- note-analysis`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement the hook, panel and NotesPage integration**
+- [x] **Step 3: Implement the hook, panel and NotesPage integration**
 
-- [ ] **Step 4: Run note tests**
+- [x] **Step 4: Run note tests**
 
 Run: `pnpm --filter @bookr/web test -- note-analysis notes-page`
 Expected: PASS.
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/web
@@ -1092,7 +1092,7 @@ git commit -m "feat(web): add streaming ai note analysis panel"
 - 找不到且 `annotationsQuery.isSuccess`：只提示一次「没有找到这条笔记，已回到上次位置」，不阻塞阅读。
 - 不改 URL（保留 `note` 参数），不改变既有的进度加载优先级。
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `apps/web/src/features/reader/__tests__/reader-note-jump.test.tsx`，复用 `createFakeEngine`、`createMemoryRepository`、`renderWithSync`：
 
@@ -1109,19 +1109,19 @@ it('does not jump without the note parameter')
 // 普通打开 → 不以 flash 调用 goTo
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pnpm --filter @bookr/web test -- reader-note-jump`
 Expected: FAIL。
 
-- [ ] **Step 3: Implement the effect in `ReaderPage.tsx`**
+- [x] **Step 3: Implement the effect in `ReaderPage.tsx`**
 
-- [ ] **Step 4: Run reader tests**
+- [x] **Step 4: Run reader tests**
 
 Run: `pnpm --filter @bookr/web test -- reader-note-jump reader-ai`
 Expected: PASS（不影响既有阅读器行为）。
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 pnpm exec turbo run typecheck --filter=@bookr/web
@@ -1143,7 +1143,7 @@ git commit -m "feat(web): open the reader at a linked note"
 
 **前置：** `test.beforeAll` 用管理员 token 请求 `GET /api/ai/usage`，断言 `fakeProvider === true`（与 `ai.spec.ts` 相同，失败信息提示需要 `AI_FAKE_PROVIDER=1`）；`test.afterEach` 调 `deleteE2EBooks(request)`。
 
-- [ ] **Step 1: Write the spec**
+- [x] **Step 1: Write the spec**
 
 ```ts
 const TITLE = '端到端笔记库';
@@ -1173,7 +1173,7 @@ it('runs a note analysis and keeps it in history')
 // 点击该项，内容仍包含「已收到上下文」
 ```
 
-- [ ] **Step 2: Run the E2E suite against the local stack**
+- [x] **Step 2: Run the E2E suite against the local stack**
 
 ```bash
 # 前提：docker compose up -d --build，服务端 AI_FAKE_PROVIDER=1，E2E 管理员已 bootstrap
@@ -1182,7 +1182,7 @@ pnpm --filter @bookr/web exec playwright test e2e/notes.spec.ts
 
 Expected: 3 passed。
 
-- [ ] **Step 3: Run the full E2E suite**
+- [x] **Step 3: Run the full E2E suite**
 
 ```bash
 pnpm --filter @bookr/web exec playwright test
@@ -1190,7 +1190,7 @@ pnpm --filter @bookr/web exec playwright test
 
 Expected: 既有 13 条 + 新增 3 条全部通过（失败先修，不得跳过）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/web/e2e/notes.spec.ts apps/web/e2e/helpers.ts
@@ -1207,7 +1207,7 @@ git commit -m "test(e2e): cover notes library, export and analysis"
 - Modify: `docs/superpowers/plans/2026-10-19-06-notes-library.md`（勾选任务，写入最终数字与残留边界）
 - Modify: `.superpowers/sdd/2026-10-19-06-notes-library/progress.md`（由控制者维护，本任务只读）
 
-- [ ] **Step 1: README**
+- [x] **Step 1: README**
 
 新增「笔记库与 AI 分析」小节：
 
@@ -1218,11 +1218,11 @@ git commit -m "test(e2e): cover notes library, export and analysis"
 - 离线限制：笔记库与 AI 分析需要联网；离线阅读与记笔记不受影响。
 - 管理/运维：无新增环境变量；分析记录随用户删除级联清理。
 
-- [ ] **Step 2: Roadmap**
+- [x] **Step 2: Roadmap**
 
 把 06 行标记为「已交付」，加入计划文件链接；保持 07/08 未开始。
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 ```bash
 pnpm exec turbo run typecheck test --force
@@ -1233,7 +1233,7 @@ pnpm --filter @bookr/web exec playwright test
 
 记录 Server / Web / Reader-core / Shared 各自测试数、E2E 通过数与耗时、Compose 健康情况。
 
-- [ ] **Step 4: 更新计划交付记录并提交**
+- [x] **Step 4: 更新计划交付记录并提交**
 
 在计划末尾追加「交付记录」：最终测试数字、合并提交、复审结论、残留边界（笔记库需联网；书签不进入笔记库；EPUB 位置只有百分比；分析超过 300 条时取最新 300 条；崩溃后可能残留 `streaming` 行且历史列表不可见；笔记库编辑走 REST 而非本地队列）。
 
@@ -1255,3 +1255,21 @@ git commit -m "docs: record notes library delivery"
 | 导出 Markdown（书名/位置/划线/批注/时间） | Task 3、Task 6、Task 9 |
 | 笔记分析（主题归纳/观点梳理/待办提取） | Task 4、Task 7、Task 9 |
 | 隐私与用户隔离 | Task 3、Task 4、Task 9 |
+
+---
+
+## 交付记录
+
+- **分支**：`feat/p6-notes-library`（从 `95ce541` 起；期间合并了 Web UI 响应式改造 `3182f49`）。
+- **主要提交**：共享契约与迁移 `8631ead`/`a51e9e5`/`41d8f88`；查询与导出 `bb75320`/`988f9b8`/`d6c2077`；Web 客户端与 SSE `a452a7e`/`bbed9a2`；阅读器跳转 `7a5ec98`/`7d3388c`；分析服务端 `e47d346`/`c42aa3b`；笔记库页面 `d38a9e0`/`44b2ec1`；分析面板 `dbbae55`/`cfda903`/`c271b74`；E2E `24fe9eb`；终审修复 `b9884fd`/`e54fdec`。
+- **最终验证**：`turbo run typecheck test --force` 12/12；Server 43 文件 / 311 用例；Web 43 文件 / 375 用例；Reader-core 18 文件 / 149 用例；Shared 9 文件 / 57 用例；Playwright 16/16（46.5s，其中笔记库 3 条）；Compose 4/4 healthy，`/healthz` 200。
+- **审查结论**：每个任务均经过独立复审；终审（Opus 全分支）提出 3 个阻断项——请求日志泄漏搜索词/标签、跨源部署未暴露 `Content-Disposition`、停止分析后历史刷新与服务端落库竞争——均已修复并补测试；另修掉大写 `?note=` 误判、导出代码围栏/标签换行、极端分页/NUL 输入与编辑框超长输入。
+- **残留边界**：
+  - 笔记库需要联网；离线仍可阅读已缓存的书并在阅读器内记笔记，联网后同步汇入。
+  - 笔记删除为软删除并保留墓碑；没有独立的“笔记回收站”恢复界面。
+  - 书签不进入笔记库，仍在阅读器内管理。
+  - EPUB 位置以全书百分比展示；PDF 显示页码。
+  - 分析最多取最近编辑的 300 条、24k token；更早的笔记不进入该次分析。
+  - 分析记录是服务端权威数据，不进入 P4 的 `sync_changes`；离线不可用。
+  - 崩溃可能遗留 `streaming` 分析行（历史列表隐藏），配额预占由每日清理在 1 小时后回收。
+  - 笔记库编辑/删除走 REST；本机阅读器的本地副本需等下一次同步才更新。
