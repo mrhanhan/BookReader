@@ -1,4 +1,5 @@
 import {
+  BACKUP_STALE_HOURS,
   LIBRARY_QUOTA_BYTES,
   MEMBER_UPLOAD_QUOTA_BYTES,
 } from '@bookr/shared';
@@ -10,6 +11,10 @@ export const DEFAULT_AI_BASE_URL = 'https://api.deepseek.com/v1';
 export const DEFAULT_AI_CHAT_MODEL = 'deepseek-chat';
 /** Default model used for reasoning-heavy actions. */
 export const DEFAULT_AI_REASONER_MODEL = 'deepseek-reasoner';
+/** Free disk space below this level triggers an alert (10 GiB). */
+export const DEFAULT_DISK_ALERT_FREE_BYTES = 10_737_418_240;
+/** How often the background monitor evaluates backup conditions. */
+export const DEFAULT_MONITOR_INTERVAL_MS = 300_000;
 
 export interface AppConfig {
   port: number;
@@ -57,6 +62,23 @@ export interface AppConfig {
       chatModel: string;
       reasonerModel: string;
     } | null;
+  };
+  backup: {
+    /**
+     * Shared secret accepted from backup hosts as `X-Backup-Token`. `null`
+     * disables the token channel; admin JWTs still work.
+     */
+    token: string | null;
+  };
+  alerts: {
+    /** Receives one POST per newly observed incident; `null` disables delivery. */
+    webhookUrl: string | null;
+    /** Free space below this many bytes raises the disk alert. */
+    diskFreeThresholdBytes: number;
+    /** A source with no evidence of activity for this long is stale/silent. */
+    staleHours: number;
+    /** Period of the background monitor loop. */
+    monitorIntervalMs: number;
   };
 }
 
@@ -108,6 +130,21 @@ const optionalEnvString = z.preprocess(
 const optionalEnvSecret = z.preprocess(
   (value) => (value === '' ? undefined : value),
   z.string().min(32).optional(),
+);
+
+/**
+ * An optional webhook endpoint. Alert bodies carry only status and counts, so
+ * any http(s) receiver is acceptable; other schemes are rejected at startup.
+ */
+const optionalWebhookUrl = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  z
+    .url()
+    .refine((value) => {
+      const { protocol } = new URL(value);
+      return protocol === 'http:' || protocol === 'https:';
+    }, { message: 'must use the http or https scheme' })
+    .optional(),
 );
 
 /** Accepts `1`/`true` and `0`/`false`; anything else is a configuration error. */
@@ -166,6 +203,20 @@ const configSchema = z.object({
   AI_REASONER_MODEL: optionalEnvString,
   AI_CONTEXT_TOKEN_BUDGET: z.coerce.number().int().min(1000).max(32000).default(8000),
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(5000).max(120000).default(60000),
+  BACKUP_TOKEN: optionalEnvSecret,
+  ALERT_WEBHOOK_URL: optionalWebhookUrl,
+  DISK_ALERT_FREE_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_DISK_ALERT_FREE_BYTES),
+  BACKUP_STALE_HOURS: z.coerce.number().int().min(1).max(168).default(BACKUP_STALE_HOURS),
+  MONITOR_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(3_600_000)
+    .default(DEFAULT_MONITOR_INTERVAL_MS),
 });
 
 function describeIssue(issue: z.ZodIssue, env: NodeJS.ProcessEnv): string {
@@ -234,6 +285,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
               reasonerModel: parsed.AI_REASONER_MODEL ?? DEFAULT_AI_REASONER_MODEL,
             }
           : null,
+    },
+    backup: {
+      token: parsed.BACKUP_TOKEN ?? null,
+    },
+    alerts: {
+      webhookUrl: parsed.ALERT_WEBHOOK_URL ?? null,
+      diskFreeThresholdBytes: parsed.DISK_ALERT_FREE_BYTES,
+      staleHours: parsed.BACKUP_STALE_HOURS,
+      monitorIntervalMs: parsed.MONITOR_INTERVAL_MS,
     },
   };
 }

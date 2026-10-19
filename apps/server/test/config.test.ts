@@ -157,3 +157,38 @@ describe('loadConfig AI companion', () => {
     expect(() => loadConfig({ ...BASE_ENV, AI_REQUEST_TIMEOUT_MS: '120001' })).toThrow(/AI_REQUEST_TIMEOUT_MS/);
   });
 });
+
+describe('loadConfig backup and alerts', () => {
+  it('defaults to no token, no webhook and a ten GiB disk threshold', () => {
+    const config = loadConfig(BASE_ENV);
+    expect(config.backup).toEqual({ token: null });
+    expect(config.alerts).toEqual({
+      webhookUrl: null,
+      diskFreeThresholdBytes: 10_737_418_240,
+      staleHours: 24,
+      monitorIntervalMs: 300_000,
+    });
+  });
+
+  it('rejects a backup token shorter than 32 characters', () => {
+    expect(() => loadConfig({ ...BASE_ENV, BACKUP_TOKEN: 'too-short' })).toThrow(
+      /BACKUP_TOKEN must be at least 32 characters/,
+    );
+    expect(loadConfig({ ...BASE_ENV, BACKUP_TOKEN: 't'.repeat(32) }).backup.token).toBe('t'.repeat(32));
+  });
+
+  it('accepts only http and https alert webhooks', () => {
+    expect(() => loadConfig({ ...BASE_ENV, ALERT_WEBHOOK_URL: 'ftp://x' })).toThrow(
+      /ALERT_WEBHOOK_URL/,
+    );
+    expect(
+      loadConfig({ ...BASE_ENV, ALERT_WEBHOOK_URL: 'https://alerts.example/hook' }).alerts.webhookUrl,
+    ).toBe('https://alerts.example/hook');
+  });
+
+  it('rejects a zero disk alert threshold', () => {
+    expect(() => loadConfig({ ...BASE_ENV, DISK_ALERT_FREE_BYTES: '0' })).toThrow(
+      /DISK_ALERT_FREE_BYTES/,
+    );
+  });
+});

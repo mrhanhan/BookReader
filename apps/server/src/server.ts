@@ -5,6 +5,7 @@ import { loadConfig } from './config';
 import { closeDb } from './db/client';
 import { migrate } from './db/migrate';
 import { startWorker } from './jobs/worker';
+import { startMonitor } from './monitor/loop';
 import { createDeps } from './runtime';
 import {
   enqueuePendingConversionJobs,
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
 
   const stopWorker = startWorker(deps);
   const stopCleanup = startDailyCleanup(deps);
+  const stopMonitor = startMonitor(deps);
 
   let shuttingDown = false;
   async function shutdown(signal: string): Promise<void> {
@@ -98,6 +100,7 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     app.log.info({ signal }, 'shutting down');
+    stopMonitor();
     stopCleanup();
     await stopWorker();
     await app.close();
@@ -114,6 +117,7 @@ async function main(): Promise<void> {
     await app.listen({ port: config.port, host: config.host });
   } catch (error) {
     app.log.error({ errorName: errorName(error) }, 'failed to start server');
+    stopMonitor();
     stopCleanup();
     await stopWorker();
     await closeDb(db);

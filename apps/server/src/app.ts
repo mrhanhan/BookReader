@@ -9,6 +9,7 @@ import type { AiRuntimeConfig } from './ai/config';
 import { registerAiRoutes } from './ai/routes';
 import type { AiClient } from './ai/types';
 import { registerAuthRoutes } from './auth/routes';
+import { registerBackupRoutes } from './backup/routes';
 import type { Converter } from './books/conversion';
 import { registerBookRoutes } from './books/routes';
 import { COVER_MAX_BYTES } from './books/service';
@@ -129,6 +130,46 @@ function validationErrorBody(error: ZodError): ApiErrorBody {
   };
 }
 
+/** Readiness probes must answer even when the dependency never does. */
+const READYZ_TIMEOUT_MS = 2_000;
+
+/** Races a probe against a fixed timeout, clearing the timer either way. */
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('probe timed out'));
+    }, timeoutMs);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([task, timeout]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function databaseReachable(deps: AppDeps): Promise<boolean> {
+  try {
+    await withTimeout(deps.db.$client.query('select 1'), READYZ_TIMEOUT_MS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function storageReachable(deps: AppDeps): Promise<boolean> {
+  try {
+    // A missing probe object still proves the backend answered.
+    await withTimeout(deps.storage.head('__readyz_probe__'), READYZ_TIMEOUT_MS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Optional hooks used by tests that need to observe request logging. */
 export interface BuildAppOptions {
   /** Destination for request logs; enabling it turns logging on in tests. */
@@ -201,8 +242,25 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
 
   app.get('/healthz', async () => ({ status: 'ok' }));
 
+  app.get('/readyz', async (_request, reply) => {
+    const [database, storage] = await Promise.all([
+      databaseReachable(deps),
+      storageReachable(deps),
+    ]);
+    const ready = database && storage;
+    // Only reachability is exposed; error details could name internal hosts.
+    return reply.status(ready ? 200 : 503).send({
+      status: ready ? 'ok' : 'degraded',
+      checks: {
+        database: database ? 'ok' : 'error',
+        storage: storage ? 'ok' : 'error',
+      },
+    });
+  });
+
   registerAuthRoutes(app, deps);
   registerAdminRoutes(app, deps);
+  registerBackupRoutes(app, deps);
   registerAiAdminRoutes(app, deps);
   registerAiRoutes(app, deps);
   registerUploadRoutes(app, deps);

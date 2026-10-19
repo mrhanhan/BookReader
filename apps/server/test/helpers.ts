@@ -130,21 +130,35 @@ const DEFAULT_CONFIG: AppConfig = {
     requestTimeoutMs: 60000,
     bootstrap: null,
   },
+  backup: {
+    token: null,
+  },
+  alerts: {
+    webhookUrl: null,
+    // Fixtures use byte-sized capacities, so tests choose a small threshold.
+    diskFreeThresholdBytes: 10_000,
+    staleHours: 24,
+    monitorIntervalMs: 300_000,
+  },
 };
 
-/** Config overrides accepted by the test helpers; `s3` and `ai` are nested. */
-export type TestConfigOverrides = Partial<Omit<AppConfig, 's3' | 'ai'>> & {
+/** Config overrides accepted by the test helpers; nested sections merge. */
+export type TestConfigOverrides = Partial<Omit<AppConfig, 's3' | 'ai' | 'backup' | 'alerts'>> & {
   s3?: Partial<AppConfig['s3']>;
   ai?: Partial<AppConfig['ai']>;
+  backup?: Partial<AppConfig['backup']>;
+  alerts?: Partial<AppConfig['alerts']>;
 };
 
-/** Builds a test config, merging top-level overrides and nested S3/AI settings. */
+/** Builds a test config, merging top-level overrides and nested settings. */
 export function buildTestConfig(overrides: TestConfigOverrides = {}): AppConfig {
   return {
     ...DEFAULT_CONFIG,
     ...overrides,
     s3: { ...DEFAULT_CONFIG.s3, ...(overrides.s3 ?? {}) },
     ai: { ...DEFAULT_CONFIG.ai, ...(overrides.ai ?? {}) },
+    backup: { ...DEFAULT_CONFIG.backup, ...(overrides.backup ?? {}) },
+    alerts: { ...DEFAULT_CONFIG.alerts, ...(overrides.alerts ?? {}) },
   };
 }
 
