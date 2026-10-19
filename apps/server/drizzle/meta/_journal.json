@@ -57,6 +57,13 @@
       "when": 1792381250649,
       "tag": "0007_reading_stats",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792399364629,
+      "tag": "0008_admin_backup",
+      "breakpoints": true
     }
   ]
 }

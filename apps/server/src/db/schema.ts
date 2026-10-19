@@ -539,3 +539,56 @@ export type AiThreadRow = typeof aiThreads.$inferSelect;
 export type AiMessageRow = typeof aiMessages.$inferSelect;
 export type AiConfigRow = typeof aiConfig.$inferSelect;
 export type AiUsageRow = typeof aiUsage.$inferSelect;
+
+/** Server-wide settings; there is at most one row, with id `global`. */
+export const systemSettings = pgTable('system_settings', {
+  id: text('id').primaryKey(),
+  registrationEnabled: boolean('registration_enabled').notNull().default(true),
+  defaultTimezone: text('default_timezone').notNull().default('Asia/Shanghai'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+});
+
+/** One heartbeat from a backup producer, either host or the backup PC. */
+export const backupReports = pgTable(
+  'backup_reports',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    source: text('source').notNull(),
+    status: text('status').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }).notNull(),
+    bytes: bigint('bytes', { mode: 'number' }),
+    diskFreeBytes: bigint('disk_free_bytes', { mode: 'number' }),
+    diskTotalBytes: bigint('disk_total_bytes', { mode: 'number' }),
+    message: text('message'),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('backup_reports_received_idx').on(table.receivedAt),
+    index('backup_reports_source_received_idx').on(table.source, table.receivedAt),
+  ],
+);
+
+/** Alert state machine rows, one per monitored condition key. */
+export const monitorStates = pgTable('monitor_states', {
+  key: text('key').primaryKey(),
+  active: boolean('active').notNull().default(false),
+  lastAlertAt: timestamp('last_alert_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Append-only record of each alert delivery attempt. */
+export const alertEvents = pgTable(
+  'alert_events',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    key: text('key').notNull(),
+    severity: text('severity').notNull(),
+    message: text('message').notNull(),
+    status: text('status').notNull(),
+    error: text('error'),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('alert_events_key_sent_idx').on(table.key, table.sentAt)],
+);
