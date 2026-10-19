@@ -119,13 +119,13 @@ compare_counts() {
       fail_check "non-numeric count for $table (recorded=$recorded restored=$got)"
       continue
     fi
-    # The dump snapshot predates the counts query, so a restored table can
-    # only be equal to or larger than the recorded number. Fewer rows means
-    # data loss; more rows are writes that happened after the dump.
+    # Counts are captured before the dump, so the dump snapshot can only
+    # contain the same number of rows or more. Fewer rows means data loss;
+    # more rows are normal writes between counting and dumping.
     if [ "$got" -lt "$recorded" ]; then
       fail_check "table $table: restored $got < recorded $recorded"
     elif [ "$got" -gt "$recorded" ]; then
-      note "table $table: restored $got > recorded $recorded (extra writes after the dump; not a failure)"
+      note "table $table: restored $got > recorded $recorded (writes between counting and dumping; not a failure)"
     else
       note "table $table: $got"
     fi
@@ -225,10 +225,12 @@ if [ -z "$(compose ps -q postgres 2>/dev/null || true)" ]; then
   finish
 fi
 
+LATEST_DUMP=""
+if [ -d "$DB_DIR" ]; then
+  LATEST_DUMP="$(ls -1t "$DB_DIR"/bookr-*.sql.gz 2>/dev/null | head -n 1 || true)"
+fi
 if [ -z "$DUMP_FILE" ]; then
-  if [ -d "$DB_DIR" ]; then
-    DUMP_FILE="$(ls -1t "$DB_DIR"/bookr-*.sql.gz 2>/dev/null | head -n 1 || true)"
-  fi
+  DUMP_FILE="$LATEST_DUMP"
 fi
 if [ -z "$DUMP_FILE" ]; then
   fail_check "no dump found under $DB_DIR"
@@ -237,6 +239,13 @@ fi
 if [ ! -f "$DUMP_FILE" ]; then
   fail_check "dump not found: $DUMP_FILE"
   finish
+fi
+# The minio/ mirror is shared by every export and accumulates the newest
+# objects, so it can only be compared strictly against the newest dump.
+if [ -n "$LATEST_DUMP" ] && [ "$DUMP_FILE" = "$LATEST_DUMP" ]; then
+  LATEST_DUMP_SELECTED=1
+else
+  LATEST_DUMP_SELECTED=0
 fi
 
 DUMP_BASENAME="${DUMP_FILE##*/}"
@@ -258,6 +267,7 @@ fi
 record "counts: $COUNTS_FILE"
 if [ ! -f "$MANIFEST" ]; then
   fail_check "missing $MANIFEST (incomplete backup)"
+  finish
 fi
 
 if ! compose exec -T postgres psql -U bookr -d postgres -v ON_ERROR_STOP=1 -q \
@@ -305,6 +315,10 @@ SQL
 fi
 
 record "minio mirror:"
-check_minio
+if [ "$LATEST_DUMP_SELECTED" = 1 ]; then
+  check_minio
+else
+  note "skipped strict check: $DUMP_BASENAME is not the latest dump; the accumulated minio/ mirror only matches the newest export"
+fi
 
 finish

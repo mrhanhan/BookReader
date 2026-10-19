@@ -74,19 +74,11 @@ docker compose version >/dev/null 2>&1 || fail "docker compose is not available"
 
 mkdir -p "$DB_DIR" "$MINIO_DIR"
 
-# --- Postgres dump ----------------------------------------------------------
-DB_FILE="$DB_DIR/bookr-$TIMESTAMP.sql.gz"
-TMP_DB="$DB_FILE.partial"
-log "dumping postgres to $DB_FILE"
-compose exec -T postgres pg_dump -U bookr -d bookr --no-owner --no-privileges \
-  | gzip -9 >"$TMP_DB"
-gzip -t "$TMP_DB"
-mv "$TMP_DB" "$DB_FILE"
-
 # --- Core table counts -------------------------------------------------------
-# Written right after the dump so restore-drill.sh can prove that a restored
-# dump contains every row the backup job saw. Keep this query in sync with the
-# copy in restore-drill.sh.
+# Captured before the dump so the recorded numbers are a lower bound: the dump
+# snapshot can only contain the same number of rows or more. restore-drill.sh
+# fails when a restored table has fewer rows than recorded here. Keep this
+# query in sync with the copy in restore-drill.sh.
 COUNTS_FILE="$DB_DIR/counts-$TIMESTAMP.txt"
 TMP_COUNTS="$COUNTS_FILE.partial"
 log "counting core tables to $COUNTS_FILE"
@@ -105,6 +97,15 @@ FROM (
 ORDER BY ord;
 SQL
 mv "$TMP_COUNTS" "$COUNTS_FILE"
+
+# --- Postgres dump ----------------------------------------------------------
+DB_FILE="$DB_DIR/bookr-$TIMESTAMP.sql.gz"
+TMP_DB="$DB_FILE.partial"
+log "dumping postgres to $DB_FILE"
+compose exec -T postgres pg_dump -U bookr -d bookr --no-owner --no-privileges \
+  | gzip -9 >"$TMP_DB"
+gzip -t "$TMP_DB"
+mv "$TMP_DB" "$DB_FILE"
 
 # --- MinIO mirror -----------------------------------------------------------
 # Credentials are read from the running MinIO container so they do not have

@@ -14,7 +14,8 @@
 # Environment:
 #   BOOKR_HEARTBEAT_URL   full endpoint override
 #   BOOKR_API_URL         server base URL (default http://127.0.0.1:8180)
-#   BOOKR_BACKUP_TOKEN    value for the X-Backup-Token header (omitted if unset)
+#   BOOKR_BACKUP_TOKEN    value for the X-Backup-Token header; when unset the
+#                         report is skipped with a warning (no 401 spam)
 
 _heartbeat_warn() {
   if declare -F log >/dev/null 2>&1; then
@@ -44,7 +45,7 @@ _heartbeat_is_uint() {
 heartbeat_report() {
   local source="${1-}" status="${2-}" started="${3-}" finished="${4-}"
   local bytes_arg="${5-}" message="${6-}" disk_dir="${7-}"
-  local base url token http_code payload
+  local base url http_code payload
   local disk_blocks="" disk_available=""
 
   case "$source" in
@@ -103,6 +104,14 @@ heartbeat_report() {
     return 0
   fi
 
+  # Without a shared token the server answers 401 for script reports; skip
+  # the request entirely. The server-side backupStale monitor still notices
+  # that the source has gone silent.
+  if [ -z "${BOOKR_BACKUP_TOKEN:-}" ]; then
+    _heartbeat_warn "未配置 token（BOOKR_BACKUP_TOKEN），跳过心跳上报"
+    return 0
+  fi
+
   if ! command -v curl >/dev/null 2>&1; then
     _heartbeat_warn "curl is not installed; heartbeat not sent"
     return 0
@@ -118,11 +127,8 @@ heartbeat_report() {
   local -a curl_args=(
     curl -sS --max-time 15 -o /dev/null -w '%{http_code}'
     -X POST -H 'Content-Type: application/json'
+    -H "X-Backup-Token: ${BOOKR_BACKUP_TOKEN}"
   )
-  token="${BOOKR_BACKUP_TOKEN:-}"
-  if [ -n "$token" ]; then
-    curl_args+=(-H "X-Backup-Token: ${token}")
-  fi
   curl_args+=(--data-binary "$payload" "$url")
 
   if ! http_code="$("${curl_args[@]}" 2>/dev/null)"; then
