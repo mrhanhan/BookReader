@@ -66,6 +66,27 @@ it('leaves books that already have a cover untouched', async () => {
   expect((await getBookRow(covered.id))!.coverKey).toBe('covers/existing.png');
 });
 
+it('can refresh a cover that already exists', async () => {
+  await resetDb();
+  const deps = await buildTestDeps();
+  const user = await seedUser('member');
+  const book = await seedBook({
+    uploadedBy: user.id,
+    format: 'epub',
+    originalFilename: 'refresh.epub',
+    coverKey: 'covers/stale.png',
+  });
+  await putEpub(book.fileKey!);
+
+  const result = await backfillMissingCovers(deps, { refreshExisting: true });
+
+  expect(result.scanned).toBe(1);
+  expect(result.updated).toBe(1);
+  const row = await getBookRow(book.id);
+  expect(row!.coverKey).toBe(`covers/${book.id}.png`);
+  expect(await fakeStorage.head(row!.coverKey!)).not.toBeNull();
+});
+
 it('ignores trashed books without a cover', async () => {
   await resetDb();
   const deps = await buildTestDeps();

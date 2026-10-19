@@ -18,10 +18,14 @@ function coverBackfillLimit(raw: string | undefined): number | undefined {
 /** Extracts covers for books that were uploaded before cover detection existed. */
 async function main(): Promise<void> {
   const limit = coverBackfillLimit(process.env.COVER_BACKFILL_LIMIT);
+  const refreshExisting = /^(1|true|yes)$/i.test(process.env.COVER_BACKFILL_REFRESH ?? '');
   const config = loadConfig();
   const deps = createDeps(config);
   try {
-    const result = await backfillMissingCovers(deps, limit !== undefined ? { limit } : {});
+    const result = await backfillMissingCovers(deps, {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(refreshExisting ? { refreshExisting: true } : {}),
+    });
     console.log(JSON.stringify(result));
   } finally {
     await closeDb(deps.db);

@@ -21,16 +21,21 @@ function logBackfillFailure(bookId: string, error: unknown): void {
  * Extracts covers for live books that still have none. Per-book failures are
  * counted and logged but never abort the run, and a concurrent cover upload
  * (or another backfill) wins because the update only touches rows whose
- * `cover_key` is still null.
+ * `cover_key` is still null. `refreshExisting` re-extracts books that already
+ * have a cover (for example a blank first page captured before this fix).
  */
 export async function backfillMissingCovers(
   deps: AppDeps,
-  options: { limit?: number } = {},
+  options: { limit?: number; refreshExisting?: boolean } = {},
 ): Promise<CoverBackfillResult> {
+  const conditions = [isNull(books.deletedAt), isNotNull(books.fileKey)];
+  if (!options.refreshExisting) {
+    conditions.push(isNull(books.coverKey));
+  }
   const query = deps.db
     .select()
     .from(books)
-    .where(and(isNull(books.deletedAt), isNull(books.coverKey), isNotNull(books.fileKey)))
+    .where(and(...conditions))
     .orderBy(asc(books.createdAt));
   const rows = options.limit !== undefined ? await query.limit(options.limit) : await query;
 
@@ -70,10 +75,13 @@ export async function backfillMissingCovers(
         continue;
       }
 
+      const claim = options.refreshExisting
+        ? and(eq(books.id, book.id), isNull(books.deletedAt))
+        : and(eq(books.id, book.id), isNull(books.coverKey), isNull(books.deletedAt));
       const claimed = await deps.db
         .update(books)
         .set({ coverKey, updatedAt: deps.clock.now() })
-        .where(and(eq(books.id, book.id), isNull(books.coverKey), isNull(books.deletedAt)))
+        .where(claim)
         .returning({ id: books.id });
       if (claimed.length > 0) {
         updated += 1;
