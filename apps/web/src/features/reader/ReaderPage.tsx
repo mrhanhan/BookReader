@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { readerKindForFormat } from '@bookr/shared';
@@ -87,6 +87,9 @@ const REFLOW_MISSING_MESSAGE = '无法加载重排包，请切回原版';
 const REFLOW_REFRESH_FAILED_MESSAGE = '无法获取重排包，请稍后重试';
 const REFLOW_FALLBACK_MESSAGE = '无法加载重排包，已切回原版';
 const OFFLINE_REFLOW_MESSAGE = '离线时仅可阅读原版，连接网络后可切换重排';
+const NOTE_MISSING_MESSAGE = '没有找到这条笔记，已回到上次位置';
+/** Only a well-formed annotation id is worth resolving against the notes list. */
+const NOTE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SYNC_CONFLICT_MESSAGES: Record<SyncEntityType, string> = {
   annotation: '此批注已在另一台设备更新，旧版本已保留在历史中',
   bookmark: '此书签已在另一台设备更新，已同步为最新版本',
@@ -1127,6 +1130,44 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     if (!engine || !annotations) return;
     engine.setHighlights(toHighlights(annotations));
   }, [engine, annotations]);
+
+  /**
+   * Other surfaces link straight to one note with `?note=<annotationId>`. The
+   * annotation already lives in the local repository, so the reader first
+   * opens at the last saved position and then relocates once the document is
+   * ready and the list has loaded.
+   */
+  const [searchParams] = useSearchParams();
+  const requestedNoteId = searchParams.get('note');
+  const noteTargetId =
+    requestedNoteId !== null && NOTE_ID_PATTERN.test(requestedNoteId)
+      ? requestedNoteId
+      : null;
+  // Scope the "already handled" marker to the book so a later navigation to a
+  // different book (or another note) still jumps.
+  const noteJumpKey =
+    bookId !== null && noteTargetId !== null ? `${bookId}:${noteTargetId}` : null;
+  const noteJumpedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (noteJumpKey === null || !engine || status !== 'ready' || !annotations) return;
+    // A mode switch remaps the position through the open effect; the same id
+    // must not pull the reader back to the note's locator again.
+    if (noteJumpedRef.current === noteJumpKey) return;
+
+    const target = annotations.find((annotation) => annotation.id === noteTargetId);
+    if (target) {
+      noteJumpedRef.current = noteJumpKey;
+      ignoreRejection(() => engine.goTo(target.locator, { flash: true }));
+      return;
+    }
+    // "Missing" is only known once the list actually loaded. While the query
+    // is pending (or disabled) the reader stays quiet and keeps the position.
+    if (annotationsQuery.isSuccess) {
+      noteJumpedRef.current = noteJumpKey;
+      showToast(NOTE_MISSING_MESSAGE);
+    }
+  }, [annotations, annotationsQuery.isSuccess, engine, noteJumpKey, noteTargetId, showToast]);
 
   useEffect(() => {
     if (!engine) return;
