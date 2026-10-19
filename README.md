@@ -534,7 +534,27 @@ E2E 与本地演示可设置 `AI_FAKE_PROVIDER=1`，服务端用确定性的假�
 留下 `streaming` 分析行（历史列表会隐藏），其配额预占由每日清理在 1 小时后回收。
 删除笔记仍是软删除并保留墓碑，回收站的展示/恢复沿用阅读器与同步的既有语义。
 
-## 17. 本地 PDF 预处理工具
+## 17. 阅读统计与坚持
+
+阅读器在前台且可见时计时，每 30 秒打点一次；页面隐藏、窗口失焦或连续 2 分钟无操作都会暂停。2 分钟空闲即结束当前会话，再次操作开始新会话；单段累计 30 分钟自动分段，避免一次会话跨度过大。会话先写入本地 IndexedDB，经 P4 同步通道（`reading_session` 实体）离线排队，联网后补传；重复推送与乱序心跳不会重复计时或回退已有时长。
+
+统计口径：
+
+- **有效阅读日**：当天累计有效阅读 ≥ 10 分钟（600 秒）。
+- **坚持天数**：截至今天；今天尚未达标时截至昨天。中间断一天即停止。
+- **时区**：按用户在设置页选择的 IANA 时区（默认 `Asia/Shanghai`）划分自然日。修改时区会按新时区重建该用户的每日聚合，跨时区旅行不重复、不丢失。
+- **跨午夜**：会话按墙钟重叠比例拆分到两个自然日。
+
+数据来源是 `reading_sessions` 聚合出的 `daily_stats`；聚合在会话写入时完成，统计读取只读，不影响阅读性能。统计页展示连续天数、累计有效天数、今日/本周/本月时长、最近 30 天柱状图、读完的书（书架状态为「已读完」的未删除图书）与最常读的书（全时有效阅读时长最高）。
+
+接口：
+
+- `GET /api/stats`：返回调用者自己的统计（`ReadingStatsDto`），未登录 401。
+- `PATCH /api/auth/me`：`{ "timezone": "Asia/Shanghai" }`，校验 IANA 时区并重建每日聚合。
+
+隐私与运维：统计严格按 `user_id` 隔离，管理员也不能读取他人统计；日志不记录书籍正文或笔记内容。同步日志中的会话心跳会随 90 天保留策略一起清理。
+
+## 18. 本地 PDF 预处理工具
 
 源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
 [`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
@@ -571,7 +591,7 @@ bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --repo
 服务端会校验包内 `source.sha256`、schema 版本与大小（≤32 MiB）；每本书最多一个包，
 重排包不计入书籍配额。
 
-## 18. 桌面端（Tauri 2）
+## 19. 桌面端（Tauri 2）
 
 源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
 
@@ -590,7 +610,7 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
-## 19. Android 端（Capacitor 7）
+## 20. Android 端（Capacitor 7）
 
 源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
 `apps/mobile/README.md`。
@@ -609,7 +629,7 @@ WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost`
 `capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
 预签名文件地址都必须是设备可达的 HTTPS 地址。
 
-## 20. 已知范围
+## 21. 已知范围
 
 - 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
   均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
