@@ -515,7 +515,14 @@ export const handlers = [
     return HttpResponse.json({ coverUrl: found.coverUrl });
   }),
 
-  http.get('/api/trash', () => HttpResponse.json({ items: fixtures.trash })),
+  http.get('/api/trash', () =>
+    HttpResponse.json({
+      items: fixtures.trash,
+      total: fixtures.trash.length,
+      page: 1,
+      pageSize: 30,
+    }),
+  ),
   http.get('/api/categories', () => HttpResponse.json({ items: fixtures.categories })),
   http.post('/api/categories', async ({ request }) => {
     const input = (await request.json()) as { name: string; color: string };

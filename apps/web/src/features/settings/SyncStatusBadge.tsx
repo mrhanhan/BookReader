@@ -26,9 +26,10 @@ export function SyncStatusBadge({ className }: SyncStatusBadgeProps) {
     >
       <span
         aria-hidden="true"
-        className={cn('inline-block h-2 w-2 rounded-full', DOT_CLASS[state.status])}
+        className={cn('inline-block h-2 w-2 shrink-0 rounded-full', DOT_CLASS[state.status])}
       />
-      {syncStatusLabel(state)}
+      {/* Phones show the dot only; the label stays available to screen readers. */}
+      <span className="max-sm:sr-only">{syncStatusLabel(state)}</span>
     </span>
   );
 }

@@ -2,7 +2,7 @@ import type { BookFormat } from '@bookr/shared';
 import { and, eq } from 'drizzle-orm';
 import { XMLParser } from 'fast-xml-parser';
 import { posix } from 'node:path';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { fromBufferPromise } from 'yauzl';
 import type { Entry, ZipFile } from 'yauzl';
 import type { AppDeps } from '../app';
@@ -12,7 +12,7 @@ import { titleFromFilename } from '../uploads/service';
 /** A cover image ready to be stored. */
 export interface ExtractedCover {
   data: Buffer;
-  contentType: 'image/png' | 'image/jpeg';
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp';
 }
 
 /** Metadata read from the original book file. Every field is optional. */
@@ -347,6 +347,106 @@ function findRoot(parsed: XmlRecord, localName: string): XmlRecord | undefined {
   return undefined;
 }
 
+/** A possible cover source, in priority order. */
+interface CoverCandidate {
+  /** Path inside the archive, already resolved against the OPF. */
+  path: string;
+  /** True when the path is a wrapper page that embeds the actual image. */
+  xhtml: boolean;
+}
+
+const XHTML_EXTENSIONS = new Set(['.xhtml', '.html', '.htm']);
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+
+/**
+ * Finds the first image reference in an XHTML wrapper page. The match is
+ * deliberately conservative: guide pages only ever need a plain `src` or an
+ * `href` (usually `xlink:href`), never a full HTML parse.
+ */
+const XHTML_IMAGE_PATTERN =
+  /<(?:img|image)\b[^>]*?(?:\s)(?:src|(?:xlink:)?href)\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+
+function isXhtmlPath(path: string): boolean {
+  return XHTML_EXTENSIONS.has(posix.extname(path).toLowerCase());
+}
+
+function looksLikeImage(path: string, mediaType: string | undefined): boolean {
+  if ((mediaType ?? '').toLowerCase().startsWith('image/')) {
+    return true;
+  }
+  return IMAGE_EXTENSIONS.has(posix.extname(path).toLowerCase());
+}
+
+/** Guide references declaring `type="cover"`, resolved against the OPF. */
+function guideCoverCandidates(opf: XmlRecord, opfPath: string): CoverCandidate[] {
+  const guide = isRecord(opf.guide) ? opf.guide : {};
+  const candidates: CoverCandidate[] = [];
+  for (const reference of asArray(guide.reference).filter(isRecord)) {
+    if ((attribute(reference, '@_type') ?? '').toLowerCase() !== 'cover') {
+      continue;
+    }
+    const href = attribute(reference, '@_href');
+    if (!href) {
+      continue;
+    }
+    const path = resolvePackagePath(opfPath, href);
+    const mediaType = (attribute(reference, '@_media-type') ?? '').toLowerCase();
+    candidates.push({ path, xhtml: isXhtmlPath(path) || mediaType === 'application/xhtml+xml' });
+  }
+  return candidates;
+}
+
+/**
+ * Fallback for sloppy EPUBs that name an image `cover` in the manifest
+ * without marking it through `properties` or `<meta name="cover">`.
+ */
+function manifestCoverCandidates(items: XmlRecord[], opfPath: string): CoverCandidate[] {
+  const candidates: CoverCandidate[] = [];
+  for (const item of items) {
+    const href = attribute(item, '@_href');
+    if (!href) {
+      continue;
+    }
+    const id = attribute(item, '@_id') ?? '';
+    if (!/cover/i.test(id) && !/cover/i.test(href)) {
+      continue;
+    }
+    if (!looksLikeImage(href, attribute(item, '@_media-type'))) {
+      continue;
+    }
+    candidates.push({ path: resolvePackagePath(opfPath, href), xhtml: false });
+  }
+  return candidates;
+}
+
+/** Reads one candidate cover, following an XHTML wrapper to its first image. */
+async function coverFromCandidate(
+  archive: EpubArchive,
+  candidate: CoverCandidate,
+  budget: ZipBudget,
+): Promise<ExtractedCover | undefined> {
+  const data = await readZipEntry(archive, candidate.path, MAX_EPUB_COVER_BYTES, budget);
+  if (!data) {
+    return undefined;
+  }
+  if (!candidate.xhtml) {
+    return coverFromData(data);
+  }
+
+  const match = XHTML_IMAGE_PATTERN.exec(data.toString('utf8'));
+  const imageHref = (match?.[1] ?? match?.[2])?.trim();
+  if (!imageHref) {
+    return undefined;
+  }
+  const imageData = await readZipEntry(
+    archive,
+    resolvePackagePath(candidate.path, imageHref),
+    MAX_EPUB_COVER_BYTES,
+    budget,
+  );
+  return imageData ? coverFromData(imageData) : undefined;
+}
+
 async function findCoverEntry(
   archive: EpubArchive,
   opfPath: string,
@@ -372,19 +472,26 @@ async function findCoverEntry(
   );
   const byMeta = items.find((item) => coverIds.has(attribute(item, '@_id') ?? ''));
 
-  const coverItem = byProperty ?? byMeta;
-  const href = coverItem ? attribute(coverItem, '@_href') : undefined;
-  if (!href) {
-    return undefined;
+  const candidates: CoverCandidate[] = [];
+  // Explicit declarations win, then the guide, then the filename heuristic.
+  for (const item of [byProperty, byMeta]) {
+    const href = item ? attribute(item, '@_href') : undefined;
+    if (href) {
+      const path = resolvePackagePath(opfPath, href);
+      candidates.push({ path, xhtml: isXhtmlPath(path) });
+    }
   }
+  candidates.push(...guideCoverCandidates(opf, opfPath));
+  candidates.push(...manifestCoverCandidates(items, opfPath));
 
-  const data = await readZipEntry(
-    archive,
-    resolvePackagePath(opfPath, href),
-    MAX_EPUB_COVER_BYTES,
-    budget,
-  );
-  return data ? coverFromData(data) : undefined;
+  // A missing or unrecognised candidate must not abort extraction; move on.
+  for (const candidate of candidates) {
+    const cover = await coverFromCandidate(archive, candidate, budget);
+    if (cover) {
+      return cover;
+    }
+  }
+  return undefined;
 }
 
 async function extractEpub(buffer: Buffer): Promise<ExtractedMetadata> {
@@ -451,14 +558,99 @@ async function extractEpub(buffer: Buffer): Promise<ExtractedMetadata> {
   }
 }
 
-/** Renders the first page into a PNG cover using the native canvas backend. */
+/** Width of the thumbnail rendered to decide whether a PDF page is blank. */
+const COVER_PREVIEW_WIDTH_PX = 160;
+
+/** Cap on the preview's other side, so extreme page ratios stay cheap. */
+const COVER_PREVIEW_MAX_SIDE_PX = 800;
+
+/** Luminance below which a rendered pixel counts as ink. */
+const COVER_INK_LUMINANCE = 245;
+
+/** Share of a preview's pixels that must be ink for the page to count. */
+const COVER_PAGE_INK_THRESHOLD = 0.003;
+
+/** The subset of the canvas module the cover renderer needs. */
+type CanvasModule = typeof import('@napi-rs/canvas');
+
+/**
+ * Renders a small preview and reports whether the page has visible content.
+ * Fully transparent pixels are ignored and white ones are not ink, so both an
+ * unpainted canvas and a blank white page count as empty.
+ */
+async function pageHasContent(
+  page: PDFPageProxy,
+  createCanvas: CanvasModule['createCanvas'],
+): Promise<boolean> {
+  const baseViewport = page.getViewport({ scale: 1 });
+  if (!(baseViewport.width > 0) || !(baseViewport.height > 0)) {
+    return false;
+  }
+
+  let scale = COVER_PREVIEW_WIDTH_PX / baseViewport.width;
+  if (baseViewport.height * scale > COVER_PREVIEW_MAX_SIDE_PX) {
+    scale = COVER_PREVIEW_MAX_SIDE_PX / baseViewport.height;
+  }
+  const width = Math.max(1, Math.round(baseViewport.width * scale));
+  const height = Math.max(1, Math.round(baseViewport.height * scale));
+
+  const canvas = createCanvas(width, height);
+  const canvasContext = canvas.getContext('2d');
+  const viewport = page.getViewport({ scale });
+  await page.render({
+    canvasContext,
+    viewport,
+  } as unknown as Parameters<typeof page.render>[0]).promise;
+
+  const { data } = canvasContext.getImageData(0, 0, width, height);
+  let inkPixels = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    if ((data[index + 3] ?? 0) === 0) {
+      continue;
+    }
+    const luminance =
+      ((data[index] ?? 0) * 299 + (data[index + 1] ?? 0) * 587 + (data[index + 2] ?? 0) * 114) /
+      1000;
+    if (luminance < COVER_INK_LUMINANCE) {
+      inkPixels += 1;
+    }
+  }
+  return inkPixels / (width * height) >= COVER_PAGE_INK_THRESHOLD;
+}
+
+/**
+ * Renders the first page with visible content (checking at most the first
+ * three pages) into a PNG cover. Front matter is often blank, so a truly empty
+ * first page falls through to the first page that has ink.
+ */
 async function renderPdfCover(document: PDFDocumentProxy): Promise<ExtractedCover | undefined> {
   if (document.numPages < 1) {
     return undefined;
   }
 
   const { createCanvas } = await import('@napi-rs/canvas');
-  const page = await document.getPage(1);
+
+  const previewPageCount = Math.min(3, document.numPages);
+  let coverPageNumber = 1;
+  for (let pageNumber = 1; pageNumber <= previewPageCount; pageNumber += 1) {
+    try {
+      const previewPage = await document.getPage(pageNumber);
+      try {
+        if (await pageHasContent(previewPage, createCanvas)) {
+          coverPageNumber = pageNumber;
+          break;
+        }
+      } finally {
+        previewPage.cleanup();
+      }
+    } catch {
+      // A preview that cannot be rendered is treated as blank; the full
+      // render below still reports genuine failures through `coverError`.
+      break;
+    }
+  }
+
+  const page = await document.getPage(coverPageNumber);
   try {
     // Clamp before creating the canvas: an unusual MediaBox must not turn
     // into a multi-gigabyte native allocation.
@@ -610,6 +802,34 @@ function logCoverFailure(bookId: string, error: unknown): void {
 }
 
 /**
+ * Stores an extracted cover under a stable key and returns that key. A
+ * storage failure is logged and reported as `undefined` so metadata can still
+ * be persisted without a cover.
+ */
+export async function storeCover(
+  deps: Pick<AppDeps, 'storage'>,
+  bookId: string,
+  cover: ExtractedCover,
+): Promise<string | undefined> {
+  const extension =
+    cover.contentType === 'image/png'
+      ? 'png'
+      : cover.contentType === 'image/webp'
+        ? 'webp'
+        : 'jpg';
+  const key = `covers/${bookId}.${extension}`;
+
+  try {
+    await deps.storage.putObject(key, cover.data, cover.contentType);
+    return key;
+  } catch (error) {
+    // Metadata is still worth keeping; the book simply has no cover.
+    logCoverFailure(bookId, error);
+    return undefined;
+  }
+}
+
+/**
  * Extracts metadata for a pending book, stores its cover under a stable key,
  * and flips `metadata_status` to done or failed. Never throws: a broken file
  * marks the book failed while keeping its row and user-edited fields intact.
@@ -639,19 +859,7 @@ export async function runMetadataJob(deps: AppDeps, bookId: string): Promise<voi
 
     let coverKey: string | undefined;
     if (extracted.cover && !book.coverKey) {
-      const extension = extracted.cover.contentType === 'image/png' ? 'png' : 'jpg';
-      const candidateKey = `covers/${bookId}.${extension}`;
-      try {
-        await deps.storage.putObject(
-          candidateKey,
-          extracted.cover.data,
-          extracted.cover.contentType,
-        );
-        coverKey = candidateKey;
-      } catch (error) {
-        // Metadata is still worth keeping; the book simply has no cover.
-        logCoverFailure(bookId, error);
-      }
+      coverKey = await storeCover(deps, bookId, extracted.cover);
     }
 
     await applyExtractedMetadata(deps, bookId, extracted, coverKey);

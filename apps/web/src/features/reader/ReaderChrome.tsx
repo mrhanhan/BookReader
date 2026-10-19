@@ -33,6 +33,11 @@ export interface ReaderChromeProps {
   onNext: () => void;
   onSeekPercent: (percent: number) => void;
   onJumpPage: (page: number) => void;
+  /** Effective original-PDF zoom in percent; null hides the zoom controls. */
+  zoomPercent: number | null;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomReset: () => void;
   /** Pointer/keyboard use on the chrome counts as reader activity. */
   onActivity: () => void;
 }
@@ -62,6 +67,10 @@ export function ReaderChrome({
   onNext,
   onSeekPercent,
   onJumpPage,
+  zoomPercent,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
   onActivity,
 }: ReaderChromeProps) {
   const pageCount = Math.max(1, documentInfo?.pageCount ?? 1);
@@ -175,15 +184,21 @@ export function ReaderChrome({
       </header>
 
       <footer className="reader-chrome reader-chrome-bottom" onPointerDown={onActivity}>
-        <button type="button" onClick={onPrevious}>
-          上一页
-        </button>
+        <div className="reader-chrome-row reader-nav">
+          <button type="button" onClick={onPrevious}>
+            上一页
+          </button>
 
-        <span className="reader-page-label">
-          {kind === 'pdf' || kind === 'reflow'
-            ? `第 ${safePage} / ${pageCount} 页`
-            : `${percentValue}%`}
-        </span>
+          <span className="reader-page-label">
+            {kind === 'pdf' || kind === 'reflow'
+              ? `第 ${safePage} / ${pageCount} 页`
+              : `${percentValue}%`}
+          </span>
+
+          <button type="button" onClick={onNext}>
+            下一页
+          </button>
+        </div>
 
         <input
           type="range"
@@ -196,31 +211,48 @@ export function ReaderChrome({
           onChange={(event) => onSeekPercent(Number(event.target.value) / 100)}
         />
 
-        {kind === 'pdf' || kind === 'reflow' ? (
-          <span className="reader-page-jump">
-            <input
-              type="number"
-              aria-label="页码"
-              min={1}
-              max={pageCount}
-              value={pageText}
-              onChange={(event) => setPageText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  jumpToTypedPage();
-                }
-              }}
-            />
-            <button type="button" onClick={jumpToTypedPage}>
-              跳转
-            </button>
-          </span>
-        ) : null}
+        {kind === 'pdf' || kind === 'reflow' || zoomPercent !== null ? (
+          <div className="reader-chrome-row reader-utils">
+            {kind === 'pdf' || kind === 'reflow' ? (
+              <span className="reader-page-jump">
+                <input
+                  type="number"
+                  aria-label="页码"
+                  min={1}
+                  max={pageCount}
+                  value={pageText}
+                  onChange={(event) => setPageText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      jumpToTypedPage();
+                    }
+                  }}
+                />
+                <button type="button" onClick={jumpToTypedPage}>
+                  跳转
+                </button>
+              </span>
+            ) : null}
 
-        <button type="button" onClick={onNext}>
-          下一页
-        </button>
+            {zoomPercent !== null ? (
+              <span className="reader-zoom">
+                <button type="button" aria-label="缩小" onClick={onZoomOut}>
+                  −
+                </button>
+                <output aria-label="缩放比例" className="reader-zoom-value">
+                  {zoomPercent}%
+                </output>
+                <button type="button" aria-label="放大" onClick={onZoomIn}>
+                  +
+                </button>
+                <button type="button" aria-label="适应宽度" onClick={onZoomReset}>
+                  适应
+                </button>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </footer>
     </>
   );

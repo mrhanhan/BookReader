@@ -35,7 +35,8 @@ export interface FilterBarProps {
 }
 
 const selectClass =
-  'rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink ' +
+  'min-h-11 w-full rounded-md border border-border bg-surface px-3 text-base text-ink ' +
+  'sm:min-h-9 sm:w-auto sm:text-sm ' +
   'focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none';
 
 /** Search, filters and the grid/list switch. Search settles after 300 ms. */
@@ -66,9 +67,9 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
   return (
     <section
       aria-label="筛选书架"
-      className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-surface/70 p-4"
+      className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-surface/70 p-3.5 sm:flex sm:flex-wrap sm:items-end sm:gap-3 sm:p-4"
     >
-      <div className="min-w-52 flex-1">
+      <div className="col-span-2 min-w-0 sm:min-w-52 sm:flex-1">
         <Input
           label="搜索"
           type="search"
@@ -78,7 +79,7 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
         />
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5">
         <label htmlFor="shelf-format-filter" className="text-xs font-medium text-muted">
           格式
         </label>
@@ -99,7 +100,7 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
         </select>
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5">
         <label htmlFor="shelf-status-filter" className="text-xs font-medium text-muted">
           状态
         </label>
@@ -120,7 +121,7 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
         </select>
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5">
         <label htmlFor="shelf-category-filter" className="text-xs font-medium text-muted">
           分类
         </label>
@@ -139,7 +140,7 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
         </select>
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5">
         <label htmlFor="shelf-sort-filter" className="text-xs font-medium text-muted">
           排序
         </label>
@@ -162,7 +163,7 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
       <div
         role="group"
         aria-label="视图切换"
-        className="ml-auto flex items-center gap-1 rounded-md border border-border bg-paper/60 p-1"
+        className="col-span-2 flex w-full items-center gap-1 rounded-md border border-border bg-paper/60 p-1 sm:ml-auto sm:w-auto"
       >
         {(
           [
@@ -177,7 +178,8 @@ export function FilterBar({ filters, categories, view, onChange, onViewChange }:
             aria-pressed={view === option.value}
             onClick={() => onViewChange(option.value)}
             className={cn(
-              'rounded px-2.5 py-1 text-xs tracking-wide transition',
+              'min-h-9 flex-1 rounded px-3 text-xs tracking-wide transition sm:min-h-0 sm:flex-none sm:py-1',
+              '[@media(pointer:coarse)]:min-h-11',
               'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               view === option.value
                 ? 'bg-accent/10 text-accent'

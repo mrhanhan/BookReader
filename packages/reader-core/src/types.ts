@@ -78,6 +78,8 @@ export interface ReaderEngine {
   next(): Promise<void>;
   previous(): Promise<void>;
   currentLocator(): Locator;
+  /** Effective render scale of the current view; engines without zoom omit it. */
+  currentScale?(): number;
   getTextContext(scope: ReaderContextScope, maxChars?: number): Promise<ReaderTextContext>;
   setSettings(settings: ReaderSettings): void;
   setHighlights(highlights: ReaderHighlight[]): void;

@@ -1,5 +1,5 @@
 import type { BookDto, BookStatus, UpdateBookInput } from '@bookr/shared';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 
@@ -57,6 +57,20 @@ export function useBooks(query: BooksQuery) {
   });
 }
 
+/**
+ * Scroll-paginated shelf: pages are fetched on demand and appended in order.
+ * The page cursor is owned by the query, so filter changes restart at page 1.
+ */
+export function useInfiniteBooks(query: BooksQuery) {
+  return useInfiniteQuery({
+    queryKey: [...BOOKS_QUERY_KEY, 'infinite', { ...query, page: undefined }] as const,
+    queryFn: ({ pageParam }) => fetchBooks({ ...query, page: pageParam }),
+    initialPageParam: 1,
+    getNextPageParam: (last) =>
+      last.page * last.pageSize < last.total ? last.page + 1 : undefined,
+  });
+}
+
 export function useBook(id: string | null) {
   return useQuery({
     queryKey: ['book', id],
@@ -109,10 +123,26 @@ export function useRestoreBook() {
   });
 }
 
+export interface TrashPage {
+  items: BookDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/** One page of trashed books, newest deletion first. */
+export function fetchTrash(page = 1, pageSize = 30): Promise<TrashPage> {
+  return apiFetch<TrashPage>(`/api/trash?page=${page}&pageSize=${pageSize}`);
+}
+
+/** Scroll-paginated trash. */
 export function useTrash() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: TRASH_QUERY_KEY,
-    queryFn: async () => (await apiFetch<{ items: BookDto[] }>('/api/trash')).items,
+    queryFn: ({ pageParam }) => fetchTrash(pageParam),
+    initialPageParam: 1,
+    getNextPageParam: (last) =>
+      last.page * last.pageSize < last.total ? last.page + 1 : undefined,
   });
 }
 

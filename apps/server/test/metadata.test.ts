@@ -1,6 +1,8 @@
 import AdmZip from 'adm-zip';
 import { eq } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PNG } from 'pngjs';
 import { expect, it, vi } from 'vitest';
 import {
   MAX_COVER_PIXELS,
@@ -29,7 +31,9 @@ import {
   testDb,
 } from './helpers';
 
-/** Builds an EPUB with valid metadata whose cover entry declares an oversized length. */
+/**
+ * Builds an EPUB with valid metadata whose cover entry declares an oversized length.
+ */
 function epubWithOversizedCover(): Buffer {
   const zip = new AdmZip({ noSort: true });
   zip.addFile('mimetype', Buffer.from('application/epub+zip'));
@@ -53,6 +57,62 @@ function epubWithOversizedCover(): Buffer {
   const cover = zip.addFile('OEBPS/cover.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   cover.header.size = MAX_EPUB_COVER_BYTES + 1;
   return zip.toBuffer();
+}
+
+/** Builds a 32x32 gradient PNG comfortably larger than 100 bytes. */
+function makeCoverPng(): Buffer {
+  const width = 32;
+  const height = 32;
+  const png = new PNG({ width, height });
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (width * y + x) * 4;
+      png.data[offset] = Math.round((x / (width - 1)) * 255);
+      png.data[offset + 1] = Math.round((y / (height - 1)) * 255);
+      png.data[offset + 2] = 160;
+      png.data[offset + 3] = 255;
+    }
+  }
+  return PNG.sync.write(png);
+}
+
+/** Builds an EPUB whose package document is `opf` plus extra OEBPS-relative files. */
+function buildEpub(opf: string, files: Record<string, Buffer> = {}): Buffer {
+  const zip = new AdmZip({ noSort: true });
+  zip.addFile('mimetype', Buffer.from('application/epub+zip'));
+  zip.addFile(
+    'META-INF/container.xml',
+    Buffer.from(
+      '<?xml version="1.0"?><container><rootfiles>' +
+        '<rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+    ),
+  );
+  zip.addFile('OEBPS/content.opf', Buffer.from(opf));
+  for (const [path, data] of Object.entries(files)) {
+    zip.addFile(`OEBPS/${path}`, data);
+  }
+  return zip.toBuffer();
+}
+
+/** Wraps a package document body in the minimal `<package>` element. */
+function packageXml(body: string): string {
+  return `<?xml version="1.0"?><package>${body}</package>`;
+}
+
+/** Builds a three-page PDF whose first page is blank. */
+async function pdfWithBlankFirstPage(): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  pdf.addPage([595, 842]);
+
+  const font = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const second = pdf.addPage([595, 842]);
+  second.drawRectangle({ x: 72, y: 600, width: 451, height: 120, color: rgb(0, 0, 0) });
+  second.drawText('Cover page', { x: 72, y: 760, size: 28, font, color: rgb(0, 0, 0) });
+
+  const third = pdf.addPage([595, 842]);
+  third.drawRectangle({ x: 72, y: 600, width: 451, height: 120, color: rgb(0.9, 0.1, 0.1) });
+
+  return Buffer.from(await pdf.save());
 }
 
 /**
@@ -90,6 +150,98 @@ it('extracts metadata and renders a cover from a PDF', async () => {
   expect(result.title).toBe('PDF 测试');
   expect(result.cover?.contentType).toBe('image/png');
   expect(result.cover!.data.length).toBeGreaterThan(1000);
+});
+
+it('skips a blank first PDF page when rendering the cover', async () => {
+  const result = await extractMetadata({
+    buffer: await pdfWithBlankFirstPage(),
+    format: 'pdf',
+  });
+
+  expect(result.cover?.contentType).toBe('image/png');
+  const png = PNG.sync.read(result.cover!.data);
+  let nonWhite = 0;
+  for (let index = 0; index < png.data.length; index += 4) {
+    const alpha = png.data[index + 3] ?? 0;
+    if (alpha === 0) {
+      continue;
+    }
+    const red = png.data[index] ?? 0;
+    const green = png.data[index + 1] ?? 0;
+    const blue = png.data[index + 2] ?? 0;
+    if (red < 250 || green < 250 || blue < 250) {
+      nonWhite += 1;
+    }
+  }
+  // Covering page 2's black rectangle means the cover cannot be all white.
+  expect(nonWhite / (png.width * png.height)).toBeGreaterThan(0.001);
+});
+
+it('extracts an EPUB cover referenced only by the guide', async () => {
+  const opf = packageXml(
+    '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Guide Cover</dc:title></metadata>' +
+      '<manifest>' +
+      '<item id="cover-page" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>' +
+      '</manifest>' +
+      '<spine><itemref idref="cover-page"/></spine>' +
+      '<guide><reference type="cover" href="Text/cover.xhtml"/></guide>',
+  );
+  const epub = buildEpub(opf, {
+    'Text/cover.xhtml': Buffer.from(
+      '<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml">' +
+        '<body><img src="../Images/cover.png" alt="cover"/></body></html>',
+    ),
+    'Images/cover.png': makeCoverPng(),
+  });
+
+  const result = await extractMetadata({ buffer: epub, format: 'epub' });
+
+  expect(result.title).toBe('Guide Cover');
+  expect(result.cover?.contentType).toBe('image/png');
+  expect(result.cover!.data.length).toBeGreaterThan(100);
+});
+
+it('extracts an EPUB cover from a manifest filename heuristic', async () => {
+  const opf = packageXml(
+    '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Filename Cover</dc:title></metadata>' +
+      '<manifest>' +
+      '<item id="cover-img" href="images/cover.jpg" media-type="image/jpeg"/>' +
+      '</manifest>',
+  );
+  const jpeg = Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+    Buffer.alloc(256, 0x20),
+  ]);
+  const epub = buildEpub(opf, { 'images/cover.jpg': jpeg });
+
+  const result = await extractMetadata({ buffer: epub, format: 'epub' });
+
+  expect(result.cover?.contentType).toBe('image/jpeg');
+  expect(result.cover!.data.length).toBeGreaterThan(100);
+});
+
+it('falls through a broken guide image to a filename cover', async () => {
+  const opf = packageXml(
+    '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Broken Guide</dc:title></metadata>' +
+      '<manifest>' +
+      '<item id="cover-page" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>' +
+      '<item id="cover-img" href="images/cover.jpg" media-type="image/jpeg"/>' +
+      '</manifest>' +
+      '<guide><reference type="cover" href="Text/cover.xhtml"/></guide>',
+  );
+  const epub = buildEpub(opf, {
+    'Text/cover.xhtml': Buffer.from(
+      '<?xml version="1.0"?><html><body><img src="../Images/missing.png"/></body></html>',
+    ),
+    'images/cover.jpg': Buffer.concat([
+      Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+      Buffer.alloc(256, 0x20),
+    ]),
+  });
+
+  const result = await extractMetadata({ buffer: epub, format: 'epub' });
+
+  expect(result.cover?.contentType).toBe('image/jpeg');
 });
 
 it('rejects an EPUB entry that inflates past its declared size', async () => {

@@ -53,15 +53,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Locates the worker next to either the bundled server (`dist/books/...`) or
- * the TypeScript sources (`src/books/...` when running under tsx or vitest).
+ * Locates the worker next to the bundled server (`dist/books/...`), the
+ * TypeScript sources (`src/books/...` under tsx/vitest), or a bundled CLI
+ * (`dist/cli/...`, one directory below the shared worker).
  */
 function resolveWorkerPath(): string {
   const candidates = [
     './books/metadata-worker.js',
+    '../books/metadata-worker.js',
     './metadata-worker.js',
     './metadata-worker.ts',
     './books/metadata-worker.ts',
+    '../books/metadata-worker.ts',
   ];
   for (const candidate of candidates) {
     const path = fileURLToPath(new URL(candidate, import.meta.url));

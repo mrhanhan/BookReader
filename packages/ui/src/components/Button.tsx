@@ -10,8 +10,9 @@ const VARIANTS = {
 const SIZES = {
   sm: 'px-3 py-1.5 text-xs',
   md: 'px-4 py-2.5 text-sm',
+  /** Square utility button; the label is supplied through `aria-label`. */
+  icon: 'size-9 shrink-0 p-0 [@media(pointer:coarse)]:size-11',
 } as const;
-
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: keyof typeof VARIANTS;
   size?: keyof typeof SIZES;
@@ -35,7 +36,8 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-md font-medium tracking-wide transition',
+        'inline-flex min-h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium tracking-wide transition',
+        '[@media(pointer:coarse)]:min-h-11',
         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
         'disabled:cursor-not-allowed disabled:opacity-60',
         VARIANTS[variant],

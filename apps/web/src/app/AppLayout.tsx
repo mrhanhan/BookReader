@@ -31,12 +31,19 @@ export function AppLayout() {
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-border/80 bg-surface/80 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3">
-          <NavLink to="/" className="font-serif text-lg tracking-wide text-ink">
+      <header className="sticky top-0 z-30 border-b border-border/80 bg-surface/90 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 sm:flex-nowrap sm:py-3">
+          <NavLink
+            to="/"
+            className="shrink-0 whitespace-nowrap font-serif text-lg tracking-wide text-ink"
+          >
             纸墨书房
           </NavLink>
-          <nav aria-label="主导航" className="flex items-center gap-1 text-sm">
+          {/* Phones get a second, horizontally scrollable paper-tab row. */}
+          <nav
+            aria-label="主导航"
+            className="-mx-1 order-3 flex w-full items-center gap-1 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 sm:pb-0"
+          >
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
@@ -44,8 +51,10 @@ export function AppLayout() {
                 end={item.end}
                 className={({ isActive }) =>
                   cn(
-                    'rounded-md px-3 py-1.5 transition',
-                    isActive ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-ink/5 hover:text-ink',
+                    'shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition',
+                    isActive
+                      ? 'bg-accent/10 text-accent'
+                      : 'text-muted hover:bg-ink/5 hover:text-ink',
                   )
                 }
               >
@@ -53,16 +62,16 @@ export function AppLayout() {
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-3 text-sm text-muted">
+          <div className="ml-auto flex shrink-0 items-center gap-2 text-sm text-muted sm:gap-3">
             <SyncStatusBadge />
-            <span>{user?.displayName ?? user?.username}</span>
+            <span className="hidden sm:inline">{user?.displayName ?? user?.username}</span>
             <Button variant="ghost" size="sm" loading={loggingOut} onClick={handleLogout}>
               退出登录
             </Button>
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-8">
+      <main className="mx-auto max-w-6xl px-4 py-5 sm:py-8">
         <Outlet />
       </main>
     </div>
