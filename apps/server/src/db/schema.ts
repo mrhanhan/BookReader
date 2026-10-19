@@ -23,6 +23,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  date,
   doublePrecision,
   index,
   integer,
@@ -356,6 +357,50 @@ export const bookmarks = pgTable(
     index('bookmarks_user_book_created_idx').on(table.userId, table.bookId, table.createdAt),
   ],
 );
+
+/**
+ * One reading session as reported by a client. The client owns the id so
+ * replays and heartbeat updates are idempotent on the primary key.
+ */
+export const readingSessions = pgTable(
+  'reading_sessions',
+  {
+    id: uuid('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    bookId: uuid('book_id')
+      .notNull()
+      .references(() => books.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    endedAt: timestamp('ended_at', { withTimezone: true }).notNull(),
+    activeSeconds: integer('active_seconds').notNull(),
+    pagesRead: integer('pages_read').notNull().default(0),
+    clientUpdatedAt: timestamp('client_updated_at', { withTimezone: true }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('reading_sessions_user_started_idx').on(table.userId, table.startedAt),
+  ],
+);
+export type ReadingSessionRow = typeof readingSessions.$inferSelect;
+
+/** One user's aggregated reading time for one local calendar date. */
+export const dailyStats = pgTable(
+  'daily_stats',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    localDate: date('local_date').notNull(),
+    activeSeconds: integer('active_seconds').notNull(),
+    qualified: boolean('qualified').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.localDate] })],
+);
+export type DailyStatsRow = typeof dailyStats.$inferSelect;
 
 /**
  * Append-only log of per-user entity changes. Clients pull by revision and
