@@ -20,12 +20,14 @@ import {
  */
 const TITLE = '端到端笔记库';
 const FIXTURE = 'e2e/fixtures/reader.pdf';
-const NOTE_QUOTE = 'quick brown fox';
+const NOTE_QUOTE = 'page three';
 const NOTE_TEXT = '狐狸与狗';
 const HIGHLIGHT_QUOTE = '程序由指令组成';
 const TAG = '端到端';
 const FAKE_REPLY = '已收到上下文';
 const PDF_LOCATOR = { kind: 'pdf', page: 1, percent: 0 } as const;
+/** Page 3 has selectable text, so the jump proves a real relocation. */
+const NOTE_LOCATOR = { kind: 'pdf', page: 3, percent: 0.1 } as const;
 
 /**
  * The reader whose analyses this test created. Saved analyses outlive their
@@ -60,7 +62,7 @@ test.afterEach(async ({ request }) => {
 interface CreateAnnotationPayload {
   type: 'note' | 'highlight';
   color: 'yellow' | 'green';
-  locator: typeof PDF_LOCATOR;
+  locator: { kind: 'pdf'; page: number; percent: number };
   selectedText: string;
   noteText?: string;
   tags?: string[];
@@ -127,7 +129,7 @@ async function seedNotes(
   await createNoteViaApi(request, reader.username, bookId, {
     type: 'note',
     color: 'yellow',
-    locator: PDF_LOCATOR,
+    locator: NOTE_LOCATOR,
     selectedText: NOTE_QUOTE,
     noteText: NOTE_TEXT,
     tags: [TAG],
@@ -167,7 +169,7 @@ test('searches, filters and jumps back to the source note', async ({ page, reque
   await expect(page).toHaveURL(/\/books\/[^/]+\/read\?note=/);
   await waitForPdfReady(page, NOTE_QUOTE);
   await revealChrome(page);
-  await expect(page.getByText(/第 1 \/ \d+ 页/).first()).toBeVisible();
+  await expect(page.getByText(/第 3 \/ \d+ 页/).first()).toBeVisible();
 
   await page.goto('/notes');
   await expect(page.getByRole('heading', { name: '笔记库' })).toBeVisible();
@@ -211,7 +213,7 @@ test('runs a note analysis and keeps it in history', async ({ page, request }) =
   await createNoteViaApi(request, reader.username, bookId, {
     type: 'note',
     color: 'yellow',
-    locator: PDF_LOCATOR,
+    locator: NOTE_LOCATOR,
     selectedText: NOTE_QUOTE,
     noteText: NOTE_TEXT,
     tags: [TAG],
@@ -227,12 +229,31 @@ test('runs a note analysis and keeps it in history', async ({ page, request }) =
   await page.getByLabel('按书筛选').selectOption({ label: TITLE });
   await expect(page.getByTestId('note-card')).toHaveCount(2);
 
+  // The web client must forward the page's active filters to the server.
+  let analysisBody: { filters?: { bookId?: string } } | null = null;
+  page.on('request', (request) => {
+    if (request.method() !== 'POST' || !request.url().includes('/api/notes/analyses')) {
+      return;
+    }
+    try {
+      analysisBody = request.postDataJSON() as { filters?: { bookId?: string } };
+    } catch {
+      // A non-JSON body is already covered by the client contract tests.
+    }
+  });
+
   await page.getByRole('button', { name: '分析笔记' }).click();
   const panel = page.getByRole('complementary', { name: 'AI 笔记分析' });
   await expect(panel).toBeVisible();
 
   await panel.getByRole('button', { name: '主题归纳' }).click();
   await panel.getByRole('button', { name: '开始分析' }).click();
+  await expect
+    .poll(() => analysisBody?.filters?.bookId, {
+      timeout: 5_000,
+      message: 'analysis request carries the selected book filter',
+    })
+    .toBe(bookId);
   await expect(panel.getByText(FAKE_REPLY, { exact: false })).toBeVisible({
     timeout: 20_000,
   });

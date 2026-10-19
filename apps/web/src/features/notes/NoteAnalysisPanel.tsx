@@ -101,6 +101,12 @@ export function NoteAnalysisPanel({
         } finally {
           // Do not delay the interrupted/complete state on the list request.
           void refreshHistory();
+          // The server persists an aborted analysis after the socket closes;
+          // one quiet retry picks up the interrupted row that the first list
+          // request usually races.
+          window.setTimeout(() => {
+            if (mounted.current) void refreshHistory();
+          }, 900);
         }
       },
     }),

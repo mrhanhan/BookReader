@@ -1,6 +1,11 @@
 import { useId, useState } from 'react';
 import { HIGHLIGHT_HEX } from '@bookr/reader-core';
-import { MAX_TAGS, MAX_TAG_LENGTH, normalizeTags } from '@bookr/shared';
+import {
+  MAX_NOTE_TEXT_LENGTH,
+  MAX_TAGS,
+  MAX_TAG_LENGTH,
+  normalizeTags,
+} from '@bookr/shared';
 import type { AnnotationColor, NoteDto } from '@bookr/shared';
 import { Button, Dialog, Input } from '@bookr/ui';
 import { messageForApiError } from '../../lib/errorMessages';
@@ -110,6 +115,7 @@ export function NoteEditDialog({ note, onClose, onSaved }: NoteEditDialogProps) 
           </label>
           <textarea
             id={noteFieldId}
+            maxLength={MAX_NOTE_TEXT_LENGTH}
             value={noteText}
             onChange={(event) => setNoteText(event.target.value)}
             rows={5}

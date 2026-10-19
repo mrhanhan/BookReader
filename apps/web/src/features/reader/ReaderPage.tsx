@@ -389,6 +389,8 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
   bookIdRef.current = bookId;
   // The book + note pair whose linked-note jump has already been performed.
   const noteJumpedRef = useRef<string | null>(null);
+  // A missing note is reported once, but a later sync may still deliver it.
+  const noteMissingNotifiedRef = useRef<string | null>(null);
   // Concurrent switch clicks share one signing request per side instead of
   // racing each other; a second click awaits the first result.
   const refreshInFlightRef = useRef<
@@ -671,6 +673,7 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     setToast(null);
     readyRef.current = false;
     noteJumpedRef.current = null;
+    noteMissingNotifiedRef.current = null;
   }, [bookId]);
 
   // Connectivity follows the browser's own events; the source resolver keeps
@@ -1152,7 +1155,7 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
   const requestedNoteId = searchParams.get('note');
   const noteTargetId =
     requestedNoteId !== null && NOTE_ID_PATTERN.test(requestedNoteId)
-      ? requestedNoteId
+      ? requestedNoteId.toLowerCase()
       : null;
   // Scope the "already handled" marker to the book so a later navigation to a
   // different book (or another note) still jumps. A book change clears it in
@@ -1178,8 +1181,13 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     }
     // "Missing" is only known once the list actually loaded. While the query
     // is pending (or disabled) the reader stays quiet and keeps the position.
-    if (annotationsQuery.isSuccess) {
-      noteJumpedRef.current = noteJumpKey;
+    if (
+      annotationsQuery.isSuccess
+      && noteMissingNotifiedRef.current !== noteJumpKey
+    ) {
+      // Do not mark the jump as done: a sync completing after the reader's
+      // first-sync timeout may still deliver this note and must relocate then.
+      noteMissingNotifiedRef.current = noteJumpKey;
       showToast(NOTE_MISSING_MESSAGE);
     }
   }, [

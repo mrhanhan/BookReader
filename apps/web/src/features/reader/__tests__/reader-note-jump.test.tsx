@@ -101,6 +101,16 @@ it('jumps to the note locator and flashes it exactly once, after the book opens'
   expect(router.state.location.search).toBe(`?note=${NOTE_ID}`);
 });
 
+it('accepts an uppercase note uuid', async () => {
+  seedNote();
+  const engine = createFakeEngine();
+  renderReader(`/books/${BOOK_ID}/read?note=${NOTE_ID.toUpperCase()}`, () => engine);
+
+  await waitFor(() =>
+    expect(engine.goTo).toHaveBeenCalledWith(NOTE_LOCATOR, { flash: true }),
+  );
+});
+
 it('still jumps when the annotations query is already cached before the book is ready', async () => {
   const engine = createFakeEngine();
   const { router } = renderReader(
