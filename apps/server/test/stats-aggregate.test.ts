@@ -85,6 +85,20 @@ it('attributes a zero-length session to its start date', async () => {
   expect(splitSessionSeconds(row, '2026-10-18', 'Asia/Shanghai')).toBe(0);
 });
 
+it('counts a zero-length session sitting exactly on local midnight', async () => {
+  // 2026-10-19T16:00Z is exactly 2026-10-20 00:00 in Shanghai.
+  await insertSession({
+    startedAt: '2026-10-19T16:00:00.000Z',
+    endedAt: '2026-10-19T16:00:00.000Z',
+    activeSeconds: 90,
+  });
+  await testDb.transaction(async (tx) => {
+    await recomputeDailyStats(tx, userId, 'Asia/Shanghai', ['2026-10-20']);
+  });
+
+  expect((await statFor('2026-10-20'))?.activeSeconds).toBe(90);
+});
+
 it('qualifies a day at exactly ten minutes and not a second less', async () => {
   await insertSession({
     startedAt: '2026-10-17T02:00:00.000Z',

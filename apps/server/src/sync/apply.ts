@@ -663,6 +663,10 @@ async function applySettingsChange(
   });
 }
 
+/** Client-generated session ids are UUIDv7; anything else cannot be stored. */
+const READING_SESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Write fields compared for idempotency; timestamps are compared separately. */
 function sessionWritePayload(row: ReadingSessionRow): Record<string, unknown> {
   return {
@@ -688,6 +692,11 @@ async function applyReadingSessionChange(
   const { clientTime, clockSkew, now } = context;
   if (incoming.op !== 'upsert') {
     return rejected('unsupported_op');
+  }
+  // The primary key is a UUID column; reject malformed ids as a payload error
+  // instead of letting Postgres raise a 500 for an invalid uuid literal.
+  if (!READING_SESSION_ID_PATTERN.test(incoming.entityId)) {
+    return rejected('invalid_payload');
   }
 
   const parsed = syncReadingSessionPayloadSchema.safeParse(incoming.payload);

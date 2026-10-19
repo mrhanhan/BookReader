@@ -1,4 +1,4 @@
-import { and, eq, gt, lt } from 'drizzle-orm';
+import { and, eq, gte, gt, lt } from 'drizzle-orm';
 import type { Database, Transaction } from '../db/client';
 import {
   dailyStats,
@@ -87,7 +87,7 @@ export async function listSessionsOverlapping(
       and(
         eq(readingSessions.userId, userId),
         lt(readingSessions.startedAt, to),
-        gt(readingSessions.endedAt, from),
+        gte(readingSessions.endedAt, from),
       ),
     );
 }

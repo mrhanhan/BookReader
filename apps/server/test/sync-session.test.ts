@@ -153,6 +153,11 @@ it('rejects malformed sessions', async () => {
   expect(await storedSession()).toBeUndefined();
 });
 
+it('rejects a malformed session id without a database error', async () => {
+  const result = await push(sessionChange({ id: 'not-a-uuid' }));
+  expect(result.rejected[0]?.reason).toBe('invalid_payload');
+});
+
 it('rejects sessions for an unknown or trashed book', async () => {
   const unknown = await push(sessionChange({ book: newId() }));
   expect(unknown.rejected[0]?.reason).toBe('unknown_entity');
