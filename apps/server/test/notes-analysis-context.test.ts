@@ -16,7 +16,7 @@ function makeNote(selectedText: string, date: string): AnalysisSourceNote {
     selectedText,
     noteText: null,
     tags: [],
-    createdAt: new Date(`${date}T00:00:00Z`),
+    updatedAt: new Date(`${date}T00:00:00Z`),
   };
 }
 
@@ -33,13 +33,14 @@ it('numbers notes chronologically and reports the analyzed count', () => {
       makeNote('最早的划线', '2026-10-01'),
     ],
     total: 3,
+    timezone: 'Asia/Shanghai',
   });
 
   expect(prompt.analyzedCount).toBe(3);
   expect(prompt.promptTokens).toBeGreaterThan(0);
 
   const content = userContent(prompt.messages);
-  expect(content).toContain('共 3 条笔记，以下按阅读时间顺序列出 3 条。');
+  expect(content).toContain('共 3 条笔记，以下按最近编辑时间顺序列出 3 条。');
 
   const first = content.indexOf('[1]');
   const second = content.indexOf('[2]');
@@ -55,7 +56,12 @@ it('drops the oldest notes when the token budget is exceeded', () => {
     return makeNote(`第${index}条${'长'.repeat(1_500)}`, day);
   });
 
-  const prompt = buildAnalysisPrompt({ kind: 'themes', notes, total: notes.length });
+  const prompt = buildAnalysisPrompt({
+    kind: 'themes',
+    notes,
+    total: notes.length,
+    timezone: 'UTC',
+  });
 
   expect(prompt.analyzedCount).toBeLessThan(notes.length);
   expect(prompt.analyzedCount).toBeGreaterThan(0);
@@ -66,6 +72,30 @@ it('drops the oldest notes when the token budget is exceeded', () => {
     0,
   );
   expect(totalTokens).toBeLessThanOrEqual(NOTE_ANALYSIS_TOKEN_BUDGET + 400);
+});
+
+it('formats each note date in the reader timezone', () => {
+  const note = {
+    ...makeNote('时区测试', '2026-10-18'),
+    updatedAt: new Date('2026-10-18T17:00:00Z'),
+  };
+
+  const shanghai = buildAnalysisPrompt({
+    kind: 'themes',
+    notes: [note],
+    total: 1,
+    timezone: 'Asia/Shanghai',
+  });
+  expect(userContent(shanghai.messages)).toContain('时间：2026-10-19');
+
+  // An unknown zone falls back to UTC.
+  const fallback = buildAnalysisPrompt({
+    kind: 'themes',
+    notes: [note],
+    total: 1,
+    timezone: 'Not/AZone',
+  });
+  expect(userContent(fallback.messages)).toContain('时间：2026-10-18');
 });
 
 it('asks for the right output per kind', () => {

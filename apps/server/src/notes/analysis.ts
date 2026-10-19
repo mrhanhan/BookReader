@@ -77,7 +77,7 @@ function toSourceNote(row: NoteQueryRow): AnalysisSourceNote {
     selectedText: row.annotation.selectedText,
     noteText: row.annotation.noteText,
     tags: row.annotation.tags ?? [],
-    createdAt: row.annotation.createdAt,
+    updatedAt: row.annotation.updatedAt,
   };
 }
 
@@ -99,6 +99,9 @@ export async function prepareNoteAnalysis(
 ): Promise<PreparedNoteAnalysis> {
   const actor = await requireAiActor(deps, userId);
   const aiConfig = await requireAiConfig(deps);
+  // Build the client before holding quota or writing a row: a factory failure
+  // must not leave a reservation or a streaming placeholder behind.
+  const client = deps.aiClientFactory(aiConfig);
 
   const filters = body.filters ?? {};
   const { rows, total } = await listNotesForAnalysis(deps.db, {
@@ -116,8 +119,12 @@ export async function prepareNoteAnalysis(
     kind: body.kind,
     notes: rows.map(toSourceNote),
     total,
+    timezone: actor.timezone,
   });
-  const title = analysisTitle(body.kind, singleBookTitle(rows));
+  const title = analysisTitle(
+    body.kind,
+    singleBookTitle(rows.slice(0, prompt.analyzedCount)),
+  );
 
   const now = deps.clock.now();
   const reservation = await reserveQuota(deps.db, {
@@ -155,7 +162,7 @@ export async function prepareNoteAnalysis(
     kind: body.kind,
     model: aiConfig.reasonerModel,
     promptVersion: NOTE_ANALYSIS_PROMPT_VERSION,
-    client: deps.aiClientFactory(aiConfig),
+    client,
     messages: prompt.messages,
     promptTokens: prompt.promptTokens,
     reservation,

@@ -236,6 +236,39 @@ it('refuses before calling upstream when quota is exhausted', async () => {
   await stopApp(app);
 });
 
+it('reports an upstream failure and keeps the partial content', async () => {
+  await resetDb();
+  const fake = new FakeAiClient({ failAfter: 1, delayMs: 0 });
+  const { app, url } = await startApp(() => fake);
+  const user = await seedUser('member');
+  const book = await seedBook({ uploadedBy: user.id });
+  await seedAnnotation({ userId: user.id, bookId: book.id, selectedText: '一条划线' });
+
+  const response = await analyze(url, await authHeader(user), { kind: 'themes' });
+  const events = parseFrames(await response.text());
+  expect(events.map((event) => event.event)).toEqual(
+    expect.arrayContaining(['meta', 'delta', 'error']),
+  );
+  expect(events.some((event) => event.event === 'done')).toBe(false);
+  expect(events.at(-1)!.event).toBe('error');
+  expect(events.at(-1)!.data).toMatchObject({
+    code: 'AI_UPSTREAM_FAILED',
+    retryable: true,
+    message: 'AI 服务暂时不可用，请稍后重试',
+  });
+  expect(JSON.stringify(events)).not.toContain('Fake AI failure');
+
+  const [row] = await testDb.select().from(noteAnalyses);
+  expect(row!.status).toBe('failed');
+  expect(row!.content.length).toBeGreaterThan(0);
+
+  const usage = await testDb.select().from(aiUsage);
+  expect(usage.every((item) => item.reservedTokens === 0)).toBe(true);
+  expect(usage.some((item) => item.completionTokens > 0)).toBe(true);
+
+  await stopApp(app);
+});
+
 it('keeps partial content when the client aborts', async () => {
   await resetDb();
   const fake = new FakeAiClient({ chunkSize: 2, delayMs: 20 });
@@ -273,9 +306,57 @@ it('keeps partial content when the client aborts', async () => {
   expect(row?.status).toBe('interrupted');
   expect(row?.content.length ?? 0).toBeGreaterThan(0);
 
+  // Exactly-once settlement: a double settle would double the usage while the
+  // stored row keeps the single-request token counts.
   const usage = await testDb.select().from(aiUsage);
+  expect(usage).toHaveLength(2);
   expect(usage.every((item) => item.reservedTokens === 0)).toBe(true);
+  expect(usage.every((item) => item.promptTokens === row!.promptTokens)).toBe(true);
+  expect(usage.every((item) => item.completionTokens === row!.completionTokens)).toBe(true);
   expect(usage.some((item) => item.promptTokens > 0)).toBe(true);
+
+  await stopApp(app);
+});
+
+it('names the analysis after the book of the notes actually included', async () => {
+  await resetDb();
+  const fake = new FakeAiClient({ delayMs: 0 });
+  const { app, url } = await startApp(() => fake);
+  const user = await seedUser('member');
+  const includedBook = await seedBook({ uploadedBy: user.id, title: '被分析的书' });
+  const droppedBook = await seedBook({ uploadedBy: user.id, title: '只出现在旧笔记里的书' });
+  const base = Date.UTC(2026, 9, 10);
+
+  // More newest notes than the budget admits, all from one book; the older
+  // notes from another book are fetched but never make it into the prompt.
+  for (let index = 0; index < 45; index += 1) {
+    await seedAnnotation({
+      userId: user.id,
+      bookId: includedBook.id,
+      selectedText: `新笔记${index}${'长'.repeat(1_500)}`,
+      updatedAt: new Date(base + (100 + index) * 60_000),
+    });
+  }
+  for (let index = 0; index < 5; index += 1) {
+    await seedAnnotation({
+      userId: user.id,
+      bookId: droppedBook.id,
+      selectedText: `旧笔记${index}${'长'.repeat(1_500)}`,
+      updatedAt: new Date(base + index * 60_000),
+    });
+  }
+
+  const response = await analyze(url, await authHeader(user), { kind: 'themes' });
+  const events = parseFrames(await response.text());
+  const meta = events.find((event) => event.event === 'meta')!.data;
+  expect(meta).toMatchObject({ noteCount: 50 });
+  expect(meta.analyzedCount as number).toBeLessThan(45);
+
+  const [row] = await testDb.select().from(noteAnalyses);
+  expect(row!.title).toBe('《被分析的书》主题归纳');
+
+  const prompt = fake.lastRequest!.messages.map((message) => message.content).join('\n');
+  expect(prompt).not.toContain('只出现在旧笔记里的书');
 
   await stopApp(app);
 });

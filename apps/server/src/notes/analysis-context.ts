@@ -1,4 +1,5 @@
 import {
+  NOTE_ANALYSIS_MAX_NOTES,
   NOTE_ANALYSIS_TITLE_MAX_LENGTH,
   type Locator,
   type NoteAnalysisKind,
@@ -27,7 +28,8 @@ export interface AnalysisSourceNote {
   selectedText: string;
   noteText: string | null;
   tags: string[];
-  createdAt: Date;
+  /** Notes are selected by this column, so it is also what the prompt shows. */
+  updatedAt: Date;
 }
 
 const KIND_LABELS: Record<NoteAnalysisKind, string> = {
@@ -61,7 +63,7 @@ const KIND_INSTRUCTIONS: Record<NoteAnalysisKind, string> = {
 export function analysisSystemPrompt(kind: NoteAnalysisKind): string {
   return [
     '你是阅读笔记分析助手，只依据下面给出的笔记回答，不要编造笔记之外的信息。',
-    '笔记按阅读时间顺序编号；回答里需要提及时，用书名和编号引用。',
+    '笔记按最近编辑时间选取，并按时间顺序编号；回答里需要提及时，用书名和编号引用。',
     KIND_INSTRUCTIONS[kind],
   ].join('\n\n');
 }
@@ -78,16 +80,29 @@ function clip(text: string, maxChars: number): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
-/** Local calendar date (`YYYY-MM-DD`) written next to each note. */
-function noteDate(createdAt: Date): string {
-  return createdAt.toISOString().slice(0, 10);
+/** The note date in the reader's timezone (`YYYY-MM-DD`), falling back to UTC. */
+function noteDate(updatedAt: Date, timezone: string): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone?.trim() ? timezone : 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(updatedAt);
+    const part = (type: Intl.DateTimeFormatPartTypes): string =>
+      parts.find((entry) => entry.type === type)?.value ?? '';
+    return `${part('year')}-${part('month')}-${part('day')}`;
+  } catch {
+    return updatedAt.toISOString().slice(0, 10);
+  }
 }
 
 /**
  * Renders one note block. `index` is only used for accounting before the final
  * chronological numbering is known, so pass the widest possible index there.
  */
-function renderNote(note: AnalysisSourceNote, index: number): string {
+function renderNote(note: AnalysisSourceNote, index: number, timezone: string): string {
   const lines = [
     `[${index}] 《${note.bookTitle}》 · ${describeLocator(note.locator)}`,
     `划线：${clip(note.selectedText, MAX_SELECTED_TEXT_CHARS)}`,
@@ -99,7 +114,7 @@ function renderNote(note: AnalysisSourceNote, index: number): string {
   if (note.tags.length > 0) {
     lines.push(`标签：${note.tags.join('、')}`);
   }
-  lines.push(`时间：${noteDate(note.createdAt)}`);
+  lines.push(`时间：${noteDate(note.updatedAt, timezone)}`);
   return lines.join('\n');
 }
 
@@ -108,12 +123,15 @@ function renderAnalysisContent(
   total: number,
   analyzedCount: number,
   chronological: AnalysisSourceNote[],
+  timezone: string,
 ): string {
   const header = [
-    `共 ${total} 条笔记，以下按阅读时间顺序列出 ${analyzedCount} 条。`,
+    `共 ${total} 条笔记，以下按最近编辑时间顺序列出 ${analyzedCount} 条。`,
     ...(analyzedCount < total ? ['较早的其余笔记因篇幅未列入。'] : []),
   ].join('\n');
-  const blocks = chronological.map((note, position) => renderNote(note, position + 1));
+  const blocks = chronological.map((note, position) =>
+    renderNote(note, position + 1, timezone),
+  );
   return [header, ...blocks].join('\n\n');
 }
 
@@ -125,20 +143,23 @@ export function buildAnalysisPrompt(input: {
   kind: NoteAnalysisKind;
   notes: AnalysisSourceNote[]; // newest first
   total: number;
+  timezone: string;
 }): { messages: AiChatMessage[]; promptTokens: number; analyzedCount: number } {
   const system = analysisSystemPrompt(input.kind);
-  // Reserve three index digits (the cap is 300 notes) so the selection pass
-  // never under-counts the header or the final numbering.
-  const widestIndex = 300;
+  // Reserve the widest possible index so the selection pass never under-counts
+  // the header or the final numbering.
+  const widestIndex = NOTE_ANALYSIS_MAX_NOTES;
   const headerReserve =
-    `共 ${input.total} 条笔记，以下按阅读时间顺序列出 ${widestIndex} 条。\n` +
+    `共 ${input.total} 条笔记，以下按最近编辑时间顺序列出 ${widestIndex} 条。\n` +
     '较早的其余笔记因篇幅未列入。';
   const reserve = estimateTokens(system) + estimateTokens(headerReserve);
 
   let used = reserve;
   const selected: AnalysisSourceNote[] = []; // newest first
   for (const note of input.notes) {
-    const blockTokens = estimateTokens(`${renderNote(note, widestIndex)}\n\n`);
+    const blockTokens = estimateTokens(
+      `${renderNote(note, widestIndex, input.timezone)}\n\n`,
+    );
     if (used + blockTokens > NOTE_ANALYSIS_TOKEN_BUDGET) {
       break;
     }
@@ -147,7 +168,12 @@ export function buildAnalysisPrompt(input: {
   }
 
   const chronological = [...selected].reverse();
-  const content = renderAnalysisContent(input.total, chronological.length, chronological);
+  const content = renderAnalysisContent(
+    input.total,
+    chronological.length,
+    chronological,
+    input.timezone,
+  );
   const messages: AiChatMessage[] = [
     { role: 'system', content: system },
     { role: 'user', content },
