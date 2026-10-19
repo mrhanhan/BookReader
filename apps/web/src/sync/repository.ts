@@ -740,7 +740,7 @@ export function createRepository(db: BookrDb): LocalRepository {
       return db.outbox.where('userId').equals(userId).count();
     },
 
-    applyServerChange(userId, change) {
+    async applyServerChange(userId, change) {
       switch (change.entityType) {
         case 'reading_progress':
           return applyProgressChange(db, userId, change);
@@ -750,6 +750,9 @@ export function createRepository(db: BookrDb): LocalRepository {
           return applyBookmarkChange(db, userId, change);
         case 'reader_settings':
           return applySettingsChange(db, userId, change);
+        case 'reading_session':
+          // Reading sessions are write-only today; local echo handling lands in Task 5.
+          return 'skipped';
         default: {
           const exhaustive: never = change.entityType;
           return exhaustive;

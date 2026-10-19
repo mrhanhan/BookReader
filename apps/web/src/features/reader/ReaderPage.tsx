@@ -95,6 +95,7 @@ const SYNC_CONFLICT_MESSAGES: Record<SyncEntityType, string> = {
   bookmark: '此书签已在另一台设备更新，已同步为最新版本',
   reading_progress: '阅读进度已在另一台设备更新，已同步到最新位置',
   reader_settings: '阅读设置已在另一台设备更新，已同步为最新设置',
+  reading_session: '阅读时长正在同步',
 };
 /** Chrome hides after this much inactivity while no panel is open. */
 const CHROME_HIDE_DELAY_MS = 2_500;
