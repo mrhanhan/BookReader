@@ -85,6 +85,15 @@ docker compose down                   # 停止（命名卷保留数据）
 
 `/healthz` 经 Caddy 暴露在 `http://localhost:8180/healthz`，可直接用于外部探活。
 
+**补抓图书封面**（用于修复旧版本上传、首图为空白的书）：
+
+```bash
+docker compose exec -e COVER_BACKFILL_REFRESH=1 server node dist/cli/backfill-covers.js
+# {"scanned":2,"updated":1,"failed":0}
+```
+
+不加 `COVER_BACKFILL_REFRESH` 时只处理还没有封面的书；`COVER_BACKFILL_LIMIT=N` 可限制本轮数量。
+
 ## 6. 升级
 
 ```bash
@@ -355,6 +364,15 @@ pnpm --filter @bookr/web e2e
   契约不变。
 - 书架支持格式/状态/分类筛选、搜索、排序、上传、编辑、封面上传、回收站恢复；
   EPUB/PDF 文件通过 MinIO 预签名 URL 直接读取。
+- **手机浏览器（H5）**：顶部导航与阅读工具栏自适应窄屏；书架、回收站使用滚动分页
+  （接近底部自动加载，另提供「加载更多」按钮兜底）；卡片操作收进书口图标轨，
+  触控目标不小于 44px。
+- **手势与缩放**：PDF 原版模式支持 `Ctrl/⌘ + 滚轮`、触控板捏合、双指捏合与双击缩放；
+  单页/双页 PDF 与分页 EPUB 支持左右滑动翻页；底部工具栏提供「− / 比例 / + / 适应」
+  与页码跳转。缩放手势停止 400ms 后写入阅读设置，不会在滑动过程中反复落盘。
+- **封面**：PDF 会跳过空白首页（最多检查前 3 页），EPUB 支持 `cover-image`、
+  `meta name="cover"`、`guide type="cover"` 与文件名启发式；MOBI/AZW3 转换后从 EPUB
+  取封面。历史图书可用上文的回填命令补图。
 
 ### 13.1 重排包与相关 API
 
