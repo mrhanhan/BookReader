@@ -23,3 +23,23 @@ it('reports degraded when storage fails, without leaking details', async () => {
   expect(response.json()).toEqual({ status: 'degraded', checks: { database: 'ok', storage: 'error' } });
   expect(response.body).not.toContain('minio');
 });
+
+it('reports degraded when the database probe fails, without leaking details', async () => {
+  const built = await createTestApp();
+  // 共享 testDb 不能改；只给这次请求换一个会失败的连接池。
+  const pool = built.deps.db.$client;
+  built.deps.db = new Proxy(built.deps.db, {
+    get(target, property, receiver) {
+      if (property === '$client') {
+        return {
+          query: async () => { throw new Error('connect ECONNREFUSED postgres://bookr:secret@db'); },
+        } as unknown as typeof pool;
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const response = await built.app.inject({ method: 'GET', url: '/readyz' });
+  expect(response.statusCode).toBe(503);
+  expect(response.json()).toEqual({ status: 'degraded', checks: { database: 'error', storage: 'ok' } });
+  expect(response.body).not.toContain('postgres');
+});

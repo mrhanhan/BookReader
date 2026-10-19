@@ -59,6 +59,7 @@ export interface AppDeps {
 
 const LOG_REDACT_PATHS = [
   'req.headers.authorization',
+  "req.headers['x-backup-token']",
   'req.body.password',
   'req.body.token',
   'req.body.refreshToken',

@@ -56,11 +56,14 @@ it('accepts the backup token and rejects wrong or missing credentials', async ()
 
 it('computes staleness, silence and low disk from the clock', async () => {
   const built = await frozenApp();
+  // The heartbeat is received two days ago, then the clock jumps back to NOW.
+  built.deps.clock = { now: () => new Date(NOW.getTime() - 48 * 3_600_000) };
   await built.app.inject({
     method: 'POST', url: '/api/admin/backup/heartbeat', headers: await authHeader(admin),
     // The run itself finished two days ago; finishedAt must not precede startedAt.
     payload: { ...VALID, source: 'backup-pc', startedAt: '2026-10-17T17:00:00+08:00', finishedAt: '2026-10-17T18:00:00+08:00', diskFreeBytes: 1_000 },
   });
+  built.deps.clock = { now: () => NOW };
   const status = (await built.app.inject({ method: 'GET', url: '/api/admin/backup', headers: await authHeader(admin) })).json();
   expect(status.backupStale).toBe(true);
   expect(status.backupPcSilent).toBe(true);

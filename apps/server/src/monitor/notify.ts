@@ -1,7 +1,8 @@
 import type { AppDeps } from '../app';
 import {
+  claimAlertWindow,
   insertAlertEvent,
-  readMonitorState,
+  releaseAlertClaim,
   upsertMonitorState,
 } from '../backup/repo';
 
@@ -45,8 +46,9 @@ export async function postAlertWebhook(
   });
 
   if (!response.ok) {
-    const error = new Error(`webhook responded with status ${response.status}`);
-    error.name = 'WebhookHttpError';
+    const error = new Error('alert webhook rejected the delivery');
+    // The status is the only safe detail: a receiver's body is not ours.
+    error.name = `WebhookHttpError:${response.status}`;
     throw error;
   }
 }
@@ -74,15 +76,6 @@ export async function notifyConditionOnce(
   now: Date,
 ): Promise<'sent' | 'skipped' | 'failed' | 'no-webhook'> {
   try {
-    const state = await readMonitorState(deps.db, condition.key);
-    const withinWindow =
-      state?.active === true &&
-      state.lastAlertAt !== null &&
-      now.getTime() - state.lastAlertAt.getTime() < ALERT_REPEAT_WINDOW_MS;
-    if (withinWindow) {
-      return 'skipped';
-    }
-
     const webhookUrl = deps.config.alerts.webhookUrl;
     if (webhookUrl === null) {
       // Track that the incident is open, but leave `lastAlertAt` alone: no
@@ -96,6 +89,14 @@ export async function notifyConditionOnce(
       return 'no-webhook';
     }
 
+    // Claim the repeat window before delivering. A single atomic statement
+    // means two concurrent ticks can never both send the same incident.
+    const cutoff = new Date(now.getTime() - ALERT_REPEAT_WINDOW_MS);
+    const claimed = await claimAlertWindow(deps.db, condition.key, now, cutoff);
+    if (!claimed) {
+      return 'skipped';
+    }
+
     try {
       await postAlertWebhook(webhookUrl, condition, now);
     } catch (error) {
@@ -107,13 +108,9 @@ export async function notifyConditionOnce(
         error: errorName(error),
         sentAt: now,
       });
-      // Keep the condition re-armed: a failed delivery must be retried on the
-      // next tick rather than suppressed for a day.
-      await upsertMonitorState(deps.db, {
-        key: condition.key,
-        active: false,
-        updatedAt: now,
-      });
+      // Hand the window back so the next tick retries immediately instead of
+      // waiting a full day for a delivery that never happened.
+      await releaseAlertClaim(deps.db, condition.key, now, now);
       return 'failed';
     }
 
@@ -124,12 +121,6 @@ export async function notifyConditionOnce(
       status: 'sent',
       error: null,
       sentAt: now,
-    });
-    await upsertMonitorState(deps.db, {
-      key: condition.key,
-      active: true,
-      lastAlertAt: now,
-      updatedAt: now,
     });
     return 'sent';
   } catch {

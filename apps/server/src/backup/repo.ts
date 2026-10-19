@@ -4,7 +4,7 @@ import {
   type BackupReportStatus,
   type BackupSource,
 } from '@bookr/shared';
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import type { Database } from '../db/client';
 import { alertEvents, backupReports, monitorStates } from '../db/schema';
 
@@ -157,16 +157,74 @@ export async function upsertMonitorState(
     });
 }
 
-/** Marks a recovered condition inactive, keeping `lastAlertAt` for history. */
-export async function deactivateMonitorState(
+/**
+ * Atomically claims the alert window for one condition. The `ON CONFLICT`
+ * update only fires while the condition is inactive, has never been delivered,
+ * or the repeat window has elapsed, so concurrent ticks cannot both deliver.
+ * Returns `false` when another caller (or an earlier tick) holds the window.
+ */
+export async function claimAlertWindow(
   db: Database,
   key: string,
+  now: Date,
+  cutoff: Date,
+): Promise<boolean> {
+  const [row] = await db
+    .insert(monitorStates)
+    .values({ key, active: true, lastAlertAt: now, updatedAt: now })
+    .onConflictDoUpdate({
+      target: monitorStates.key,
+      set: { active: true, lastAlertAt: now, updatedAt: now },
+      setWhere: or(
+        eq(monitorStates.active, false),
+        isNull(monitorStates.lastAlertAt),
+        lt(monitorStates.lastAlertAt, cutoff),
+      ),
+    })
+    .returning({ key: monitorStates.key });
+  return row !== undefined;
+}
+
+/**
+ * Rolls a failed delivery back to "inactive" so the next tick retries. The
+ * update is scoped to the attempt's timestamp so a newer claim is untouched.
+ */
+export async function releaseAlertClaim(
+  db: Database,
+  key: string,
+  claimedAt: Date,
   updatedAt: Date,
 ): Promise<void> {
   await db
     .update(monitorStates)
     .set({ active: false, updatedAt })
-    .where(and(eq(monitorStates.key, key), eq(monitorStates.active, true)));
+    .where(and(eq(monitorStates.key, key), eq(monitorStates.lastAlertAt, claimedAt)));
+}
+
+/**
+ * Marks a recovered condition inactive, keeping `lastAlertAt` for history.
+ * Alerts raised after the tick began are left alone: the immediate alert from
+ * a fresh failure heartbeat must not be cleared by a stale status snapshot.
+ */
+export async function deactivateMonitorState(
+  db: Database,
+  key: string,
+  tickStart: Date,
+  updatedAt: Date,
+): Promise<void> {
+  await db
+    .update(monitorStates)
+    .set({ active: false, updatedAt })
+    .where(
+      and(
+        eq(monitorStates.key, key),
+        eq(monitorStates.active, true),
+        or(
+          isNull(monitorStates.lastAlertAt),
+          lt(monitorStates.lastAlertAt, tickStart),
+        ),
+      ),
+    );
 }
 
 /** One webhook delivery attempt. */

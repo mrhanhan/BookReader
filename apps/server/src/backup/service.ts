@@ -88,13 +88,8 @@ export async function getBackupStatus(
 
   const lastSuccessAt = latestSuccess?.finishedAt ?? null;
   const lastBackupPcAt = latestBackupPc?.receivedAt ?? null;
-  // A heartbeat that arrived now but describes a run older than the window
-  // still leaves the PC without recent proof of a completed backup.
   const backupPcSilent =
-    latestBackupPc === undefined ||
-    lastBackupPcAt === null ||
-    olderThanWindow(lastBackupPcAt) ||
-    olderThanWindow(latestBackupPc.finishedAt);
+    lastBackupPcAt === null || olderThanWindow(lastBackupPcAt);
 
   const diskFreeBytes = latestDisk?.diskFreeBytes ?? null;
   const diskTotalBytes = latestDisk?.diskTotalBytes ?? null;

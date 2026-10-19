@@ -1,6 +1,11 @@
 import { backupHeartbeatSchema } from '@bookr/shared';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  preHandlerHookHandler,
+} from 'fastify';
 import type { AppDeps } from '../app';
 import { makeRequireAdmin, makeRequireAuth } from '../auth/guards';
 import { getBackupStatus, recordBackupReport } from './service';
@@ -22,20 +27,44 @@ function hasValidBackupToken(deps: AppDeps, header: string | string[] | undefine
 
 /** Registers the backup heartbeat and status endpoints. */
 export function registerBackupRoutes(app: FastifyInstance, deps: AppDeps): void {
-  const requireAuth = makeRequireAuth(deps) as unknown as preHandlerAsyncHookHandler;
-  const requireAdmin = makeRequireAdmin() as unknown as preHandlerAsyncHookHandler;
+  const requireAuth = makeRequireAuth(deps);
+  const requireAdmin = makeRequireAdmin();
+
+  /**
+   * Awaits one guard hook. Guards are typed as sync hooks but implemented as
+   * async functions, so settle on whichever of the done callback or the
+   * returned promise fires first.
+   */
+  async function runGuard(
+    guard: preHandlerHookHandler,
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const outcome: unknown = guard.call(app, request, reply, (error?: Error) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
+      if (outcome instanceof Promise) {
+        void outcome.then(() => resolve(), reject);
+      }
+    });
+  }
 
   /**
    * The unique auth exception: a shared token (used by unattended backup
    * hosts) or a regular admin JWT. Failures are indistinguishable from a
    * plain auth failure, so the response never reveals whether a token exists.
    */
-  const heartbeatAuth: preHandlerAsyncHookHandler = async (request, reply) => {
+  const heartbeatAuth: preHandlerHookHandler = async (request, reply) => {
     if (hasValidBackupToken(deps, request.headers['x-backup-token'])) {
       return;
     }
-    await requireAuth.call(app, request, reply);
-    await requireAdmin.call(app, request, reply);
+    await runGuard(requireAuth, request, reply);
+    await runGuard(requireAdmin, request, reply);
   };
 
   app.post(

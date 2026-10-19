@@ -81,6 +81,10 @@ export async function runMonitorTick(
   deps: AppDeps,
   now: Date = deps.clock.now(),
 ): Promise<AlertCondition[]> {
+  // Everything this tick evaluates belongs to the instant it started. Alerts
+  // raised later (for example by a failing heartbeat) must survive the
+  // recovery sweep below.
+  const tickStart = now;
   const status = await getBackupStatus(deps, now);
   const conditions = evaluateAlerts(status, deps.config, now);
   const activeKeys = new Set(conditions.map((condition) => condition.key));
@@ -90,7 +94,7 @@ export async function runMonitorTick(
   }
   for (const key of MONITORED_ALERT_KEYS) {
     if (!activeKeys.has(key)) {
-      await deactivateMonitorState(deps.db, key, now);
+      await deactivateMonitorState(deps.db, key, tickStart, now);
     }
   }
 
