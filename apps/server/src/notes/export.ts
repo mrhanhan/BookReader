@@ -51,7 +51,7 @@ function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
     lines.push('', `标签：${tags.map((tag) => `#${tag}`).join(' ')}`);
   }
 
-  lines.push('', `*${formatLocalDate(row.annotation.updatedAt, timezone)}*`);
+  lines.push('', `*${formatLocalDate(row.annotation.createdAt, timezone)}*`);
   return lines;
 }
 
@@ -111,7 +111,6 @@ export function buildNotesMarkdown(input: {
   }
   return `${head}\n\n${sections.join('\n\n---\n\n')}\n`;
 }
-
 
 /** Strips filesystem-hostile and control characters from a book title. */
 function sanitizeBookTitle(title: string | null): string {
