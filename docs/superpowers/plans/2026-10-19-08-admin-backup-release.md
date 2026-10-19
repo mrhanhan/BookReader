@@ -1455,13 +1455,13 @@ git commit -m "test(e2e): cover admin console and PWA; document acceptance"
 
 | 范围 | 命令 | 结果 |
 | --- | --- | --- |
-| Server | `pnpm exec turbo run typecheck test` | 55 个测试文件 / 384 条通过 |
-| Web | 同上 | 51 个测试文件 / 416 条通过 |
+| Server | `pnpm exec turbo run typecheck test` | 55 个测试文件 / 387 条通过 |
+| Web | 同上 | 51 个测试文件 / 417 条通过 |
 | Shared | 同上 | 11 个测试文件 / 84 条通过 |
 | Reader-core | 同上 | 18 个测试文件 / 149 条通过 |
 | UI | 同上 | 1 个测试文件 / 2 条通过 |
-| 合计单元/集成 | — | **1035 条通过**；turbo `12 successful, 12 total`（typecheck 与 test 全绿） |
-| E2E | `pnpm --filter @bookr/web exec playwright test` | **9 个 spec / 21 条用例全部通过**（47.5s） |
+| 合计单元/集成 | — | **1039 条通过**；turbo typecheck `7 successful, 7 total` |
+| E2E | `pnpm --filter @bookr/web exec playwright test` | **9 个 spec / 21 条用例全部通过**（48.4s） |
 | 原生配置 | `pnpm check:native` | 6/6 项 OK |
 | Compose | `docker compose ps` | postgres/minio/server/web 四个服务均为 healthy |
 | 探针 | `curl -fsS http://localhost:8180/healthz`、`/readyz` | 均 200；`/readyz` 返回 `{"status":"ok","checks":{"database":"ok","storage":"ok"}}` |
@@ -1501,7 +1501,32 @@ b19ce00 feat(web): add admin settings, audit and backup screens
 5f47d9d fix(server): make alert deduplication atomic and preserve fresh alerts
 ce6e9c3 test(e2e): cover admin console and PWA; document acceptance
 5754660 fix(e2e,docs): address Task 9 review findings
+cf5e7c0 fix(ops,server,web): close final admin/backup review findings
 ```
+
+### 最终审查修复（final fix）
+
+最终整分支审查提出 8 项（6 个缺陷 + 2 个低成本建议），全部由 `cf5e7c0` 修复：
+
+- Compose 现在把 `BACKUP_TOKEN`、`ALERT_WEBHOOK_URL`、`DISK_ALERT_FREE_BYTES`、
+  `BACKUP_STALE_HOURS`、`MONITOR_INTERVAL_MS` 传给 server 容器；`.env.example` 与
+  README §7.1/§7.2 的 cron/环境文件示例同步补齐，心跳脚本因此真正可用。
+- 注册页 403 FORBIDDEN 显示“注册暂未开放，请联系管理员”，不再被通用无权限文案吞掉。
+- 备份页横幅不再写死 24 小时；`scripts/lib/heartbeat.sh` 先转义反斜杠并清理控制字符；
+  审计页补齐 7 个动作标签。
+- `S3Storage.head` 只把缺失对象当作 `null`，`NoSuchBucket` 会让 `/readyz` 返回 503；
+  monitor tick 失败记录错误名，启动时记录心跳 token 与 webhook 是否配置（仅布尔值）。
+
+修复后最终验证：
+
+| 命令 | 结果 |
+| --- | --- |
+| `TEST_DATABASE_URL=postgres://bookr:bookr@localhost:5432/bookr_admin_backup_test pnpm --filter @bookr/server test` | 55 文件 / **387 条通过** |
+| `pnpm --filter @bookr/web test` | 51 文件 / **417 条通过** |
+| `pnpm exec turbo run typecheck` | **7 successful, 7 total** |
+| `docker compose up -d --build` + 进程内环境检查 | 四服务 healthy；`{"token":false,"webhook":false,"stale":"24","interval":"300000"}`（本机 `.env` 未启用两个通道，默认值正确传入） |
+| `curl -fsS http://localhost:8180/readyz` | 200 `{"status":"ok","checks":{"database":"ok","storage":"ok"}}` |
+| `pnpm --filter @bookr/web exec playwright test` | **9 spec / 21 条全部通过**（48.4s） |
 
 ### 遗留项
 
