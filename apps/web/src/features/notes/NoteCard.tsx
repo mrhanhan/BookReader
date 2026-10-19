@@ -15,10 +15,18 @@ export interface NoteCardProps {
   onEdit: (note: NoteDto) => void;
   onDelete: (note: NoteDto) => void;
   deleting?: boolean;
+  /** Offline: edits would queue forever, so the actions are disabled. */
+  disabled?: boolean;
 }
 
 /** One highlight or note with its book, position, tags and actions. */
-export function NoteCard({ note, onEdit, onDelete, deleting = false }: NoteCardProps) {
+export function NoteCard({
+  note,
+  onEdit,
+  onDelete,
+  deleting = false,
+  disabled = false,
+}: NoteCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // A tap that is never followed up reverts on its own.
@@ -81,18 +89,30 @@ export function NoteCard({ note, onEdit, onDelete, deleting = false }: NoteCardP
         <div className="flex flex-wrap items-center gap-2">
           <Link
             to={`/books/${note.book.id}/read?note=${note.id}`}
-            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            aria-disabled={disabled ? true : undefined}
+            onClick={(event) => {
+              if (disabled) event.preventDefault();
+            }}
+            className={
+              'inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [@media(pointer:coarse)]:min-h-11 ' +
+              (disabled ? 'pointer-events-none opacity-50' : '')
+            }
           >
             跳回原文
           </Link>
-          <Button variant="ghost" size="sm" onClick={() => onEdit(note)} disabled={deleting}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onEdit(note)}
+            disabled={deleting || disabled}
+          >
             编辑
           </Button>
           <Button
             variant="ghost"
             size="sm"
             onClick={handleDelete}
-            disabled={deleting}
+            disabled={deleting || disabled}
             loading={deleting}
           >
             {confirmingDelete ? '确认删除？' : '删除'}

@@ -19,8 +19,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  // The offline test installs an own property over jsdom's getter.
+  // The offline test installs an own property over jsdom's getter and the
+  // query client tracks the last online/offline event, so restore both.
   Reflect.deleteProperty(navigator, 'onLine');
+  window.dispatchEvent(new Event('online'));
 });
 
 const secondNote = note({
@@ -69,6 +71,29 @@ it('renders notes with their book, position, quote, note and tags', async () => 
   expect(screen.getByRole('heading', { name: '笔记库' })).toBeInTheDocument();
   expect(screen.getByText('你写在所有书里的划线与批注')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: '笔记' })).toBeInTheDocument();
+});
+
+it('disables note actions while offline', async () => {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+  window.dispatchEvent(new Event('online'));
+  renderNotes();
+
+  await screen.findByText('第 12 页');
+  act(() => {
+    Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+    window.dispatchEvent(new Event('offline'));
+  });
+
+  expect(
+    await screen.findByText('离线时无法浏览笔记库，联网后会自动恢复。'),
+  ).toBeInTheDocument();
+  const card = screen.getAllByTestId('note-card')[0] as HTMLElement;
+  expect(within(card).getByRole('button', { name: '编辑' })).toBeDisabled();
+  expect(within(card).getByRole('button', { name: '删除' })).toBeDisabled();
+  expect(within(card).getByRole('link', { name: '跳回原文' })).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
 });
 
 it('searches after the debounce and restarts the list', async () => {
@@ -291,7 +316,7 @@ it('exports with the active filters', async () => {
   expect(createObjectURL).toHaveBeenCalledTimes(1);
   expect(downloaded.download).toBe('笔记库.md');
   expect(downloaded.href).toContain('blob:notes');
-  expect(revokeObjectURL).toHaveBeenCalledWith('blob:notes');
+  await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:notes'));
   clickSpy.mockRestore();
 });
 

@@ -84,6 +84,7 @@ export function NotesPage() {
 
   function handleSaved(conflict: boolean): void {
     setEditing(null);
+    setActionError(null);
     setConflictNotice(conflict ? CONFLICT_MESSAGE : null);
   }
 
@@ -109,7 +110,8 @@ export function NotesPage() {
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      URL.revokeObjectURL(url);
+      // Some browsers consume the blob after the click handler returns.
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) {
       setActionError(messageForApiError(error));
     } finally {
@@ -125,6 +127,7 @@ export function NotesPage() {
         onEdit={setEditing}
         onDelete={handleDelete}
         deleting={deleteNote.isPending && deleteNote.variables?.noteId === note.id}
+        disabled={!online}
       />
     );
   }
