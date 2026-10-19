@@ -94,6 +94,27 @@ function renderedPageNumbers(container: HTMLElement): string[] {
   );
 }
 
+function scrollHostOf(container: HTMLElement): HTMLElement {
+  const host = container.querySelector<HTMLElement>('.bookr-pdf-scroll');
+  if (!host) {
+    throw new Error('scroll host missing');
+  }
+  return host;
+}
+
+/**
+ * jsdom has no layout engine, so scroll sizes and offsets stay 0 unless the
+ * test provides them. `scrollLeft`/`scrollTop` remain writable properties.
+ */
+function stubScrollMetrics(
+  host: HTMLElement,
+  metrics: { scrollWidth: number; clientWidth: number; scrollHeight: number; clientHeight: number },
+): void {
+  for (const [key, value] of Object.entries(metrics)) {
+    Object.defineProperty(host, key, { value, configurable: true });
+  }
+}
+
 async function openReader(
   mode: ReaderSettings['pdf']['mode'],
   initialPage?: number,
@@ -264,3 +285,74 @@ it('falls back to a 20-page chapter window when the PDF has no outline', async (
     await engine.destroy();
   }
 });
+
+it('reports the remaining scroll room on both axes', async () => {
+  const { engine, container } = await openReader('single');
+  try {
+    expect(typeof engine.canScroll).toBe('function');
+    const host = scrollHostOf(container);
+    stubScrollMetrics(host, {
+      scrollWidth: 900, clientWidth: 360, scrollHeight: 800, clientHeight: 600,
+    });
+    host.scrollLeft = 100;
+    host.scrollTop = 100;
+
+    expect(engine.canScroll?.('x', 1)).toBe(true);
+    expect(engine.canScroll?.('x', -1)).toBe(true);
+    expect(engine.canScroll?.('y', 1)).toBe(true);
+    expect(engine.canScroll?.('y', -1)).toBe(true);
+
+    // At the far edge there is no forward room left, at the origin no way back.
+    host.scrollLeft = 540;
+    host.scrollTop = 200;
+    expect(engine.canScroll?.('x', 1)).toBe(false);
+    expect(engine.canScroll?.('y', 1)).toBe(false);
+    host.scrollLeft = 0;
+    host.scrollTop = 0;
+    expect(engine.canScroll?.('x', -1)).toBe(false);
+    expect(engine.canScroll?.('y', -1)).toBe(false);
+  } finally {
+    await engine.destroy();
+  }
+});
+
+it('reports no scroll room when the content fits or the metrics are unusable', async () => {
+  const { engine, container } = await openReader('single');
+  try {
+    const host = scrollHostOf(container);
+    stubScrollMetrics(host, {
+      scrollWidth: 360, clientWidth: 360, scrollHeight: 600, clientHeight: 600,
+    });
+    expect(engine.canScroll?.('x', 1)).toBe(false);
+    expect(engine.canScroll?.('x', -1)).toBe(false);
+    expect(engine.canScroll?.('y', 1)).toBe(false);
+    expect(engine.canScroll?.('y', -1)).toBe(false);
+
+    // A NaN offset from a torn-down host must not compare as scrollable.
+    host.scrollLeft = Number.NaN;
+    host.scrollTop = Number.NaN;
+    expect(engine.canScroll?.('x', 1)).toBe(false);
+    expect(engine.canScroll?.('y', 1)).toBe(false);
+  } finally {
+    await engine.destroy();
+  }
+});
+
+it.each(['single', 'double'] as const)(
+  'resets the scroll offset after a page flip in %s mode',
+  async (mode) => {
+    const { engine, container } = await openReader(mode);
+    try {
+      const host = scrollHostOf(container);
+      host.scrollLeft = 120;
+      host.scrollTop = 240;
+
+      await engine.next();
+
+      expect(host.scrollLeft).toBe(0);
+      expect(host.scrollTop).toBe(0);
+    } finally {
+      await engine.destroy();
+    }
+  },
+);

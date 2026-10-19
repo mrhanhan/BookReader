@@ -1078,6 +1078,17 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
         ? settings.pdf.mode === 'single' || settings.pdf.mode === 'double'
         : false;
 
+  /**
+   * The PDF engine owns the scroll offsets, so only it can answer this. EPUB
+   * and reflow page whole documents and never scroll, which the absent method
+   * already reports as "no room".
+   */
+  const engineCanScroll = useCallback((axis: 'x' | 'y', direction: 1 | -1): boolean => {
+    const active = engineRef.current;
+    if (typeof active?.canScroll !== 'function') return false;
+    return active.canScroll(axis, direction);
+  }, []);
+
   const swipeHandlers = useMemo<ReaderSwipeHandlers | null>(
     () =>
       mode === null
@@ -1086,14 +1097,31 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
             enabled: swipeEnabled && panel === null && !dialogOpen,
             onNext: goNext,
             onPrevious: goPrevious,
+            canScroll: engineCanScroll,
           },
-    [dialogOpen, goNext, goPrevious, mode, panel, swipeEnabled],
+    [dialogOpen, engineCanScroll, goNext, goPrevious, mode, panel, swipeEnabled],
+  );
+
+  /**
+   * Drag-to-pan targets the PDF scroller. The engine builds that node while
+   * opening, so the container is looked up on demand instead of captured.
+   */
+  const panHandlers = useMemo(
+    () =>
+      mode === 'pdf'
+        ? {
+            container: () =>
+              contentRef.current?.querySelector<HTMLElement>('.bookr-pdf-scroll') ?? null,
+          }
+        : undefined,
+    [mode],
   );
 
   useReaderGestures({
     targetRef: contentRef,
     zoom: zoomHandlers,
     swipe: swipeHandlers,
+    pan: panHandlers,
     onDoubleTap: zoomHandlers ? handleDoubleTap : undefined,
   });
 
@@ -1693,14 +1721,19 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
         const dx = touch.clientX - start.x;
         const dy = touch.clientY - start.y;
         if (Date.now() - start.at > 800) return;
-        if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
+        const absX = Math.abs(dx);
+        const absY = Math.abs(dy);
+        // A paged EPUB never scrolls inside the frame, so either axis turns.
+        const forward = absX > absY ? dx < 0 : dy < 0;
+        if (Math.max(absX, absY) < 60) return;
+        if (Math.min(absX, absY) * 1.5 > Math.max(absX, absY)) return;
         try {
           if (win?.getSelection()?.toString()) return;
         } catch {
           // A lost realm cannot report a selection; treat it as a swipe.
         }
-        if (dx > 0) swipe.onPrevious();
-        else swipe.onNext();
+        if (forward) swipe.onNext();
+        else swipe.onPrevious();
       };
 
       win.addEventListener('pointermove', onPointerMove);

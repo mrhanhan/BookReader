@@ -208,6 +208,11 @@ export function SettingsPanel({ kind, settings, onChange, onClose }: SettingsPan
                 </div>
               ))}
             </section>
+
+            <p className="reader-setting-hint">
+              放大到页面比屏幕宽之后，可以直接拖动页面；按住 Alt
+              拖动则改为选择文字。手机上一根手指拖动即可平移。
+            </p>
           </>
         ) : kind === 'epub' ? (
           <>

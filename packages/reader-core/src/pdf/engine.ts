@@ -342,6 +342,14 @@ export class PdfReaderEngine implements ReaderEngine {
       await this.renderPage(page);
     } else {
       this.createPagedSlots();
+      // Paged slots are rebuilt from scratch, so the new page must start at the
+      // top-left corner: keeping a zoomed-in offset would cut off its left edge.
+      // Continuous mode positions itself with `scrollTo` above and stays put.
+      const host = this.scrollHost;
+      if (host) {
+        host.scrollLeft = 0;
+        host.scrollTop = 0;
+      }
       await Promise.all([...this.slots.keys()].map((pageNumber) => this.renderPage(pageNumber)));
     }
 
@@ -427,6 +435,33 @@ export class PdfReaderEngine implements ReaderEngine {
 
   currentScale(): number {
     return this.scale;
+  }
+
+  /**
+   * Whether `.bookr-pdf-scroll` still has room along `axis` in `direction`
+   * (1 = right/down, -1 = left/up). Gesture handling uses this to decide
+   * between scrolling the zoomed page and turning it.
+   */
+  canScroll(axis: 'x' | 'y', direction: 1 | -1): boolean {
+    const host = this.scrollHost;
+    if (!host) {
+      return false;
+    }
+
+    const scrollSize = axis === 'x' ? host.scrollWidth : host.scrollHeight;
+    const clientSize = axis === 'x' ? host.clientWidth : host.clientHeight;
+    const position = axis === 'x' ? host.scrollLeft : host.scrollTop;
+    // A detached or mid-teardown host can report NaN; treat that as "no room".
+    if (!Number.isFinite(scrollSize) || !Number.isFinite(clientSize) || !Number.isFinite(position)) {
+      return false;
+    }
+
+    const max = scrollSize - clientSize;
+    // Sub-pixel leftovers would otherwise read as a scrollable axis forever.
+    if (max <= 1) {
+      return false;
+    }
+    return direction > 0 ? position < max - 1 : position > 1;
   }
 
   async getTextContext(

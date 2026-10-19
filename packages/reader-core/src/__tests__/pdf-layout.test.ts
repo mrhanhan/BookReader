@@ -18,6 +18,14 @@ describe('pdf layout', () => {
     expect(computeScale({ page, viewport, zoom: 2, padding: 24 })).toBe(2);
   });
 
+  it('fills the viewport width with fit-width using the default padding', () => {
+    // A 360px phone screen must only lose the default inset on both sides,
+    // otherwise the page ends up visibly narrower than the reading column.
+    const phone = { width: 360, height: 800 };
+    const scale = computeScale({ page, viewport: phone, zoom: 'fit-width' });
+    expect(scale * page.width).toBeCloseTo(phone.width - 16, 6);
+  });
+
   it('clamps zoom to a usable range', () => {
     expect(computeScale({ page, viewport, zoom: 99, padding: 24 })).toBe(5);
     expect(computeScale({ page, viewport, zoom: 0.1, padding: 24 })).toBe(0.25);

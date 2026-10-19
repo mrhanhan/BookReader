@@ -362,6 +362,15 @@
   color: var(--reader-muted);
 }
 
+.reader-setting-hint {
+  margin: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--reader-border);
+  font-size: 0.75rem;
+  line-height: 1.7;
+  color: var(--reader-muted);
+}
+
 .reader-setting-row {
   display: flex;
   align-items: center;
@@ -427,6 +436,26 @@
   position: absolute;
   inset: 0;
   overflow: auto;
+}
+
+/*
+ * The grab cursor is only truthful while the page overflows; the gesture hook
+ * adds the attribute after measuring, and removes it again when the page fits.
+ */
+.bookr-pdf-scroll[data-pannable='true'] {
+  cursor: grab;
+}
+
+.bookr-pdf-scroll[data-panning='true'] {
+  cursor: grabbing;
+}
+
+/*
+ * A plain drag pans once the page overflows, so the text cursor would promise
+ * a selection gesture the reader no longer gets. Alt+drag still selects.
+ */
+.bookr-pdf-scroll[data-pannable='true'] .bookr-text-layer :is(span, br) {
+  cursor: inherit;
 }
 
 .bookr-pdf-pages {
@@ -743,29 +772,29 @@ figure[data-state='failed'] canvas {
     text-align: left;
   }
 
-  /* A single scrollable rail keeps every action reachable without wrapping
-     the title row or squeezing buttons into unreadable vertical text. */
+  /*
+   * Seven actions at 44px targets overflow a 360px rail by ~44px. The rail
+   * used to scroll with its scrollbar hidden, which left the last button
+   * clipped and undiscoverable rather than merely off-screen. Wrapping keeps
+   * every action visible; `flex: 0 0 auto` below stops the row from squeezing
+   * a button into unreadable vertical text.
+   */
   .reader-actions {
     flex: 1 1 100%;
     min-width: 0;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .reader-actions::-webkit-scrollbar {
-    display: none;
+    flex-wrap: wrap;
+    row-gap: 4px;
   }
 
   .reader-actions button {
     flex: 0 0 auto;
   }
 
-  /* 44px targets for the chrome while it is overlaid on the book. */
+  /* 44px targets for the chrome while it is overlaid on the book. The
+     horizontal padding is trimmed so the seven actions share one row. */
   .reader-chrome button {
     min-height: 2.75rem;
-    padding: 0.5rem 0.75rem;
+    padding: 0.5rem 0.5rem;
   }
 
   .reader-sync {

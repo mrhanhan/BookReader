@@ -20,8 +20,14 @@ export interface ComputeScaleOptions {
   padding?: number;
 }
 
-/** Breathing room around a page in both fit modes, in CSS pixels. */
-export const DEFAULT_PAGE_PADDING = 24;
+/**
+ * Breathing room around a page in both fit modes, in CSS pixels.
+ *
+ * This is the only horizontal inset a page gets: `.bookr-pdf-pages` does carry
+ * a CSS padding, but `rebuildLayout()` overwrites it with an inline `16px 0`
+ * (continuous) or `0` (paged), so nothing else deducts width.
+ */
+export const DEFAULT_PAGE_PADDING = 8;
 
 /** Smallest and largest scale a reader can pick, matching `mergeReaderSettings`. */
 export const MIN_SCALE = 0.25;

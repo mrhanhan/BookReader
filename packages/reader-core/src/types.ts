@@ -80,6 +80,12 @@ export interface ReaderEngine {
   currentLocator(): Locator;
   /** Effective render scale of the current view; engines without zoom omit it. */
   currentScale?(): number;
+  /**
+   * Whether the current view can still scroll along `axis` towards `direction`.
+   * `direction`: 1 scrolls right/down (forward), -1 scrolls left/up (backward).
+   * Engines that never scroll simply omit this method.
+   */
+  canScroll?(axis: 'x' | 'y', direction: 1 | -1): boolean;
   getTextContext(scope: ReaderContextScope, maxChars?: number): Promise<ReaderTextContext>;
   setSettings(settings: ReaderSettings): void;
   setHighlights(highlights: ReaderHighlight[]): void;
