@@ -11,6 +11,9 @@ import {
   type BookFormat,
   type BookStatus,
   type Locator,
+  type NoteAnalysisKind,
+  type NoteAnalysisStatus,
+  type NoteFilters,
   type Role,
   type SyncEntityType,
   type SyncOp,
@@ -288,6 +291,8 @@ export const annotations = pgTable(
   },
   (table) => [
     index('annotations_user_book_updated_idx').on(table.userId, table.bookId, table.updatedAt),
+    index('annotations_user_updated_idx').on(table.userId, table.updatedAt),
+    index('annotations_tags_idx').using('gin', table.tags),
   ],
 );
 
@@ -300,6 +305,35 @@ export const annotationHistory = pgTable('annotation_history', {
   editedAt: timestamp('edited_at', { withTimezone: true }).notNull().defaultNow(),
   deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
 });
+
+/**
+ * One AI-generated synthesis over a filtered set of the user's notes. `scope`
+ * mirrors the filters used to build the note set and is kept for display.
+ */
+export const noteAnalyses = pgTable(
+  'note_analyses',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: text('kind').$type<NoteAnalysisKind>().notNull(),
+    title: text('title').notNull(),
+    status: text('status').$type<NoteAnalysisStatus>().notNull(),
+    scope: jsonb('scope').$type<NoteFilters>().notNull(),
+    noteCount: integer('note_count').notNull(),
+    analyzedCount: integer('analyzed_count').notNull(),
+    content: text('content').notNull().default(''),
+    model: text('model'),
+    promptVersion: text('prompt_version'),
+    promptTokens: integer('prompt_tokens').notNull().default(0),
+    completionTokens: integer('completion_tokens').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('note_analyses_user_created_idx').on(table.userId, table.createdAt)],
+);
+export type NoteAnalysisRow = typeof noteAnalyses.$inferSelect;
 
 export const bookmarks = pgTable(
   'bookmarks',
