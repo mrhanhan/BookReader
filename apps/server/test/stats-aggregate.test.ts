@@ -1,14 +1,15 @@
 import { newId } from '@bookr/shared';
 import { and, eq } from 'drizzle-orm';
 import { beforeEach, expect, it } from 'vitest';
-import { dailyStats, readingSessions } from '../src/db/schema';
+import { books, dailyStats, readingSessions } from '../src/db/schema';
 import {
   rebuildDailyStats,
   recomputeDailyStats,
   sessionLocalDates,
   splitSessionSeconds,
 } from '../src/stats/aggregate';
-import { resetDb, seedBook, seedUser, testDb } from './helpers';
+import { cleanupTrash } from '../src/books/service';
+import { createTestApp, resetDb, seedBook, seedUser, testDb } from './helpers';
 
 let userId: string;
 let bookId: string;
@@ -76,6 +77,17 @@ it('splits a session that crosses local midnight by wall-clock overlap', async (
   expect((await statFor('2026-10-18'))?.qualified).toBe(false);
   expect((await statFor('2026-10-19'))?.activeSeconds).toBe(1_000);
   expect((await statFor('2026-10-19'))?.qualified).toBe(true);
+});
+
+it('keeps the split exact when the seconds do not divide evenly', () => {
+  // 23:45–00:15 local: half the wall time on each side of midnight.
+  const row = {
+    startedAt: new Date('2026-10-18T15:45:00.000Z'),
+    endedAt: new Date('2026-10-18T16:15:00.000Z'),
+    activeSeconds: 101,
+  };
+  expect(splitSessionSeconds(row, '2026-10-18', 'Asia/Shanghai')).toBe(50);
+  expect(splitSessionSeconds(row, '2026-10-19', 'Asia/Shanghai')).toBe(51);
 });
 
 it('attributes a zero-length session to its start date', async () => {
@@ -160,6 +172,27 @@ it('uses the real DST day boundary when a session crosses midnight', async () =>
 
   expect((await statFor('2026-03-08'))?.activeSeconds).toBe(1_800);
   expect((await statFor('2026-03-09'))?.activeSeconds).toBe(1_800);
+});
+
+it('removes aggregate time when a trashed book is purged', async () => {
+  await insertSession({
+    startedAt: '2026-10-19T02:00:00.000Z',
+    endedAt: '2026-10-19T02:10:00.000Z',
+    activeSeconds: 600,
+  });
+  await testDb.transaction(async (tx) => {
+    await recomputeDailyStats(tx, userId, 'Asia/Shanghai', ['2026-10-19']);
+  });
+  expect((await statFor('2026-10-19'))?.activeSeconds).toBe(600);
+
+  await testDb
+    .update(books)
+    .set({ deletedAt: new Date('2020-01-01T00:00:00.000Z') })
+    .where(eq(books.id, bookId));
+  const { deps } = await createTestApp();
+  await cleanupTrash(deps);
+
+  expect(await statFor('2026-10-19')).toBeUndefined();
 });
 
 it('handles the 25-hour Berlin day around the DST end', async () => {

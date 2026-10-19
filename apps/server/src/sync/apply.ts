@@ -667,17 +667,6 @@ async function applySettingsChange(
 const READING_SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Write fields compared for idempotency; timestamps are compared separately. */
-function sessionWritePayload(row: ReadingSessionRow): Record<string, unknown> {
-  return {
-    bookId: row.bookId,
-    startedAt: row.startedAt.toISOString(),
-    endedAt: row.endedAt.toISOString(),
-    activeSeconds: row.activeSeconds,
-    pagesRead: row.pagesRead,
-  };
-}
-
 /**
  * Applies one session heartbeat. The client owns the id and sends cumulative
  * values, so the newest heartbeat wins by client time and a shorter value is
@@ -689,7 +678,7 @@ async function applyReadingSessionChange(
   incoming: SyncPushChange,
   context: ApplyContext,
 ): Promise<ApplyResult> {
-  const { clientTime, clockSkew, now } = context;
+  const { clientTime, now } = context;
   if (incoming.op !== 'upsert') {
     return rejected('unsupported_op');
   }
@@ -711,13 +700,6 @@ async function applyReadingSessionChange(
 
   const startedAt = new Date(parsed.data.startedAt);
   const endedAt = new Date(parsed.data.endedAt);
-  const write = {
-    bookId: parsed.data.bookId,
-    startedAt: startedAt.toISOString(),
-    endedAt: endedAt.toISOString(),
-    activeSeconds: parsed.data.activeSeconds,
-    pagesRead: parsed.data.pagesRead,
-  };
 
   return deps.db.transaction(async (tx) => {
     await lockUserChanges(tx, actor.id);
@@ -727,25 +709,17 @@ async function applyReadingSessionChange(
       return rejected('not_allowed');
     }
 
+    // Heartbeats are cumulative, so growth is the only meaningful ordering:
+    // a device clock that jumped backwards must not strand the rest of a real
+    // reading session. Equal or smaller values add nothing and are replays.
+    let effectiveClientTime = clientTime;
     if (stored) {
-      // A clamped clock cannot order retries, so an identical payload wins.
-      if (clockSkew && samePayload(write, sessionWritePayload(stored))) {
+      if (parsed.data.activeSeconds <= stored.activeSeconds) {
         return skipped();
       }
       const storedTime = storedTimeOf(stored);
-      if (clientTime.getTime() < storedTime.getTime()) {
-        return skipped();
-      }
-      if (
-        clientTime.getTime() === storedTime.getTime() &&
-        samePayload(write, sessionWritePayload(stored))
-      ) {
-        return skipped();
-      }
-      // Heartbeats are cumulative; accepting a smaller value would delete
-      // reading time that is already recorded.
-      if (parsed.data.activeSeconds < stored.activeSeconds) {
-        return skipped();
+      if (effectiveClientTime.getTime() <= storedTime.getTime()) {
+        effectiveClientTime = new Date(storedTime.getTime() + 1);
       }
     }
 
@@ -758,7 +732,7 @@ async function applyReadingSessionChange(
       endedAt,
       activeSeconds: parsed.data.activeSeconds,
       pagesRead: parsed.data.pagesRead,
-      clientUpdatedAt: clientTime,
+      clientUpdatedAt: effectiveClientTime,
       updatedAt: now,
     });
 
@@ -776,8 +750,8 @@ async function applyReadingSessionChange(
       entityType: 'reading_session',
       entityId: incoming.entityId,
       op: 'upsert',
-      payload: sessionChangePayload(row, clientTime),
-      clientUpdatedAt: clientTime,
+      payload: sessionChangePayload(row, effectiveClientTime),
+      clientUpdatedAt: effectiveClientTime,
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,
     });

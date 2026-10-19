@@ -64,8 +64,9 @@ export class BookrDb extends Dexie {
       shelf: '[userId+id], userId, id',
     });
 
-    // Reading sessions are append-mostly: one row per session segment, kept
-    // until the outbox acknowledges the final heartbeat.
+    // Reading sessions are local-first: one row per segment, updated in place
+    // by heartbeats and retained as this device's own history once the server
+    // acknowledges it.
     this.version(6).stores({
       readingSessions: 'id, userId, bookId, startedAt',
     });

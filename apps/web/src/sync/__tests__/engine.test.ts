@@ -603,6 +603,37 @@ describe('SyncEngine', () => {
     expect((await repo.progressFor(USER, BOOK))?.dirty).toBe(false);
   });
 
+  it('does not count a skipped session heartbeat as a conflict', async () => {
+    const api = createFakeApi();
+    api.push = vi.fn(async (changes: SyncPushChange[]) => ({
+      applied: [],
+      skipped: changes.map((change) => syncKey(change.entityType, change.entityId)),
+      rejected: [],
+      cursor: 0,
+    }));
+    api.snapshot = vi.fn(async () => ({
+      cursor: 1,
+      progress: [],
+      annotations: [],
+      bookmarks: [],
+      settings: null,
+    }));
+    await repo.saveReadingSession(USER, {
+      id: '0198f0c0-0000-7000-8000-0000000000bb',
+      bookId: BOOK,
+      startedAt: T1,
+      endedAt: T1,
+      activeSeconds: 30,
+      pagesRead: 1,
+    });
+    engine = testEngine(api);
+
+    await engine.syncNow();
+
+    expect(await repo.pendingCount(USER)).toBe(0);
+    expect(engine.getState().conflicts).toBe(0);
+  });
+
   it('ignores stream frames after stopping', async () => {
     const api = createFakeApi();
     engine = testEngine(api, {

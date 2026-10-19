@@ -12,6 +12,8 @@ import { auditLogs, books, bookCategories, categories, type BookRow, type NewBoo
 import { AppError } from '../errors';
 import { toBookProgress } from '../reading/dto';
 import { findProgressForBooks } from '../reading/repo';
+import { rebuildDailyStats } from '../stats/aggregate';
+import { listSessionUserIdsForPurge, readUserTimezone } from '../stats/repo';
 import { toBookDto } from './dto';
 import {
   findBookById,
@@ -464,7 +466,15 @@ export async function replaceCover(
  */
 export async function cleanupTrash(deps: AppDeps): Promise<number> {
   const cutoff = new Date(deps.clock.now().getTime() - TRASH_RETENTION_DAYS * DAY_MS);
+  // Deleting a book cascades its sessions; rebuild those users' aggregates so
+  // the statistics page does not keep counting time for a purged book.
+  const affectedUsers = await listSessionUserIdsForPurge(deps.db, cutoff);
   const purged = await purgeBooksDeletedBefore(deps.db, cutoff);
+
+  for (const userId of affectedUsers) {
+    const timezone = await readUserTimezone(deps.db, userId);
+    await rebuildDailyStats(deps.db, userId, timezone, deps.clock.now());
+  }
 
   for (const book of purged) {
     const keys = [book.fileKey, book.coverKey, book.epubKey, book.textLayerKey, book.reflowKey].filter(

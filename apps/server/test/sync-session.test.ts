@@ -123,6 +123,22 @@ it('accepts a growing heartbeat and replaces the day instead of adding to it', a
   expect((await storedDay())?.activeSeconds).toBe(1_200);
 });
 
+it('accepts a growing heartbeat after the device clock moves backwards', async () => {
+  await push(sessionChange());
+  const result = await push(
+    sessionChange({
+      // The device clock jumped back ten minutes after the first heartbeat.
+      clientUpdatedAt: '2026-10-19T02:01:00.000Z',
+      endedAt: '2026-10-19T02:20:00.000Z',
+      activeSeconds: 1_200,
+    }),
+  );
+
+  expect(result.applied).toHaveLength(1);
+  expect((await storedSession())?.activeSeconds).toBe(1_200);
+  expect((await storedDay())?.activeSeconds).toBe(1_200);
+});
+
 it('refuses a newer heartbeat that would shrink the recorded time', async () => {
   await push(sessionChange());
   const result = await push(

@@ -477,6 +477,12 @@ export function createSyncEngine(options: SyncEngineOptions): SyncEngine {
       if (first === undefined) {
         continue;
       }
+      // A cumulative session heartbeat skipped as a replay or a shrink is a
+      // normal acknowledgement; nothing the reader shows conflicts.
+      if (first.entityType === 'reading_session') {
+        await markLocalClean(first.entityType, first.entityId);
+        continue;
+      }
       conflicts += 1;
       await markLocalClean(first.entityType, first.entityId);
       publish({ type: 'conflict', entityType: first.entityType, entityId: first.entityId });

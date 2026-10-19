@@ -12,7 +12,8 @@ import type { FastifyInstance } from 'fastify';
 import type { AppDeps, Clock } from '../app';
 import { books, uploadSessions, users } from '../db/schema';
 import { AppError } from '../errors';
-import { rebuildDailyStats } from '../stats/aggregate';
+import { rebuildDailyStatsInTransaction } from '../stats/aggregate';
+import { lockUserChanges } from '../sync/repo';
 import { deviceInfoOf } from './device';
 import { makeRequireAuth } from './guards';
 import { loginUser, logoutSession, refreshSession, registerUser } from './service';
@@ -236,8 +237,13 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
     async (request): Promise<ProfileUpdateDto> => {
       const { timezone } = updateProfileSchema.parse(request.body);
       const userId = request.user!.id;
-      await deps.db.update(users).set({ timezone }).where(eq(users.id, userId));
-      await rebuildDailyStats(deps.db, userId, timezone, deps.clock.now());
+      // The timezone and its aggregates must switch together; the same per-user
+      // lock serialises this against a concurrent sync session write.
+      await deps.db.transaction(async (tx) => {
+        await lockUserChanges(tx, userId);
+        await tx.update(users).set({ timezone }).where(eq(users.id, userId));
+        await rebuildDailyStatsInTransaction(tx, userId, timezone, deps.clock.now());
+      });
       return { timezone };
     },
   );

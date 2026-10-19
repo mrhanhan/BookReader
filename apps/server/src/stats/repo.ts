@@ -1,6 +1,7 @@
 import { and, eq, gte, gt, lt } from 'drizzle-orm';
 import type { Database, Transaction } from '../db/client';
 import {
+  books,
   dailyStats,
   readingSessions,
   users,
@@ -138,4 +139,17 @@ export async function deleteDailyStat(
 /** Clears a user's aggregate before a full rebuild. */
 export async function deleteAllDailyStats(tx: Transaction, userId: string): Promise<void> {
   await tx.delete(dailyStats).where(eq(dailyStats.userId, userId));
+}
+
+/** Users whose sessions belong to books about to be purged from the trash. */
+export async function listSessionUserIdsForPurge(
+  db: Database,
+  cutoff: Date,
+): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ userId: readingSessions.userId })
+    .from(readingSessions)
+    .innerJoin(books, eq(books.id, readingSessions.bookId))
+    .where(lt(books.deletedAt, cutoff));
+  return rows.map((row) => row.userId);
 }

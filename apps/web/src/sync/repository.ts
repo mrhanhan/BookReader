@@ -870,8 +870,7 @@ export function createRepository(db: BookrDb): LocalRepository {
         case 'reader_settings':
           return applySettingsChange(db, userId, change);
         case 'reading_session':
-          // Reading sessions are write-only today; local echo handling lands in Task 5.
-          return 'skipped';
+          return applyReadingSessionChange(db, userId, change);
         default: {
           const exhaustive: never = change.entityType;
           return exhaustive;

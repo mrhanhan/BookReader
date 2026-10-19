@@ -8,6 +8,7 @@ const OTHER_USER = 'user-other';
 const BOOK = '0198f0c0-0000-7000-8000-000000000001';
 const OTHER_BOOK = '0198f0c0-0000-7000-8000-000000000002';
 const SERVER_ANNOTATION = '0198f0c0-0000-7000-8000-0000000000aa';
+const SESSION = '0198f0c0-0000-7000-8000-0000000000bb';
 
 const locator: Locator = { kind: 'pdf', page: 3, percent: 0.25 };
 const laterLocator: Locator = { kind: 'pdf', page: 9, percent: 0.75 };
@@ -451,4 +452,69 @@ describe('LocalRepository', () => {
     await repo.setCursor(USER, 9);
     expect(await repo.getCursor(USER)).toBe(9);
   });
+});
+
+
+it('merges session heartbeats into one outbox row', async () => {
+  await repo.saveReadingSession(USER, {
+    id: SESSION,
+    bookId: BOOK,
+    startedAt: T1,
+    endedAt: T1,
+    activeSeconds: 30,
+    pagesRead: 1,
+  });
+  await repo.saveReadingSession(USER, {
+    id: SESSION,
+    bookId: BOOK,
+    startedAt: T1,
+    endedAt: T2,
+    activeSeconds: 60,
+    pagesRead: 2,
+  });
+
+  const outbox = await db.outbox.toArray();
+  expect(outbox).toHaveLength(1);
+  expect(outbox[0]).toMatchObject({
+    entityType: 'reading_session',
+    entityId: SESSION,
+    payload: { activeSeconds: 60, pagesRead: 2 },
+  });
+});
+
+it('applies a server session echo and clears its dirty flag', async () => {
+  await repo.saveReadingSession(USER, {
+    id: SESSION,
+    bookId: BOOK,
+    startedAt: T1,
+    endedAt: T1,
+    activeSeconds: 30,
+    pagesRead: 1,
+  });
+
+  const result = await repo.applyServerChange(USER, {
+    revision: 1,
+    entityType: 'reading_session',
+    entityId: SESSION,
+    op: 'upsert',
+    payload: {
+      bookId: BOOK,
+      startedAt: T1,
+      endedAt: T3,
+      activeSeconds: 120,
+      pagesRead: 4,
+      clientUpdatedAt: T3,
+    },
+    clientUpdatedAt: T3,
+    serverUpdatedAt: T3,
+  });
+
+  expect(result).toBe('applied');
+  expect(await db.readingSessions.get(SESSION)).toMatchObject({
+    userId: USER,
+    activeSeconds: 120,
+    pagesRead: 4,
+    dirty: false,
+  });
+  expect(await repo.pendingCount(USER)).toBe(0);
 });

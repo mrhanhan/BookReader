@@ -865,7 +865,7 @@ git commit -m "test(e2e): cover reading stats and document the P7 delivery"
 
 **完成日期：** 2026-10-19
 
-**最终验证：** `pnpm exec turbo run typecheck test` 12/12 成功（Server 355、Web 398、Shared 78、Reader-core 149）；Playwright 18/18（46.4 秒，含新增 2 条统计 E2E）；Docker Compose 四个服务 healthy；`/healthz` 返回 200。
+**最终验证：** `pnpm exec turbo run typecheck test` 12/12 成功（Server 360、Web 401、Shared 78、Reader-core 149）；Playwright 18/18（46.4 秒，含新增 2 条统计 E2E）；Docker Compose 四个服务 healthy；`/healthz` 返回 200。
 
 **提交：**
 
@@ -880,6 +880,8 @@ git commit -m "test(e2e): cover reading stats and document the P7 delivery"
 - `e3897d0` feat(web): add reading statistics page with daily chart
 - `627f2cd` feat: let users choose the timezone used for reading stats
 - 最后一个提交：E2E、README、路线图与本交付记录
+
+**终审修复：** 终审发现并修复 6 项：设备时钟回拨导致会话余量永久丢失（改为累计秒数单调判据）、时区切换与重建非原子（同事务 + 用户锁）、会话 skip 被误计为冲突、跨午夜拆分舍入误差、回收站硬删除后聚合不重算、本地会话回声分支不可达。
 
 **实现要点：** 纯状态机计时（可见+聚焦、2 分钟空闲关闭、30 分钟分段）；`reading_session` 作为只写同步实体，outbox 就地合并心跳；服务端在同步事务内按墙钟比例拆分跨午夜会话并重算受影响自然日；时区变更整表重建；统计接口只读；统计页用 CSS 绘制 30 根无障碍柱。
 
