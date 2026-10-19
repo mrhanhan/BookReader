@@ -5,7 +5,7 @@
 ## 1. 架构与端口
 
 ```
-浏览器 ──HTTP──> web (Caddy :8180) ──/api/*、/healthz──> server (Fastify :3000)
+浏览器 ──HTTP──> web (Caddy :8180) ──/api/*、/healthz、/readyz──> server (Fastify :3000)
                                    └── 静态 SPA（SPA fallback）
 server ──> postgres (:5432，仅容器网络)
 server ──> minio (:9000，仅容器网络；宿主 9200/9201 仅用于运维)
@@ -84,6 +84,9 @@ docker compose down                   # 停止（命名卷保留数据）
 ```
 
 `/healthz` 经 Caddy 暴露在 `http://localhost:8180/healthz`，可直接用于外部探活。
+`/readyz` 同样经 Caddy 暴露，检查数据库与对象存储的可达性：两者都正常返回 200
+`{"status":"ok"}`，否则返回 503 `{"status":"degraded"}`，适合作为容器/负载均衡的
+就绪探针。
 
 **补抓图书封面**（用于修复旧版本上传、首图为空白的书）：
 
@@ -370,25 +373,47 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 
 ## 12. 端到端验收测试（E2E）
 
-E2E 使用 Playwright 驱动真实浏览器验证邀请注册、上传、编辑、筛选、删除与恢复，以及
-阅读器的原版/重排切换、定位与划线。
+E2E 使用 Playwright 驱动真实浏览器，共 **9 个 spec、21 条用例**，覆盖邀请注册、上传、
+编辑、筛选、删除与恢复，阅读器的原版/重排切换、定位与划线，同步与离线，AI 伴读，
+笔记库，阅读统计，管理后台以及 PWA 可安装性。
 
 ```bash
 # 首次运行安装 Chromium
 pnpm --filter @bookr/web exec playwright install chromium
 
-# 针对本机 Compose 栈运行（可用 E2E_BASE_URL 覆盖本地端口）
+# 针对本机 Compose 栈运行全部用例（可用 E2E_BASE_URL 覆盖本地端口）
 pnpm --filter @bookr/web e2e
+# 等价的直接调用方式
+pnpm --filter @bookr/web exec playwright test
+
+# 只跑管理后台或 PWA
+pnpm --filter @bookr/web exec playwright test e2e/admin.spec.ts e2e/pwa.spec.ts
 ```
+
+| spec | 用例数 | 覆盖内容 |
+| --- | --- | --- |
+| `ai.spec.ts` | 4 | 选中解释、页面总结、离线禁用、设置开关 |
+| `bookshelf.spec.ts` | 1 | 邀请注册、上传、编辑、筛选、删除与恢复 |
+| `notes.spec.ts` | 3 | 检索筛选与跳回原文、Markdown 导出、AI 分析 |
+| `reader.spec.ts` | 2 | PDF/EPUB 阅读、划线批注书签、进度恢复 |
+| `reflow.spec.ts` | 1 | 重排模式、双模式位置保持、重排划线 |
+| `stats.spec.ts` | 2 | 有效阅读日与 30 天图表、连续天数 |
+| `sync.spec.ts` | 5 | 跨设备 5 秒同步、离线合并、离线阅读与缓存 |
+| `admin.spec.ts` | 2 | 注册开关/审计日志、备份心跳与状态页 |
+| `pwa.spec.ts` | 1 | manifest、standalone、三个 PNG 图标 |
 
 - 前提：`docker compose up -d` 全部服务 healthy，且已存在管理员；默认使用 `admin`，可通过 `E2E_ADMIN_USERNAME` / `E2E_ADMIN_PASSWORD` 指定。
 - 测试会**创建真实用户与邀请码、上传图书并软删除图书**（结束时留在回收站），还会清理此前 E2E 遗留的在架图书。请只对它使用一次性测试栈。
 - AI 用例（`e2e/ai.spec.ts`）要求 `AI_FAKE_PROVIDER=1`；在 `.env` 设置后 `docker compose up -d server`。未设置时该套件会在 `beforeAll` 明确失败。
 - 默认只允许 `localhost` / `127.0.0.1`；指向其他主机时测试会拒绝启动。仅在目标确实是可丢弃的测试环境时才设置 `E2E_ALLOW_REMOTE=1`。**永远不要对生产环境运行 E2E，也不要为生产设置该变量。**
+- 管理用例（`e2e/admin.spec.ts`）会临时关闭注册开关，并在 `finally` 中重新打开；备份用例只追加心跳记录、不做清理（历史表只读展示）。
+- PWA 用例（`e2e/pwa.spec.ts`）直接经公开入口读取 manifest 与图标，验证 200 与 `image/png`。
 - 阅读器与重排用例（`e2e/reader.spec.ts`、`e2e/reflow.spec.ts`）使用
   `apps/web/scripts/make-reader-fixtures.mjs` 在全局 setup 中重新生成的
   `reader.pdf`、`reader.epub` 与 `reader.bookr.json`。fixture 不入库；重排用例会
   上传重排包并切换模式，属于破坏性测试。
+- 完整验收标准与手动项（真实计时、三端走查、恢复演练）见
+  [`docs/operations/acceptance-checklist.md`](docs/operations/acceptance-checklist.md)。
 
 
 ## 13. 阅读器功能
@@ -597,7 +622,60 @@ E2E 与本地演示可设置 `AI_FAKE_PROVIDER=1`，服务端用确定性的假�
 
 隐私与运维：统计严格按 `user_id` 隔离，管理员也不能读取他人统计；日志不记录书籍正文或笔记内容。同步日志中的会话心跳会随 90 天保留策略一起清理。
 
-## 18. 本地 PDF 预处理工具
+## 18. 管理后台
+
+管理员登录后，顶部导航出现 **管理** 入口；四个分页（成员 / 设置 / 审计 / 备份）分别对应
+`/admin/members`、`/admin/settings`、`/admin/audit`、`/admin/backups`。所有页面在 360px
+宽度下不横向滚动，表格放入可安全横向滚动的容器；危险操作（停用成员、重置密码、撤销邀请码）
+都有说明文案或二次确认。
+
+**成员与邀请（`/admin/members`）**
+
+- 成员列表显示显示名、用户名、角色、状态与上传用量；可停用/启用成员、重置密码
+  （会立即撤销其在所有设备上的登录）、调整上传配额。
+- AI 配额：为每位成员单独开关 AI 伴读，并设置每日/每月 token 上限；留空表示不修改。
+- 邀请码：生成一枚一次性邀请码（默认 12 小时有效），复制后交给新成员；未使用的邀请码
+  可撤销。每枚邀请码只能启用一位成员。
+- 存储用量：共享书库总量、每位成员用量与最大的 10 本书。
+
+**系统设置（`/admin/settings`）**
+
+- **注册开关**：关闭后即使持有有效邀请码也不能创建新账号；已登录成员不受影响。
+  保存后写入审计日志。
+- **默认时区**：只作用于新注册成员（用于统计自然日与 AI 配额窗口），修改不会回算已有成员。
+- **AI 服务商**：Base URL、对话模型、推理模型与 API Key。Key 只保存在服务器
+  （AES-256-GCM 加密），保存后不会再返回浏览器；留空表示保持现有 Key。
+  `AI_FAKE_PROVIDER=1` 时显示“本地假提供方”，表单禁用。
+
+**审计日志（`/admin/audit`）**
+
+按时间倒序分页展示登录、注册、删除图书、修改成员、创建/撤销邀请码、修改系统设置与更新
+AI 配置等动作，含操作者、对象与元数据预览。日志只读；元数据不包含书籍正文、笔记内容、
+AI Key 或备份 token。
+
+**备份与告警（`/admin/backups`）**
+
+- 状态卡：最近成功备份时间、备份机最近上报时间、磁盘可用空间。
+- 告警提示：超过 24 小时未成功备份、备份机超过 24 小时未上报、磁盘低于阈值。
+- 备份记录：两个来源（服务器导出 / 备份机）的最近 20 条心跳，含时间、状态、大小与说明。
+- 告警历史：Webhook 投递状态（已发送 / 发送失败）与时间，便于排查告警通道。
+
+心跳由 `scripts/backup-export.sh` 与 `scripts/pull-backup.sh` 上报；也可手动调用：
+
+```bash
+curl -X POST http://localhost:8180/api/admin/backup/heartbeat \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"server-export","status":"success",
+       "startedAt":"2026-10-19T03:00:00+08:00","finishedAt":"2026-10-19T03:05:00+08:00"}'
+```
+
+**权限**：管理页面仅对 `role = admin` 显示；`/api/admin/*` 接口统一要求登录且为管理员，
+成员访问返回 403、未登录返回 401（备份心跳是唯一例外，可用 `X-Backup-Token`）。
+本仓库不内置后台截图，界面以实际运行结果为准；移动端布局与可访问性由
+`apps/web/src/features/admin/__tests__/` 的组件测试和 E2E 覆盖。
+
+## 19. 本地 PDF 预处理工具
 
 源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
 [`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
@@ -634,7 +712,7 @@ bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --repo
 服务端会校验包内 `source.sha256`、schema 版本与大小（≤32 MiB）；每本书最多一个包，
 重排包不计入书籍配额。
 
-## 19. 桌面端（Tauri 2）
+## 20. 桌面端（Tauri 2）
 
 源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
 
@@ -646,14 +724,17 @@ pnpm install
 pnpm --filter @bookr/desktop dev      # 本地开发（Vite + Tauri 窗口）
 pnpm --filter @bookr/desktop check    # cargo check
 
-# 打包：必须把绝对 API 源烘焙进 Web 产物
-VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
+# 发布：构建 Web 产物后打包 NSIS 与 MSI（必须烘焙绝对 API 源）
+VITE_API_BASE_URL=https://bookr.example.com pnpm build:desktop
 ```
+
+产物位于 `apps/desktop/src-tauri/target/release/bundle/{nsis,msi}/`。完整的版本对齐、
+签名与发布前检查见 [`docs/operations/native-builds.md`](docs/operations/native-builds.md)。
 
 服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
-## 20. Android 端（Capacitor 7）
+## 21. Android 端（Capacitor 7）
 
 源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
 `apps/mobile/README.md`。
@@ -663,19 +744,35 @@ Platform Tools），设置 `ANDROID_HOME`；`cap sync` 不依赖 JDK，但构建
 `cap open android` 需要完整环境。
 
 ```bash
-VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/web build
-pnpm --filter @bookr/mobile sync      # 复制 Web 产物到 android/
-pnpm --filter @bookr/mobile open      # 用 Android Studio 打开并运行
+VITE_API_BASE_URL=https://bookr.example.com pnpm build:android
+```
+
+脚本依次执行 Web 构建、`cap sync android` 与 `./gradlew assembleRelease`，并打印 APK 路径。
+发布签名使用 `apps/mobile/android/keystore.properties`（`*.jks` 与密码文件不入库），
+签名步骤与版本号规则见 [`docs/operations/native-builds.md`](docs/operations/native-builds.md)。
+日常调试也可只同步后用 Android Studio 打开：
+
+```bash
+pnpm --filter @bookr/mobile sync
+pnpm --filter @bookr/mobile open
 ```
 
 WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost` 与
 `capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
 预签名文件地址都必须是设备可达的 HTTPS 地址。
 
-## 21. 已知范围
+## 22. 已知范围
 
-- 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
-  均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
+- Web 端可安装为 PWA：`manifest.webmanifest`、`display: standalone` 与三个 PNG 图标已经
+  提供，安装入口由浏览器决定；iOS 仍使用「添加到主屏幕」，不提供推送。
+- 桌面安装包由 `pnpm build:desktop` 产出 NSIS/MSI，Android APK 由 `pnpm build:android`
+  产出；前者需要 Rust/MSVC/WebView2，后者需要 JDK 17+ 与 Android SDK。仓库只提供
+  可复现的配置与脚本，**不附带已签名产物**；签名材料与证书不得入库。详见
+  [`docs/operations/native-builds.md`](docs/operations/native-builds.md)。
+- 恢复演练（`scripts/restore-drill.sh`）恢复最近 dump 到临时库并核对行数与 MinIO manifest；
+  它不覆盖整机丢失后的域名切换与 DNS 切换，这部分按 README §7.4 人工执行。演练记录保存在
+  `backups/drills/`，验收标准见
+  [`docs/operations/acceptance-checklist.md`](docs/operations/acceptance-checklist.md)。
 - 原生端依赖服务端可访问：部署在局域网或本机时，手机/另一台电脑需要能解析并访问
   `VITE_API_BASE_URL` 与 `S3_PUBLIC_ENDPOINT`。
 - 阅读数据（进度、批注、书签、阅读设置）走本地优先同步；图书元数据与分类以服务端为权威，不进同步日志，离线时由书架快照提供只读元数据。

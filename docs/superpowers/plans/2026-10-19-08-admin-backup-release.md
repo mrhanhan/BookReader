@@ -1408,11 +1408,11 @@ README：
 
 路线图：把 08 行与计划列表标为「已交付」，添加计划链接。
 
-- [ ] **Step 1: 写 E2E 与文档**
+- [x] **Step 1: 写 E2E 与文档**
 
 按上述内容实现。
 
-- [ ] **Step 2: 构建并运行 E2E**
+- [x] **Step 2: 构建并运行 E2E**
 
 ```bash
 docker compose up -d --build
@@ -1421,7 +1421,7 @@ pnpm --filter @bookr/web exec playwright test
 
 Expected: 原有 E2E 全部通过，并新增 3 条（`admin.spec.ts` 2 条、`pwa.spec.ts` 1 条）。
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 ```bash
 pnpm exec turbo run typecheck test
@@ -1433,14 +1433,14 @@ curl -fsS http://localhost:8180/readyz
 
 Expected: typecheck/test 全绿；`check:native` 六项 OK；Compose 四个服务 healthy；两个探针返回 200。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add apps/web/e2e docs README.md
 git commit -m "test(e2e): cover admin console and PWA; document acceptance"
 ```
 
-- [ ] **Step 5: 写交付记录**
+- [x] **Step 5: 写交付记录**
 
 在本计划末尾追加交付记录：最终测试数量（Server/Web/Shared/Reader-core/E2E）、提交列表、遗留项（如本机无 JDK，Android 发布包未实际产出；桌面安装包是否产出）。
 
@@ -1448,4 +1448,75 @@ git commit -m "test(e2e): cover admin console and PWA; document acceptance"
 
 ## 交付记录
 
-（执行完成后填写）
+**交付日期：** 2026-10-19
+**分支：** `feature/p8-admin-backup-release`
+
+### 验证结果
+
+| 范围 | 命令 | 结果 |
+| --- | --- | --- |
+| Server | `pnpm exec turbo run typecheck test` | 55 个测试文件 / 384 条通过 |
+| Web | 同上 | 51 个测试文件 / 416 条通过 |
+| Shared | 同上 | 11 个测试文件 / 84 条通过 |
+| Reader-core | 同上 | 18 个测试文件 / 149 条通过 |
+| UI | 同上 | 1 个测试文件 / 2 条通过 |
+| 合计单元/集成 | — | **1035 条通过**；turbo `12 successful, 12 total`（typecheck 与 test 全绿） |
+| E2E | `pnpm --filter @bookr/web exec playwright test` | **9 个 spec / 21 条用例全部通过**（47.5s） |
+| 原生配置 | `pnpm check:native` | 6/6 项 OK |
+| Compose | `docker compose ps` | postgres/minio/server/web 四个服务均为 healthy |
+| 探针 | `curl -fsS http://localhost:8180/healthz`、`/readyz` | 均 200；`/readyz` 返回 `{"status":"ok","checks":{"database":"ok","storage":"ok"}}` |
+
+### 本次修复的部署缺口
+
+- `Caddyfile` 原先只把 `/api/*` 与 `/healthz` 转发到 server，`/readyz` 无法经公开入口
+  访问；现已加入 backend matcher，探针验证通过。
+
+### 新增验收资产
+
+- `apps/web/e2e/admin.spec.ts`：注册开关持久化 + 审计日志；服务器导出/备份机心跳与状态页。
+- `apps/web/e2e/pwa.spec.ts`：manifest 链接、`display: standalone`、三个 PNG 图标。
+- `docs/operations/acceptance-checklist.md`：设计文档 §13 的 11 条验收标准、自动化证据与
+  手动步骤（真实计时、三端走查、恢复演练）。
+- README 新增「18. 管理后台」，并更新 E2E 用例表、原生发布流程、已知范围与运维文档链接。
+
+### 提交列表
+
+P8 分支最终包含以下提交（含 Task 1–9）：
+
+```text
+a09c264 docs: add the admin, backup and release plan
+c38bd28 feat(shared): add admin, audit and backup contracts
+6b60091 feat(server): add admin settings, backup and alert tables
+e4449ef feat(web): make the app installable with a PWA manifest
+3a64d68 build: add native release config and version checks
+7bcd872 fix(build): tighten native release checks and signing paths
+191ed88 feat(ops): report backup heartbeats and add restore drills
+030dcdf feat(server): add system settings, audit log and storage ranking
+ad2c1cb fix(ops): count tables before dump and scope drill checks
+4289e32 fix(ops): canonicalize drill dump path and align dry-run env name
+b19ce00 feat(web): add admin settings, audit and backup screens
+1fe622b feat(server): add backup heartbeat, alerting and readiness checks
+3356788 fix(web): align AI drafts with saved settings and cover member AI edits
+3618405 fix(server): clarify registration gate and cover settings edge cases
+5f47d9d fix(server): make alert deduplication atomic and preserve fresh alerts
+test(e2e): cover admin console and PWA; document acceptance   # Task 9 收尾提交
+```
+
+### 遗留项
+
+- **Android 发布包未在本机构建**：本机没有 JDK（`java` 不在 PATH），`pnpm build:android`
+  无法执行，`apps/mobile/android/app/build/outputs/apk/release/` 下没有 APK。发布配置、
+  签名忽略规则与脚本已就绪，`pnpm check:native` 通过；需在安装 JDK 17+ 与 Android SDK
+  的机器上按 `docs/operations/native-builds.md` 构建。
+- **桌面安装包未在本机构建**：本机虽已有 Rust，但没有产出
+  `apps/desktop/src-tauri/target/release/bundle/`。需在具备 MSVC Build Tools 与
+  WebView2 的 Windows 机器上执行 `VITE_API_BASE_URL=... pnpm build:desktop`。
+- **恢复演练未在开发机执行**：`scripts/restore-drill.sh` 依赖 Linux/GNU 工具与真实的
+  `backups/` 数据；按运维要求每季度在服务器上执行，并把 `PASS` 日志填入验收清单。
+- **三端界面走查与性能计时**：13.1 的 10 秒打开、13.4 的 3 秒首字、13.9 的三端截图
+  需要人工执行，结果列在 `docs/operations/acceptance-checklist.md` 中待填。
+- **E2E 偶发**：一次较早的完整运行中 `ai.spec.ts › honours the settings toggle` 在第一次
+  尝试失败、重试后通过；随后单独运行该 spec 与最终完整运行均 4/4、21/21 通过。该用例
+  不改动本任务文件，后续若再次出现应结合 `test-results/` 的 trace 排查。
+- E2E 仍是破坏性测试，只能对一次性 localhost Compose 栈运行；`E2E_ALLOW_REMOTE=1`
+  绝不能用于生产。

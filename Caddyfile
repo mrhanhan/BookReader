@@ -1,9 +1,9 @@
 :80 {
 	encode zstd gzip
 
-	# Everything dynamic lives under /api; /healthz lets operators check the
-	# server through the same public entry point.
-	@backend path /api/* /healthz
+	# Everything dynamic lives under /api; /healthz and /readyz let operators
+	# and orchestrators check the server through the same public entry point.
+	@backend path /api/* /healthz /readyz
 	handle @backend {
 		reverse_proxy server:3000
 	}
