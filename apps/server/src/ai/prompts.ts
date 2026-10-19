@@ -1,4 +1,7 @@
-import type { AiAction, AiSummaryScope, Locator } from '@bookr/shared';
+import type { AiAction, AiSummaryScope } from '@bookr/shared';
+
+// Kept here as a re-export so existing prompt imports keep working.
+export { describeLocator } from '../reading/locator-label';
 
 /** Version tag recorded with every AI request so prompt changes stay auditable. */
 export const PROMPT_VERSION = 'p5.1';
@@ -32,22 +35,4 @@ export function systemPromptFor(action: AiAction, scope?: AiSummaryScope): strin
   const key: ActionInstructionKey =
     action === 'summarize' ? `summarize/${scope ?? 'page'}` : action;
   return `${BASE_RULES}\n${ACTION_INSTRUCTIONS[key]}`;
-}
-
-/** Human-readable Chinese label for a reading location. */
-export function describeLocator(locator: Locator | undefined): string {
-  if (!locator) {
-    return '未提供位置';
-  }
-
-  // EPUB has no page number, so whole-book progress is the only location label.
-  if (locator.kind === 'epub') {
-    return `全书 ${Math.round(locator.percent * 100)}%`;
-  }
-
-  const label = locator.kind === 'pdf' ? `第 ${locator.page} 页` : `源页 ${locator.sourcePage}`;
-  if (typeof locator.percent === 'number') {
-    return `${label}（全书 ${Math.round(locator.percent * 100)}%）`;
-  }
-  return label;
 }

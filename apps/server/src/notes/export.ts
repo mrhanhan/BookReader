@@ -1,0 +1,129 @@
+import { NOTE_EXPORT_MAX_ITEMS } from '@bookr/shared';
+import { describeLocator } from '../reading/locator-label';
+import type { NoteQueryRow } from './repo';
+
+const DATE_OPTIONS: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+};
+
+/** Formats a date as `YYYY-MM-DD` in the user's timezone. */
+function formatLocalDate(date: Date, timezone: string): string {
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-CA', { ...DATE_OPTIONS, timeZone: timezone });
+  } catch {
+    // A stored zone the runtime no longer knows must not break an export.
+    formatter = new Intl.DateTimeFormat('en-CA', { ...DATE_OPTIONS, timeZone: 'UTC' });
+  }
+  const parts = formatter.formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((entry) => entry.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+/** Book heading of one note block: `## 《title》` with an optional author. */
+function bookHeading(row: NoteQueryRow): string {
+  const author = row.book.author?.trim();
+  return author ? `## 《${row.book.title}》 · ${author}` : `## 《${row.book.title}》`;
+}
+
+/** Renders one note as the lines of its Markdown block. */
+function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
+  const lines = [bookHeading(row), '', `### ${describeLocator(row.annotation.locator)}`, ''];
+
+  // Prefix every source line so Markdown headings inside a highlight cannot
+  // escape the quote; genuinely empty lines stay as a bare `>`.
+  const quoteLines = row.annotation.selectedText.split(/\r\n|\r|\n/);
+  lines.push(...quoteLines.map((line) => (line === '' ? '>' : `> ${line}`)));
+
+  const noteText = row.annotation.noteText;
+  if (noteText !== null && noteText.trim() !== '') {
+    lines.push('', ...noteText.split(/\r\n|\r|\n/));
+  }
+
+  const tags = row.annotation.tags ?? [];
+  if (tags.length > 0) {
+    lines.push('', `标签：${tags.map((tag) => `#${tag}`).join(' ')}`);
+  }
+
+  lines.push('', `*${formatLocalDate(row.annotation.updatedAt, timezone)}*`);
+  return lines;
+}
+
+/**
+ * Renders the whole export. Notes are separated by a blank line, `---` and a
+ * blank line, and the file ends with a single newline.
+ */
+export function buildNotesMarkdown(input: {
+  notes: NoteQueryRow[];
+  total: number;
+  truncated: boolean;
+  generatedAt: Date;
+  timezone: string;
+}): string {
+  const lines = [
+    '# 笔记库',
+    '',
+    `导出时间：${formatLocalDate(input.generatedAt, input.timezone)}`,
+    `共 ${input.total} 条笔记`,
+  ];
+  if (input.truncated) {
+    lines.push(`仅导出前 ${NOTE_EXPORT_MAX_ITEMS} 条（按书名与阅读时间排序）。`);
+  }
+  lines.push('');
+
+  for (const row of input.notes) {
+    lines.push(...noteBlockLines(row, input.timezone), '', '---', '');
+  }
+  // Every block ends with the separator plus a blank line; drop the final
+  // blank so the file keeps exactly one trailing newline.
+  lines.pop();
+
+  return `${lines.join('\n')}\n`;
+}
+
+/** Strips filesystem-hostile and control characters from a book title. */
+function sanitizeBookTitle(title: string | null): string {
+  if (title === null) {
+    return '';
+  }
+  const cleaned = title
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\p{Cc}/gu, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return Array.from(cleaned).slice(0, 50).join('').trim();
+}
+
+/** Download name of an export: `笔记-<title>-YYYYMMDD.md` or `笔记库-YYYYMMDD.md`. */
+export function notesExportFilename(input: {
+  bookTitle: string | null;
+  generatedAt: Date;
+  timezone: string;
+}): string {
+  const stamp = formatLocalDate(input.generatedAt, input.timezone).replaceAll('-', '');
+  const title = sanitizeBookTitle(input.bookTitle);
+  return title ? `笔记-${title}-${stamp}.md` : `笔记库-${stamp}.md`;
+}
+
+/**
+ * ASCII fallback of the Content-Disposition filename, derived from the same
+ * date stamp as `filename` so both variants always agree.
+ */
+export function notesExportAsciiFilename(filename: string): string {
+  const match = /-(\d{4})(\d{2})(\d{2})\.md$/.exec(filename);
+  if (!match) {
+    return 'notes.md';
+  }
+  return `notes-${match[1]}-${match[2]}-${match[3]}.md`;
+}
+
+/** Reads the extended filename parameter for a Content-Disposition header. */
+export function encodeContentDispositionFilename(filename: string): string {
+  return encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
