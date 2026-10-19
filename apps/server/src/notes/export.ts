@@ -29,9 +29,12 @@ function bookHeading(row: NoteQueryRow): string {
   return author ? `## 《${row.book.title}》 · ${author}` : `## 《${row.book.title}》`;
 }
 
-/** Renders one note as the lines of its Markdown block. */
+/**
+ * Renders one note as the lines below its book heading: position, quote, note,
+ * tags and date. The caller decides where the book heading goes.
+ */
 function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
-  const lines = [bookHeading(row), '', `### ${describeLocator(row.annotation.locator)}`, ''];
+  const lines = [`### ${describeLocator(row.annotation.locator)}`, ''];
 
   // Prefix every source line so Markdown headings inside a highlight cannot
   // escape the quote; genuinely empty lines stay as a bare `>`.
@@ -53,7 +56,8 @@ function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
 }
 
 /**
- * Renders the whole export. Notes are separated by a blank line, `---` and a
+ * Renders the whole export. Notes are grouped by book so each `##` heading
+ * appears once; consecutive notes are separated by a blank line, `---` and a
  * blank line, and the file ends with a single newline.
  */
 export function buildNotesMarkdown(input: {
@@ -63,26 +67,51 @@ export function buildNotesMarkdown(input: {
   generatedAt: Date;
   timezone: string;
 }): string {
-  const lines = [
+  const header = [
     '# 笔记库',
     '',
     `导出时间：${formatLocalDate(input.generatedAt, input.timezone)}`,
     `共 ${input.total} 条笔记`,
   ];
   if (input.truncated) {
-    lines.push(`仅导出前 ${NOTE_EXPORT_MAX_ITEMS} 条（按书名与阅读时间排序）。`);
+    header.push(`仅导出前 ${NOTE_EXPORT_MAX_ITEMS} 条（按书名与阅读时间排序）。`);
   }
-  lines.push('');
 
+  // Notes arrive sorted by book title then creation time. A Map keeps that
+  // order inside every book group and emits one heading per book.
+  const groups = new Map<string, NoteQueryRow[]>();
   for (const row of input.notes) {
-    lines.push(...noteBlockLines(row, input.timezone), '', '---', '');
+    const group = groups.get(row.book.id);
+    if (group) {
+      group.push(row);
+    } else {
+      groups.set(row.book.id, [row]);
+    }
   }
-  // Every block ends with the separator plus a blank line; drop the final
-  // blank so the file keeps exactly one trailing newline.
-  lines.pop();
 
-  return `${lines.join('\n')}\n`;
+  const sections: string[] = [];
+  for (const rows of groups.values()) {
+    const first = rows[0];
+    if (!first) {
+      continue;
+    }
+    const lines = [bookHeading(first), ''];
+    rows.forEach((row, index) => {
+      if (index > 0) {
+        lines.push('', '---', '');
+      }
+      lines.push(...noteBlockLines(row, input.timezone));
+    });
+    sections.push(lines.join('\n'));
+  }
+
+  const head = header.join('\n');
+  if (sections.length === 0) {
+    return `${head}\n`;
+  }
+  return `${head}\n\n${sections.join('\n\n---\n\n')}\n`;
 }
+
 
 /** Strips filesystem-hostile and control characters from a book title. */
 function sanitizeBookTitle(title: string | null): string {

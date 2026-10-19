@@ -93,8 +93,6 @@ it('exports grouped Markdown with book, position, quote, note, tags and date', a
       '',
       '*2026-10-18*',
       '',
-      '---',
-      '',
     ].join('\n'),
   );
 });
@@ -161,6 +159,45 @@ it('applies filters and excludes other members and trashed books', async () => {
   expect(response.body).not.toContain('回收站之书');
 });
 
+it('groups notes from the same book under one heading in creation order', async () => {
+  await resetDb();
+  const app = await fixedApp();
+  const alice = await seedUser('member', 'alice');
+  const book = await seedBook({ uploadedBy: alice.id, title: '同一本书', author: '作者乙' });
+  const first = await seedAnnotation({
+    userId: alice.id,
+    bookId: book.id,
+    locator: { kind: 'pdf', page: 3, percent: 0.1 },
+    selectedText: '先创建的划线',
+    tags: ['历史'],
+  });
+  const second = await seedAnnotation({
+    userId: alice.id,
+    bookId: book.id,
+    locator: { kind: 'pdf', page: 8, percent: 0.5 },
+    selectedText: '后创建的划线',
+    tags: ['历史'],
+  });
+  expect(first.createdAt.getTime()).toBeLessThanOrEqual(second.createdAt.getTime());
+
+  const response = await app.inject({
+    method: 'GET',
+    url: '/api/notes/export',
+    headers: await authHeader(alice),
+  });
+
+  expect(response.statusCode).toBe(200);
+  const body = response.body;
+  expect(body.match(/^## /gm)).toHaveLength(1);
+  expect(body.match(/^## 《同一本书》 · 作者乙$/gm)).toHaveLength(1);
+  const positions = body.match(/^### .*$/gm);
+  expect(positions).toHaveLength(2);
+  expect(positions).toEqual(['### 第 3 页（全书 10%）', '### 第 8 页（全书 50%）']);
+  expect(body.indexOf(first.selectedText)).toBeGreaterThan(-1);
+  expect(body.indexOf(first.selectedText)).toBeLessThan(body.indexOf(second.selectedText));
+  expect(body.match(/^---$/gm)).toHaveLength(1);
+});
+
 it('caps the export and says so', () => {
   const markdown = buildNotesMarkdown({
     notes: [
@@ -180,8 +217,10 @@ it('caps the export and says so', () => {
   expect(markdown).toContain('共 6000 条笔记\n仅导出前 5000 条（按书名与阅读时间排序）。');
   // Blank source lines become a bare `>` so the quote block never breaks.
   expect(markdown).toContain('> 原文第一行\n>\n> 原文第三行');
-  expect(markdown.match(/^---$/gm)).toHaveLength(2);
-  expect(markdown.endsWith('---\n')).toBe(true);
+  // Both note rows default to the same book, so the heading appears once.
+  expect(markdown.match(/^## 《书名》$/gm)).toHaveLength(1);
+  expect(markdown.match(/^---$/gm)).toHaveLength(1);
+  expect(markdown.endsWith('*2026-10-18*\n')).toBe(true);
 });
 
 it('sets a UTF-8 filename in content-disposition', async () => {
