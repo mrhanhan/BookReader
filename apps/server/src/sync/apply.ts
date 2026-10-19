@@ -4,6 +4,7 @@ import {
   syncAnnotationPayloadSchema,
   syncBookmarkPayloadSchema,
   syncProgressPayloadSchema,
+  syncReadingSessionPayloadSchema,
   syncSettingsPayloadSchema,
   type Locator,
   type SyncChangeEnvelope,
@@ -13,10 +14,22 @@ import {
 import { and, eq } from 'drizzle-orm';
 import type { AppDeps } from '../app';
 import { findBookById } from '../books/repo';
-import { readingProgress, userSettings, type AnnotationRow, type BookmarkRow } from '../db/schema';
+import {
+  readingProgress,
+  userSettings,
+  type AnnotationRow,
+  type BookmarkRow,
+  type ReadingSessionRow,
+} from '../db/schema';
 import { AppError } from '../errors';
 import { toAnnotationDto, toBookmarkDto, toProgressDto } from '../reading/dto';
 import { assertLocatorKind, type ReadingActor } from '../reading/guards';
+import { recomputeDailyStats, sessionLocalDates } from '../stats/aggregate';
+import {
+  findReadingSession,
+  readUserTimezone,
+  upsertReadingSession,
+} from '../stats/repo';
 import {
   findAnnotationRowById,
   findBookmarkRowById,
@@ -34,6 +47,7 @@ import {
   annotationChangePayload,
   bookmarkChangePayload,
   progressChangePayload,
+  sessionChangePayload,
   settingsChangePayload,
 } from './service';
 
@@ -174,6 +188,8 @@ export async function applyChange(
       return applyBookmarkChange(deps, actor, incoming, context);
     case 'reader_settings':
       return applySettingsChange(deps, actor, incoming, context);
+    case 'reading_session':
+      return applyReadingSessionChange(deps, actor, incoming, context);
     default:
       return rejected('unknown_entity');
   }
@@ -639,6 +655,119 @@ async function applySettingsChange(
       entityId: actor.id,
       op: 'upsert',
       payload: settingsChangePayload(parsed.data.settings, clientTime, now),
+      clientUpdatedAt: clientTime,
+      serverUpdatedAt: now,
+      deviceId: actor.deviceId ?? null,
+    });
+    return applied(change);
+  });
+}
+
+/** Write fields compared for idempotency; timestamps are compared separately. */
+function sessionWritePayload(row: ReadingSessionRow): Record<string, unknown> {
+  return {
+    bookId: row.bookId,
+    startedAt: row.startedAt.toISOString(),
+    endedAt: row.endedAt.toISOString(),
+    activeSeconds: row.activeSeconds,
+    pagesRead: row.pagesRead,
+  };
+}
+
+/**
+ * Applies one session heartbeat. The client owns the id and sends cumulative
+ * values, so the newest heartbeat wins by client time and a shorter value is
+ * always refused: a late or replayed packet must never erase reading time.
+ */
+async function applyReadingSessionChange(
+  deps: AppDeps,
+  actor: ReadingActor,
+  incoming: SyncPushChange,
+  context: ApplyContext,
+): Promise<ApplyResult> {
+  const { clientTime, clockSkew, now } = context;
+  if (incoming.op !== 'upsert') {
+    return rejected('unsupported_op');
+  }
+
+  const parsed = syncReadingSessionPayloadSchema.safeParse(incoming.payload);
+  if (!parsed.success) {
+    return rejected('invalid_payload');
+  }
+
+  const book = await findBookById(deps.db, parsed.data.bookId, { includeDeleted: false });
+  if (!book) {
+    return rejected('unknown_entity');
+  }
+
+  const startedAt = new Date(parsed.data.startedAt);
+  const endedAt = new Date(parsed.data.endedAt);
+  const write = {
+    bookId: parsed.data.bookId,
+    startedAt: startedAt.toISOString(),
+    endedAt: endedAt.toISOString(),
+    activeSeconds: parsed.data.activeSeconds,
+    pagesRead: parsed.data.pagesRead,
+  };
+
+  return deps.db.transaction(async (tx) => {
+    await lockUserChanges(tx, actor.id);
+    const stored = await findReadingSession(tx, incoming.entityId);
+
+    if (stored && stored.userId !== actor.id) {
+      return rejected('not_allowed');
+    }
+
+    if (stored) {
+      // A clamped clock cannot order retries, so an identical payload wins.
+      if (clockSkew && samePayload(write, sessionWritePayload(stored))) {
+        return skipped();
+      }
+      const storedTime = storedTimeOf(stored);
+      if (clientTime.getTime() < storedTime.getTime()) {
+        return skipped();
+      }
+      if (
+        clientTime.getTime() === storedTime.getTime() &&
+        samePayload(write, sessionWritePayload(stored))
+      ) {
+        return skipped();
+      }
+      // Heartbeats are cumulative; accepting a smaller value would delete
+      // reading time that is already recorded.
+      if (parsed.data.activeSeconds < stored.activeSeconds) {
+        return skipped();
+      }
+    }
+
+    const row = await upsertReadingSession(tx, {
+      id: incoming.entityId,
+      userId: actor.id,
+      bookId: parsed.data.bookId,
+      deviceId: actor.deviceId ?? null,
+      startedAt,
+      endedAt,
+      activeSeconds: parsed.data.activeSeconds,
+      pagesRead: parsed.data.pagesRead,
+      clientUpdatedAt: clientTime,
+      updatedAt: now,
+    });
+
+    const timezone = await readUserTimezone(tx, actor.id);
+    const dates = new Set(sessionLocalDates(startedAt, endedAt, timezone));
+    if (stored) {
+      for (const date of sessionLocalDates(stored.startedAt, stored.endedAt, timezone)) {
+        dates.add(date);
+      }
+    }
+    await recomputeDailyStats(tx, actor.id, timezone, [...dates], now);
+
+    const change = await appendChange(tx, {
+      userId: actor.id,
+      entityType: 'reading_session',
+      entityId: incoming.entityId,
+      op: 'upsert',
+      payload: sessionChangePayload(row, clientTime),
       clientUpdatedAt: clientTime,
       serverUpdatedAt: now,
       deviceId: actor.deviceId ?? null,

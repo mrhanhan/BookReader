@@ -22,6 +22,7 @@ import {
   readingProgress,
   syncChanges,
   syncMeta,
+  type ReadingSessionRow,
 } from '../db/schema';
 import { toAnnotationDto, toBookmarkDto, toProgressDto } from '../reading/dto';
 import type { ReadingActor } from '../reading/guards';
@@ -107,6 +108,21 @@ export function settingsChangePayload(
   return {
     settings,
     updatedAt: updatedAt.toISOString(),
+    clientUpdatedAt: clientUpdatedAt.toISOString(),
+  };
+}
+
+/** Canonical state carried by the log for a reading-session heartbeat. */
+export function sessionChangePayload(
+  row: ReadingSessionRow,
+  clientUpdatedAt: Date,
+): unknown {
+  return {
+    bookId: row.bookId,
+    startedAt: row.startedAt.toISOString(),
+    endedAt: row.endedAt.toISOString(),
+    activeSeconds: row.activeSeconds,
+    pagesRead: row.pagesRead,
     clientUpdatedAt: clientUpdatedAt.toISOString(),
   };
 }
