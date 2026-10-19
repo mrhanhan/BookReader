@@ -7,7 +7,7 @@ import type {
   AiThreadDto,
   AiUsageDto,
 } from '@bookr/shared';
-import { AiStreamProtocolError, readSseStream } from '../features/reader/ai/stream';
+import { readSseStream, SseProtocolError } from '../lib/sse';
 import { apiFetch, authorizedFetch } from './client';
 
 /** Current AI availability, model and quota snapshot. */
@@ -57,7 +57,7 @@ function parseFrame<T>(data: string): T {
   try {
     return JSON.parse(data) as T;
   } catch {
-    throw new AiStreamProtocolError('AI 流数据格式错误');
+    throw new SseProtocolError('AI 流数据格式错误');
   }
 }
 
@@ -78,7 +78,7 @@ export async function streamAiChat(
     signal: options?.signal,
   });
 
-  if (!response.body) throw new AiStreamProtocolError('AI 流意外结束');
+  if (!response.body) throw new SseProtocolError('AI 流意外结束');
 
   let finished = false;
 
@@ -106,5 +106,5 @@ export async function streamAiChat(
     }
   });
 
-  if (!finished) throw new AiStreamProtocolError('AI 流意外结束');
+  if (!finished) throw new SseProtocolError('AI 流意外结束');
 }
