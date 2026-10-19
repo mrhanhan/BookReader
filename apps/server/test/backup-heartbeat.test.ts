@@ -54,6 +54,29 @@ it('accepts the backup token and rejects wrong or missing credentials', async ()
   expect(member.statusCode).toBe(403);
 });
 
+it('accepts script-style Z timestamps and integer byte fields', async () => {
+  // scripts/lib/heartbeat.sh emits `date -u` timestamps (ending in Z) and
+  // integer byte counts; keep the script and the schema contract aligned.
+  const token = 't'.repeat(32);
+  const built = await frozenApp({ backup: { token } });
+  const response = await built.app.inject({
+    method: 'POST',
+    url: '/api/admin/backup/heartbeat',
+    headers: { 'x-backup-token': token },
+    payload: {
+      source: 'server-export',
+      status: 'success',
+      startedAt: '2026-10-19T03:00:00Z',
+      finishedAt: '2026-10-19T03:10:00Z',
+      bytes: 0,
+      diskFreeBytes: 4_000_000_000,
+      diskTotalBytes: 10_000_000_000,
+      message: 'C:\\bookr\\backups mirror complete',
+    },
+  });
+  expect(response.statusCode).toBe(201);
+});
+
 it('computes staleness, silence and low disk from the clock', async () => {
   const built = await frozenApp();
   // The heartbeat is received two days ago, then the clock jumps back to NOW.

@@ -28,6 +28,19 @@ function isNotFound(error: unknown): boolean {
   );
 }
 
+/**
+ * A missing bucket (NoSuchBucket) also carries HTTP 404, but it is a broken
+ * deployment, not a missing object: `ensureBucket` creates the bucket at
+ * startup, so treating it as "object absent" would make /readyz report a
+ * healthy storage backend. Only object-level misses count.
+ */
+function isMissingObject(error: unknown): boolean {
+  if (!isNotFound(error)) {
+    return false;
+  }
+  return (error as { name?: string }).name !== 'NoSuchBucket';
+}
+
 function toBuffer(body: unknown): Buffer {
   if (body instanceof Buffer) {
     return body;
@@ -130,7 +143,7 @@ export class S3Storage implements StorageService {
       );
       return { size: response.ContentLength ?? 0 };
     } catch (error) {
-      if (isNotFound(error)) {
+      if (isMissingObject(error)) {
         return null;
       }
       throw error;

@@ -125,10 +125,16 @@ curl -fsS http://localhost:8180/healthz
 - 配置了 `BOOKR_API_URL` 与 `BOOKR_BACKUP_TOKEN` 时，运行结束会向 `POST /api/admin/backup/heartbeat` 上报成功/失败心跳；上报失败只写日志警告，不影响备份自身的退出码。未配置 token 时脚本只打印提示并跳过上报（服务端仍会因备份静默而告警）。
 - 任一步失败即以非 0 退出。
 
-安装 cron（服务器）：
+安装 cron（服务器）。心跳需要的变量放在环境文件里，避免把 token 写进 cron：
+
+```bash
+# /etc/bookr-backup.env（chmod 600），BOOKR_BACKUP_TOKEN 与 .env 的 BACKUP_TOKEN 相同
+BOOKR_API_URL=http://127.0.0.1:8180
+BOOKR_BACKUP_TOKEN=<与 BACKUP_TOKEN 相同的值>
+```
 
 ```cron
-15 3 * * * /srv/bookr/scripts/backup-export.sh >> /var/log/bookr-backup.log 2>&1
+15 3 * * * set -a; . /etc/bookr-backup.env; set +a; /srv/bookr/scripts/backup-export.sh >> /var/log/bookr-backup.log 2>&1
 ```
 
 可用环境变量：`BACKUP_ROOT`（默认 `/srv/bookr/backups`）、`COMPOSE_DIR`（默认 `/srv/bookr`）、`BACKUP_KEEP_DAYS`（默认 30）、`COMPOSE_NETWORK`（默认 `bookr_default`）。
@@ -142,12 +148,15 @@ export BOOKR_BACKUP_SOURCE='bookr@server.example:/srv/bookr/backups'
 export BOOKR_BACKUP_DEST="$HOME/bookr-backups"
 export RESTIC_REPOSITORY='sftp:backup@nas.example:/srv/restic/bookr'
 export RESTIC_PASSWORD_FILE="$HOME/.config/bookr/restic-password"
+# 心跳：token 须与服务器 .env 的 BACKUP_TOKEN 相同；不配置则脚本跳过上报
+export BOOKR_API_URL='http://server.example:8180'
+export BOOKR_BACKUP_TOKEN='<与服务器 BACKUP_TOKEN 相同>'
 ~/bin/pull-backup.sh
 ```
 
 行为：`rsync -az --delete-after` 镜像到 `~/bookr-backups/`，然后 `restic backup --tag bookr`，最后 `restic forget --tag bookr --keep-daily 30 --prune`。任一步失败退出码非 0，便于监控告警。配置了 `BOOKR_BACKUP_TOKEN` 时运行结束向服务端上报 `backup-pc` 成功/失败心跳（`BOOKR_API_URL` 与 `BOOKR_BACKUP_TOKEN`，上报失败不影响退出码）；未配置时跳过上报并打印提示。
 
-Windows 任务计划可用：`wsl.exe -e bash -lc '~/bin/pull-backup.sh'`。建议服务器 03:15 导出、备份 PC 04:00 拉取。
+Windows 任务计划可用：`wsl.exe -e bash -lc '~/bin/pull-backup.sh'`（把上面的 `export` 放进 `~/.bashrc`，或在计划任务的命令行里一并传入）。建议服务器 03:15 导出、备份 PC 04:00 拉取。
 
 ### 7.3 从服务器本地备份恢复
 
@@ -348,6 +357,7 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | `BACKUP_TOKEN` | 否 | 备份脚本心跳的共享密钥，至少 32 字符；脚本端通过同值的 `BOOKR_BACKUP_TOKEN` 发送。未配置时该通道关闭，管理员 JWT 仍可调用心跳接口 |
 | `BOOKR_API_URL` | 否 | 备份脚本上报心跳的服务端地址，默认 `http://127.0.0.1:8180`；在备份 PC 上需改为可访问的服务器地址 |
 | `BOOKR_BACKUP_TOKEN` | 否 | 备份脚本发送的 `X-Backup-Token`，须与服务端 `BACKUP_TOKEN` 一致；未配置时脚本跳过心跳上报（仅打印提示） |
+| `BOOKR_HEARTBEAT_URL` | 否 | 备份脚本侧覆盖完整心跳端点；缺省由 `BOOKR_API_URL` 拼接 `/api/admin/backup/heartbeat` |
 | `ALERT_WEBHOOK_URL` | 否 | 备份失败/备份机静默/磁盘不足时投递告警的 Webhook（仅 `http:`/`https:`）；留空不发送 |
 | `DISK_ALERT_FREE_BYTES` | 否 | 备份卷剩余空间告警阈值（字节），默认 `10737418240`（10 GiB） |
 | `BACKUP_STALE_HOURS` | 否 | 超过多少小时没有成功备份即告警，默认 24，范围 1–168 |
@@ -656,7 +666,7 @@ AI Key 或备份 token。
 **备份与告警（`/admin/backups`）**
 
 - 状态卡：最近成功备份时间、备份机最近上报时间、磁盘可用空间。
-- 告警提示：超过 24 小时未成功备份、备份机超过 24 小时未上报、磁盘低于阈值。
+- 告警提示：备份超过设定时长未成功、备份机超过设定时长未上报、磁盘低于阈值。
 - 备份记录：两个来源（服务器导出 / 备份机）的最近 20 条心跳，含时间、状态、大小与说明。
 - 告警历史：Webhook 投递状态（已发送 / 发送失败）与时间，便于排查告警通道。
 

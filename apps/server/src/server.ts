@@ -91,6 +91,15 @@ async function main(): Promise<void> {
 
   const stopWorker = startWorker(deps);
   const stopCleanup = startDailyCleanup(deps);
+  // Operators need to know whether the two unauthenticated alert inputs are
+  // wired up. Log booleans only: the token and webhook URL are secrets.
+  app.log.info(
+    {
+      backupTokenConfigured: config.backup.token !== null,
+      alertWebhookConfigured: config.alerts.webhookUrl !== null,
+    },
+    'backup heartbeat and alert channels',
+  );
   const stopMonitor = startMonitor(deps);
 
   let shuttingDown = false;

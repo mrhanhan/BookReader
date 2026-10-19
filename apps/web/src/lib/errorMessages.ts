@@ -1,7 +1,7 @@
 import type { ErrorCode } from '@bookr/shared';
 import { ApiError } from '../api/client';
 
-export type ErrorContext = 'default' | 'login';
+export type ErrorContext = 'default' | 'login' | 'register';
 
 /**
  * Server error text is not localized, so the web client owns the user-facing
@@ -34,11 +34,26 @@ const LOGIN_OVERRIDES: Partial<Record<ErrorCode, string>> = {
   UNAUTHORIZED: '用户名或密码错误',
 };
 
+/**
+ * Registration uses the same FORBIDDEN code as other admin-only endpoints,
+ * but the server's 403 means the registration switch is off.
+ */
+const REGISTER_OVERRIDES: Partial<Record<ErrorCode, string>> = {
+  FORBIDDEN: '注册暂未开放，请联系管理员',
+};
+
 const FALLBACK = '操作失败，请稍后重试';
+
+const CONTEXT_OVERRIDES: Partial<
+  Record<Exclude<ErrorContext, 'default'>, Partial<Record<ErrorCode, string>>>
+> = {
+  login: LOGIN_OVERRIDES,
+  register: REGISTER_OVERRIDES,
+};
 
 export function messageForApiError(error: unknown, context: ErrorContext = 'default'): string {
   if (!(error instanceof ApiError)) return FALLBACK;
 
-  const override = context === 'login' ? LOGIN_OVERRIDES[error.code] : undefined;
-  return override ?? MESSAGES[error.code] ?? FALLBACK;
+  const overrides = context === 'default' ? undefined : CONTEXT_OVERRIDES[context];
+  return overrides?.[error.code] ?? MESSAGES[error.code] ?? FALLBACK;
 }

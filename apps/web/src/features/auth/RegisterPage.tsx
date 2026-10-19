@@ -56,7 +56,7 @@ export function RegisterPage() {
       });
       navigate('/', { replace: true });
     } catch (error) {
-      setFormError(messageForApiError(error));
+      setFormError(messageForApiError(error, 'register'));
     } finally {
       setSubmitting(false);
     }

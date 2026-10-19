@@ -42,7 +42,7 @@ it('warns when the server backup is stale', async () => {
   renderBackups();
 
   const alert = await screen.findByRole('alert');
-  expect(alert).toHaveTextContent('备份已超过 24 小时未成功');
+  expect(alert).toHaveTextContent('备份已超过设定时长未成功，请检查备份机与脚本');
 });
 
 it('tells an administrator where to start when no backup has ever run', async () => {

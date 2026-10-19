@@ -65,8 +65,8 @@ function BackupStatusCards({ status }: { status: BackupStatusDto }) {
 
 function BackupWarnings({ status }: { status: BackupStatusDto }) {
   const warnings: string[] = [];
-  if (status.backupStale) warnings.push('备份已超过 24 小时未成功');
-  if (status.backupPcSilent) warnings.push('备份机超过 24 小时未上报');
+  if (status.backupStale) warnings.push('备份已超过设定时长未成功，请检查备份机与脚本');
+  if (status.backupPcSilent) warnings.push('备份机已超过设定时长未上报，请检查备份机与网络');
   if (status.diskLow) warnings.push('磁盘可用空间低于阈值');
 
   if (warnings.length === 0) return null;

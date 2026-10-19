@@ -43,6 +43,29 @@ it('localizes an English unauthorized message from the server', async () => {
   expect(screen.queryByText('Authentication required')).not.toBeInTheDocument();
 });
 
+it('shows the registration-closed message for a 403 FORBIDDEN response', async () => {
+  server.use(
+    http.post('/api/auth/register', () =>
+      HttpResponse.json(
+        { error: { code: 'FORBIDDEN', message: 'Registration is closed' } },
+        { status: 403 },
+      ),
+    ),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/register'] });
+  renderWithProviders(<RouterProvider router={router} />);
+  await userEvent.type(screen.getByLabelText('邀请码'), 'invite-123456');
+  await userEvent.type(screen.getByLabelText('用户名'), 'reader');
+  await userEvent.type(screen.getByLabelText('显示名称'), '读者');
+  await userEvent.type(screen.getByLabelText('密码'), 'a-long-password');
+  await userEvent.click(screen.getByRole('button', { name: '注册' }));
+
+  expect(await screen.findByText('注册暂未开放，请联系管理员')).toBeInTheDocument();
+  // The generic FORBIDDEN copy must not mask the registration-specific reason.
+  expect(screen.queryByText('没有权限执行此操作')).not.toBeInTheDocument();
+});
+
 it('clears cached queries when logging out', async () => {
   setTokens({
     accessToken: 'test-access-token',

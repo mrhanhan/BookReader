@@ -27,11 +27,17 @@ _heartbeat_warn() {
 
 _heartbeat_json_escape() {
   local value="$1"
-  value="${value//\/\\}"
+  # JSON escapes a backslash as `\\`, so it must be replaced before the quote
+  # and whitespace escapes that introduce new backslashes (Windows paths in
+  # messages would otherwise turn `\n` into a line break).
+  value="${value//\\/\\\\}"
   value="${value//\"/\\\"}"
-  value="${value//$'\n'/\n}"
-  value="${value//$'\r'/\r}"
-  value="${value//$'\t'/\t}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  # Control characters without a short JSON escape stay invalid; replace the
+  # rest so the payload always parses.
+  value="${value//[[:cntrl:]]/ }"
   printf '%s' "$value"
 }
 

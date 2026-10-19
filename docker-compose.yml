@@ -85,6 +85,13 @@ services:
       LIBRARY_QUOTA_BYTES: ${LIBRARY_QUOTA_BYTES:-85899345920}
       MEMBER_UPLOAD_QUOTA_BYTES: ${MEMBER_UPLOAD_QUOTA_BYTES:-21474836480}
       LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-10}
+      # Backup heartbeat token and alert channels. Empty values disable the
+      # channel; the defaults match the documented server defaults.
+      BACKUP_TOKEN: ${BACKUP_TOKEN:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      DISK_ALERT_FREE_BYTES: ${DISK_ALERT_FREE_BYTES:-10737418240}
+      BACKUP_STALE_HOURS: ${BACKUP_STALE_HOURS:-24}
+      MONITOR_INTERVAL_MS: ${MONITOR_INTERVAL_MS:-300000}
       CORS_ORIGIN: '${CORS_ORIGIN:-http://localhost:8180,https://tauri.localhost,http://tauri.localhost,https://localhost,capacitor://localhost}'
       LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:

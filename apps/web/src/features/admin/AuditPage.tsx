@@ -18,13 +18,20 @@ const cellClass = 'px-4 py-3 align-top';
 /** Human-readable action labels; unknown actions keep their raw name. */
 const ACTION_LABELS: Record<string, string> = {
   'auth.login': '登录',
+  'auth.logout': '退出登录',
+  'auth.refresh': '刷新登录',
   'auth.register': '注册',
   'book.delete': '删除图书',
+  'book.restore': '恢复图书',
+  'book.convert': '转换图书',
   'admin.member.update': '修改成员',
+  'admin.member.password_reset': '重置成员密码',
   'admin.invite.create': '创建邀请码',
   'admin.invite.revoke': '撤销邀请码',
   'admin.settings.update': '修改系统设置',
   'ai.config.update': '更新 AI 配置',
+  'ai.config.delete': '删除 AI 配置',
+  'ai.config.bootstrap': '初始化 AI 配置',
 };
 
 function actionLabel(action: string): string {

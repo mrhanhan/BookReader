@@ -24,6 +24,22 @@ it('reports degraded when storage fails, without leaking details', async () => {
   expect(response.body).not.toContain('minio');
 });
 
+it('reports degraded when the storage bucket is missing', async () => {
+  const built = await createTestApp();
+  built.deps.storage = Object.create(built.deps.storage, {
+    head: {
+      value: async () => {
+        const error = new Error('The specified bucket does not exist');
+        error.name = 'NoSuchBucket';
+        throw error;
+      },
+    },
+  });
+  const response = await built.app.inject({ method: 'GET', url: '/readyz' });
+  expect(response.statusCode).toBe(503);
+  expect(response.json()).toEqual({ status: 'degraded', checks: { database: 'ok', storage: 'error' } });
+});
+
 it('reports degraded when the database probe fails, without leaking details', async () => {
   const built = await createTestApp();
   // 共享 testDb 不能改；只给这次请求换一个会失败的连接池。

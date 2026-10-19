@@ -17,9 +17,14 @@ export function startMonitor(deps: AppDeps): () => void {
     inFlight = true;
     try {
       await runMonitorTick(deps);
-    } catch {
+    } catch (error) {
       // A monitor failure must never take the server down. The next tick
-      // retries with whatever state was persisted.
+      // retries with whatever state was persisted. Log only the error name:
+      // messages can carry webhook URLs or database connection details.
+      console.error(
+        '[monitor] tick failed',
+        error instanceof Error ? error.name : typeof error,
+      );
     } finally {
       inFlight = false;
     }

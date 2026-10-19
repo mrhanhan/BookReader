@@ -105,4 +105,32 @@ describe('S3Storage endpoints', () => {
     const internalHost = new URL(internalOrigin).host;
     expect(requests.every(({ host }) => host === internalHost)).toBe(true);
   });
+
+  it('treats a missing bucket as an error but a missing key as absent', async () => {
+    const client = (
+      storage as unknown as { client: { send: (command: unknown) => Promise<unknown> } }
+    ).client;
+    const originalSend = client.send;
+    try {
+      const noSuchBucket = Object.assign(new Error('bucket missing'), {
+        name: 'NoSuchBucket',
+        $metadata: { httpStatusCode: 404 },
+      });
+      client.send = async () => {
+        throw noSuchBucket;
+      };
+      await expect(storage.head('library/book.pdf')).rejects.toBe(noSuchBucket);
+
+      const noSuchKey = Object.assign(new Error('object missing'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      });
+      client.send = async () => {
+        throw noSuchKey;
+      };
+      await expect(storage.head('library/book.pdf')).resolves.toBeNull();
+    } finally {
+      client.send = originalSend;
+    }
+  });
 });
