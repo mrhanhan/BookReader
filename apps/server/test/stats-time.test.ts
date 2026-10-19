@@ -48,9 +48,40 @@ describe('localDayStart / localDayEnd', () => {
     expect(end.getTime() - start.getTime()).toBe(25 * HOUR_MS);
   });
 
+  it('handles the 24.5-hour day when Lord Howe ends DST', () => {
+    const start = localDayStart('2026-04-05', 'Australia/Lord_Howe');
+    const end = localDayEnd('2026-04-05', 'Australia/Lord_Howe');
+    expect(localDateOf(start, 'Australia/Lord_Howe')).toBe('2026-04-05');
+    expect(start.toISOString()).toBe('2026-04-04T13:00:00.000Z');
+    expect(end.toISOString()).toBe('2026-04-05T13:30:00.000Z');
+    expect(end.getTime() - start.getTime()).toBe(24.5 * HOUR_MS);
+  });
+
+  it('handles the 23.5-hour day when Lord Howe starts DST', () => {
+    const start = localDayStart('2026-10-04', 'Australia/Lord_Howe');
+    const end = localDayEnd('2026-10-04', 'Australia/Lord_Howe');
+    expect(localDateOf(start, 'Australia/Lord_Howe')).toBe('2026-10-04');
+    expect(start.toISOString()).toBe('2026-10-03T13:30:00.000Z');
+    expect(end.toISOString()).toBe('2026-10-04T13:00:00.000Z');
+    expect(end.getTime() - start.getTime()).toBe(23.5 * HOUR_MS);
+  });
+
   it('round-trips every boundary through localDateOf', () => {
-    for (const timezone of ['Asia/Shanghai', 'America/New_York', 'Europe/Berlin', 'UTC']) {
-      for (const date of ['2026-03-08', '2026-10-25', '2026-12-31', '2026-01-01']) {
+    for (const timezone of [
+      'Asia/Shanghai',
+      'America/New_York',
+      'Europe/Berlin',
+      'Australia/Lord_Howe',
+      'UTC',
+    ]) {
+      for (const date of [
+        '2026-03-08',
+        '2026-04-05',
+        '2026-10-04',
+        '2026-10-25',
+        '2026-12-31',
+        '2026-01-01',
+      ]) {
         const start = localDayStart(date, timezone);
         expect(localDateOf(start, timezone)).toBe(date);
         expect(localDateOf(new Date(start.getTime() - 1), timezone)).not.toBe(date);

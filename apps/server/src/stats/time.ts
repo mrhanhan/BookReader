@@ -4,8 +4,14 @@ const HOUR_MS = 60 * 60 * 1000;
 /** Milliseconds in one calendar day; local-date arithmetic ignores timezones. */
 const DAY_MS = 24 * HOUR_MS;
 
-/** Candidate corrections (in hours) tried when the offset guess misses the date. */
-const CORRECTION_HOURS = [-3, -2, -1, 0, 1, 2, 3] as const;
+/** Correction step used when the offset guess misses the local date. */
+const CORRECTION_STEP_MS = 15 * 60 * 1000;
+
+/**
+ * Some zones shift by 30 or 45 minutes (for example Australia/Lord_Howe), so
+ * the correction search walks in 15-minute steps. Twelve steps cover ±3 hours.
+ */
+const MAX_CORRECTION_STEPS = 12;
 
 interface CalendarDate {
   year: number;
@@ -87,11 +93,12 @@ export function localDayStart(localDate: string, timezone: string): Date {
   const { year, month, day } = parseLocalDate(localDate);
   // Treat local midnight as if it were UTC, then shift by the offset in effect
   // near that time. DST transitions can leave the guess on the wrong side of
-  // the boundary, so verify with `localDateOf` and search nearby hours.
+  // the boundary (and the boundary can sit at a non-hour offset), so verify
+  // with `localDateOf` and search nearby quarter hours for the earliest match.
   const guess = Date.UTC(year, month - 1, day);
   const base = guess - offsetMsAt(new Date(guess), timezone);
-  for (const hours of CORRECTION_HOURS) {
-    const candidate = new Date(base + hours * HOUR_MS);
+  for (let step = -MAX_CORRECTION_STEPS; step <= MAX_CORRECTION_STEPS; step += 1) {
+    const candidate = new Date(base + step * CORRECTION_STEP_MS);
     if (localDateOf(candidate, timezone) === localDate) {
       return candidate;
     }
