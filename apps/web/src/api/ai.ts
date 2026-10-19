@@ -7,7 +7,7 @@ import type {
   AiThreadDto,
   AiUsageDto,
 } from '@bookr/shared';
-import { readSseStream, SseProtocolError } from '../lib/sse';
+import { parseSseJson, readSseStream, SseProtocolError } from '../lib/sse';
 import { apiFetch, authorizedFetch } from './client';
 
 /** Current AI availability, model and quota snapshot. */
@@ -53,14 +53,6 @@ export interface AiStreamHandlers {
   onError(payload: AiStreamErrorPayload): void;
 }
 
-function parseFrame<T>(data: string): T {
-  try {
-    return JSON.parse(data) as T;
-  } catch {
-    throw new SseProtocolError('AI 流数据格式错误');
-  }
-}
-
 /**
  * Streams one chat exchange. An `error` frame is delivered to `onError` and
  * ends normally; only transport, protocol and HTTP failures reject. An aborted
@@ -85,19 +77,19 @@ export async function streamAiChat(
   await readSseStream(response.body, (frame) => {
     switch (frame.event) {
       case 'meta':
-        handlers.onMeta(parseFrame<AiStreamMeta>(frame.data));
+        handlers.onMeta(parseSseJson<AiStreamMeta>(frame.data));
         break;
       case 'delta': {
-        const payload = parseFrame<{ text: string }>(frame.data);
+        const payload = parseSseJson<{ text: string }>(frame.data);
         handlers.onDelta(payload.text);
         break;
       }
       case 'done':
-        handlers.onDone(parseFrame<AiStreamDone>(frame.data));
+        handlers.onDone(parseSseJson<AiStreamDone>(frame.data));
         finished = true;
         break;
       case 'error':
-        handlers.onError(parseFrame<AiStreamErrorPayload>(frame.data));
+        handlers.onError(parseSseJson<AiStreamErrorPayload>(frame.data));
         finished = true;
         break;
       default:

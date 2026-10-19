@@ -16,6 +16,15 @@ function incompleteFrame(): SseProtocolError {
   return new SseProtocolError('AI 流意外结束');
 }
 
+/** Parses one frame's JSON payload; malformed data is a protocol error. */
+export function parseSseJson<T>(data: string): T {
+  try {
+    return JSON.parse(data) as T;
+  } catch {
+    throw new SseProtocolError('AI 流数据格式错误');
+  }
+}
+
 /**
  * Incremental server-sent events parser. Chunks may split lines, CRLF pairs and
  * multi-byte characters; only complete lines are consumed until the next

@@ -93,7 +93,7 @@ it('lists notes through the shared query string', async () => {
 });
 
 it('streams analysis frames in order', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(streamOf([
+  const fetchMock = vi.fn(async () => new Response(streamOf([
     'event: meta\ndata: {"analysisId":"a1","kind":"themes","model":"deepseek-chat",',
     '"promptVersion":"p6.1","noteCount":3,"analyzedCount":2}\n\n',
     'event: delta\ndata: {"text":"主题"}\n\n',
@@ -101,10 +101,19 @@ it('streams analysis frames in order', async () => {
     'event: ping\ndata: {"ignored":true}\n\n',
     'event: done\ndata: {"analysisId":"a1","usage":{"promptTokens":10,"completionTokens":4},',
     '"quota":{"daily":{"used":1,"reserved":0,"limit":100},"monthly":{"used":1,"reserved":0,"limit":1000}}}\n\n',
-  ]), { status: 200, headers: { 'content-type': 'text/event-stream' } })));
+  ]), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  vi.stubGlobal('fetch', fetchMock);
   const handlers = emptyHandlers();
 
   await streamNoteAnalysis({ kind: 'themes', filters: { tag: '方法论' } }, handlers);
+
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/notes/analyses',
+    expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ kind: 'themes', filters: { tag: '方法论' } }),
+    }),
+  );
 
   const order = [
     handlers.onMeta.mock.calls.length,
@@ -140,6 +149,24 @@ it('delivers an error frame without throwing', async () => {
     retryable: true,
   });
   expect(handlers.onDone).not.toHaveBeenCalled();
+});
+
+it('rejects a malformed frame payload', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(streamOf([
+    'event: delta\ndata: {not json}\n\n',
+  ]), { status: 200 })));
+
+  await expect(streamNoteAnalysis({ kind: 'themes' }, emptyHandlers())).rejects.toThrow(
+    SseProtocolError,
+  );
+});
+
+it('rejects a response without a body', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+
+  await expect(streamNoteAnalysis({ kind: 'themes' }, emptyHandlers())).rejects.toThrow(
+    SseProtocolError,
+  );
 });
 
 it('rejects an incomplete stream', async () => {
