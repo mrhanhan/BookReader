@@ -9,6 +9,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXPECTED_APP_ID = 'com.bookr.reader';
 const EXPECTED_ICONS = ['icon.ico', '32x32.png', '128x128.png', '128x128@2x.png'];
 const REQUIRED_IGNORES = ['keystore.properties', '*.jks', '*.keystore'];
+const EXPECTED_WIX_LANGUAGE = 'zh-CN';
 
 const failedChecks = [];
 
@@ -59,7 +60,7 @@ function readCapacitorAppId() {
   return match[1];
 }
 
-const TOTAL = 6;
+const TOTAL = 7;
 
 // 1. 桌面、移动 package.json 与 tauri.conf.json 的版本号一致。
 runCheck(1, TOTAL, '版本号一致', (errors) => {
@@ -177,6 +178,22 @@ runCheck(6, TOTAL, 'PWA 清单可安装', (errors) => {
   }
 
   return manifest.display === 'standalone' ? 'display=standalone' : '';
+});
+
+// 7. MSI 必须声明 zh-CN 的 WiX 本地化，否则中文产品名打不出安装包。
+runCheck(7, TOTAL, 'MSI 的 WiX 本地化', (errors) => {
+  const tauri = readJson('apps/desktop/src-tauri/tauri.conf.json');
+  const language = tauri.bundle?.windows?.wix?.language;
+
+  if (language !== EXPECTED_WIX_LANGUAGE) {
+    errors.push(
+      `tauri.conf.json 的 bundle.windows.wix.language 为 ${language ?? '<缺失>'}，期望 ${EXPECTED_WIX_LANGUAGE}。` +
+        '未设置时 Tauri 按 en-US 生成 locale.wxl（TauriCodepage=1252），' +
+        `中文 productName（${tauri.productName ?? '<缺失>'}）会让 WiX light.exe 报 LGHT0311，MSI 无法产出`,
+    );
+  }
+
+  return `language=${language ?? '<缺失>'}, productName=${tauri.productName ?? '<缺失>'}`;
 });
 
 if (failedChecks.length > 0) {

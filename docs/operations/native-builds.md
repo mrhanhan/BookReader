@@ -22,7 +22,7 @@
 1. 修改上述三个由 `check:native` 校验的 `version` 字段为同一新版本（例如 `0.3.0`），
    并手动同步 `apps/desktop/src-tauri/Cargo.toml` 的 `[package] version`。
 2. 将 `build.gradle` 的 `versionName` 改为同一版本，并把 `versionCode` 加 1。
-3. 运行 `pnpm check:native`，六项检查全部 OK 后再构建。
+3. 运行 `pnpm check:native`，七项检查全部 OK 后再构建。
 4. 更新更新日志。
 
 ## Web 前端与 API 地址
@@ -48,6 +48,12 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm build:desktop
 - `apps/desktop/src-tauri/target/release/bundle/msi/*.msi`
 
 `tauri.conf.json` 的 `bundle.targets` 固定为 `["nsis", "msi"]`，面向 Windows 发布。
+
+MSI 必须声明 `bundle.windows.wix.language`（当前为 `zh-CN`）。产品名是中文「纸墨书房」，
+而未声明该字段时 Tauri 会按 `en-US` 生成 WiX 本地化文件 `locale.wxl`（`TauriCodepage=1252`），
+MSI 数据库代码页取自它，无法表示汉字，WiX `light.exe` 随即报 `LGHT0311`，**MSI 完全打不出来**。
+设置后 MSI 文件名带语言后缀，形如 `纸墨书房_0.2.0_x64_zh-CN.msi`。`pnpm check:native` 会校验该字段。
+
 在 macOS 上构建时需显式指定目标，例如：
 
 ```bash
@@ -116,7 +122,7 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm build:android
 
 ## 发布前检查清单
 
-- [ ] `pnpm check:native` 六项全部 OK。
+- [ ] `pnpm check:native` 七项全部 OK。
 - [ ] `VITE_API_BASE_URL` 指向生产 API，且服务端 CORS 已放行桌面与 Android 来源。
 - [ ] 桌面安装包在干净 Windows 机器上完成安装、启动、升级、卸载验证。
 - [ ] APK 使用 release keystore 签名，且在真机上完成登录、阅读、离线缓存验证。

@@ -33,7 +33,7 @@
 
 1. `pnpm exec turbo run typecheck test` 全绿。
 2. `pnpm --filter @bookr/web exec playwright test` 全绿（只对一次性测试栈运行）。
-3. `pnpm check:native` 六项 OK。
+3. `pnpm check:native` 七项 OK。
 4. `curl -fsS <入口>/healthz` 与 `/readyz` 均返回 200。
 5. 本季度恢复演练日志为 `PASS`；若已过期，先执行 `scripts/restore-drill.sh`。
 6. 手动项（13.1 计时、13.4 首字延迟、13.7 真实扫描书、13.9 三端走查）在本次发布周期内已记录结果。

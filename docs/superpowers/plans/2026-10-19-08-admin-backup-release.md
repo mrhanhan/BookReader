@@ -1121,6 +1121,7 @@ git commit -m "feat(web): make the app installable with a PWA manifest"
 4. `keystore.properties` 不被 git 跟踪（读取 `.gitignore` 文本包含该文件名即可，不依赖 git 命令）。
 5. `apps/desktop/src-tauri/icons/` 下 `icon.ico`、`32x32.png`、`128x128.png`、`128x128@2x.png` 存在。
 6. `apps/web/public/manifest.webmanifest` 存在且 `display === 'standalone'`。
+7. `tauri.conf.json` 的 `bundle.windows.wix.language` 为 `zh-CN`（中文产品名打 MSI 的前提，见 `docs/operations/native-builds.md`）。
 逐条打印 `OK/FAIL`，任一失败退出 1。
 
 Android 发布签名（`app/build.gradle`）：
@@ -1431,7 +1432,7 @@ curl -fsS http://localhost:8180/healthz
 curl -fsS http://localhost:8180/readyz
 ```
 
-Expected: typecheck/test 全绿；`check:native` 六项 OK；Compose 四个服务 healthy；两个探针返回 200。
+Expected: typecheck/test 全绿；`check:native` 七项 OK；Compose 四个服务 healthy；两个探针返回 200。
 
 - [x] **Step 4: 提交**
 
