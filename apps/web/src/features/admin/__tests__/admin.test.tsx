@@ -157,3 +157,48 @@ it('does not offer the current administrator a self-deactivation toggle', async 
   // Other members keep their toggle, so the rule is not "hide every switch".
   expect(screen.getByRole('switch', { name: 'Alice 账号状态' })).toBeInTheDocument();
 });
+
+it('saves AI access and token limits from the member editor, leaving blank limits alone', async () => {
+  signInAsAdmin();
+  const patches: Array<Record<string, unknown>> = [];
+  server.use(
+    http.patch('/api/admin/members/:id', async ({ params, request }) => {
+      const patch = (await request.json()) as Record<string, unknown>;
+      patches.push(patch);
+      return HttpResponse.json({
+        id: params.id,
+        username: 'linzhou',
+        displayName: '林舟',
+        role: 'member',
+        isActive: true,
+        uploadQuotaBytes: 10 * 1024 * 1024 * 1024,
+        aiEnabled: true,
+        aiDailyTokenLimit: 50_000,
+        aiMonthlyTokenLimit: 200_000,
+        usedBytes: 3 * 1024 * 1024,
+        createdAt: new Date().toISOString(),
+      });
+    }),
+  );
+
+  const router = createMemoryRouter(routes, { initialEntries: ['/admin/members'] });
+  renderWithProviders(<RouterProvider router={router} />);
+
+  await userEvent.click(await screen.findByRole('button', { name: '编辑 林舟' }));
+  await userEvent.click(screen.getByRole('checkbox', { name: '启用 AI 伴读' }));
+  await userEvent.type(screen.getByLabelText('每日 token 上限'), '50000');
+  await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+  await waitFor(() => expect(patches).toHaveLength(1));
+  expect(patches[0]).toMatchObject({ aiEnabled: true, aiDailyTokenLimit: 50_000 });
+  // A blank monthly field must not clobber the stored value.
+  expect(patches[0]).not.toHaveProperty('aiMonthlyTokenLimit');
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await userEvent.click(screen.getByRole('button', { name: '编辑 林舟' }));
+  await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+  await waitFor(() => expect(patches).toHaveLength(2));
+  expect(patches[1]).not.toHaveProperty('aiDailyTokenLimit');
+  expect(patches[1]).not.toHaveProperty('aiMonthlyTokenLimit');
+});

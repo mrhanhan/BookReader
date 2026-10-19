@@ -172,9 +172,15 @@ function AiProviderForm({ view }: { view: AdminAiConfig }) {
     }
 
     updateConfig.mutate(body, {
-      onSuccess: () => {
-        // The key is write-only: never keep it in the form after saving.
-        setDraft((current) => ({ ...current, apiKey: '' }));
+      onSuccess: (saved) => {
+        // Mirror the stored values, including anything the server normalized,
+        // and never keep the write-only key in the form after saving.
+        setDraft({
+          baseUrl: saved.baseUrl ?? '',
+          chatModel: saved.chatModel ?? '',
+          reasonerModel: saved.reasonerModel ?? '',
+          apiKey: '',
+        });
         setNotice('AI 配置已保存');
       },
       onError: (cause) => setError(messageForApiError(cause)),
@@ -199,6 +205,7 @@ function AiProviderForm({ view }: { view: AdminAiConfig }) {
         disabled={disabled}
         autoComplete="off"
         placeholder="https://api.example.com/v1"
+        hint="留空表示不修改；新配置时使用服务端默认地址。"
         onChange={(event) => setField('baseUrl', event.target.value)}
       />
       <Input
@@ -207,6 +214,7 @@ function AiProviderForm({ view }: { view: AdminAiConfig }) {
         disabled={disabled}
         autoComplete="off"
         placeholder="例如 deepseek-chat"
+        hint="留空表示不修改。"
         onChange={(event) => setField('chatModel', event.target.value)}
       />
       <Input
@@ -215,6 +223,7 @@ function AiProviderForm({ view }: { view: AdminAiConfig }) {
         disabled={disabled}
         autoComplete="off"
         placeholder="例如 deepseek-reasoner"
+        hint="留空表示不修改。"
         onChange={(event) => setField('reasonerModel', event.target.value)}
       />
       <Input
