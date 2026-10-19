@@ -1499,7 +1499,8 @@ b19ce00 feat(web): add admin settings, audit and backup screens
 3356788 fix(web): align AI drafts with saved settings and cover member AI edits
 3618405 fix(server): clarify registration gate and cover settings edge cases
 5f47d9d fix(server): make alert deduplication atomic and preserve fresh alerts
-test(e2e): cover admin console and PWA; document acceptance   # Task 9 收尾提交
+ce6e9c3 test(e2e): cover admin console and PWA; document acceptance
+5754660 fix(e2e,docs): address Task 9 review findings
 ```
 
 ### 遗留项
