@@ -10,7 +10,8 @@ const annotationTypeSchema = z.enum(['highlight', 'note']);
 const annotationColorSchema = z.enum(ANNOTATION_COLORS);
 
 const MAX_SELECTED_TEXT_LENGTH = 10_000;
-const MAX_NOTE_TEXT_LENGTH = 10_000;
+/** Maximum note text length; shared with the notes edit dialog. */
+export const MAX_NOTE_TEXT_LENGTH = 10_000;
 /** Maximum number of tags on one annotation; shared with the reader UI. */
 export const MAX_TAGS = 20;
 /** Maximum length of a single tag; shared with the reader UI. */

@@ -12,5 +12,7 @@ it('allows every configured app origin and rejects the rest', async () => {
     method: 'GET', url: '/healthz', headers: { origin: 'https://evil.example' },
   });
   expect(allowed.headers['access-control-allow-origin']).toBe('https://tauri.localhost');
+  // Native shells must be able to read the export filename from a cross-origin response.
+  expect(allowed.headers['access-control-expose-headers']).toContain('Content-Disposition');
   expect(rejected.headers['access-control-allow-origin']).toBeUndefined();
 });

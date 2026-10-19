@@ -37,7 +37,7 @@ function bookHeading(row: NoteQueryRow): string {
  */
 function escapeMarkdownLine(line: string): string {
   return line.replace(
-    /^(\s*)(#{1,6}(?=\s)|>|[-*+](?=\s)|\d+\.(?=\s)|---+\s*$)/,
+    /^(\s*)(`{3,}|#{1,6}(?=\s)|>|[-*+](?=\s)|\d+\.(?=\s)|---+\s*$)/,
     (_match, indent: string, marker: string) => `${indent}\\${marker}`,
   );
 }
@@ -61,7 +61,15 @@ function noteBlockLines(row: NoteQueryRow, timezone: string): string[] {
 
   const tags = row.annotation.tags ?? [];
   if (tags.length > 0) {
-    lines.push('', `标签：${tags.map((tag) => `#${tag}`).join(' ')}`);
+    // Tags may come from older rows with embedded newlines; keep the label on one line.
+    lines.push(
+      '',
+      `标签：${tags
+        .map((tag) => tag.replace(/\s+/g, ' ').trim())
+        .filter((tag) => tag !== '')
+        .map((tag) => `#${tag}`)
+        .join(' ')}`,
+    );
   }
 
   lines.push('', `*${formatLocalDate(row.annotation.createdAt, timezone)}*`);

@@ -8,6 +8,8 @@ import { MAX_TAG_LENGTH, type AnnotationColor } from './schemas/reading';
 export const NOTE_SEARCH_MAX_LENGTH = 200;
 /** Page size used when a list query does not ask for one. */
 export const NOTE_DEFAULT_PAGE_SIZE = 30;
+/** Upper bound for offset paging; beyond this the offset is meaningless. */
+export const NOTE_MAX_PAGE = 10_000;
 /** Hard limit on the page size of a notes list response. */
 export const NOTE_MAX_PAGE_SIZE = 100;
 /** Maximum number of distinct tags returned by the tag cloud. */
@@ -34,11 +36,24 @@ export interface NoteFilters {
   to?: string;   // YYYY-MM-DD, inclusive
 }
 
+/**
+ * A trimmed free-text filter. NUL is rejected because PostgreSQL text
+ * parameters cannot carry it and a raw NUL would turn a bad query into a 500.
+ */
+function textFilter(maxLength: number) {
+  return z
+    .string()
+    .trim()
+    .max(maxLength)
+    .refine((value) => !value.includes('\u0000'), 'must not contain NUL')
+    .optional();
+}
+
 /** Fields shared by every schema that accepts note filters. */
 const noteFilterFields = {
-  q: z.string().trim().max(NOTE_SEARCH_MAX_LENGTH).optional(),
+  q: textFilter(NOTE_SEARCH_MAX_LENGTH),
   bookId: z.uuid().optional(),
-  tag: z.string().trim().max(MAX_TAG_LENGTH).optional(),
+  tag: textFilter(MAX_TAG_LENGTH),
   type: z.enum(['highlight', 'note']).optional(),
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
@@ -79,7 +94,7 @@ export type NoteListQuery = NoteFilters & { page: number; pageSize: number };
 export const noteListQuerySchema: z.ZodType<NoteListQuery> = z
   .object({
     ...noteFilterFields,
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(NOTE_MAX_PAGE).default(1),
     pageSize: z.coerce
       .number()
       .int()

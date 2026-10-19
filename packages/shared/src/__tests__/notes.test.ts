@@ -7,6 +7,7 @@ import {
   NOTE_ANALYSIS_TITLE_MAX_LENGTH,
   NOTE_DEFAULT_PAGE_SIZE,
   NOTE_EXPORT_MAX_ITEMS,
+  NOTE_MAX_PAGE,
   NOTE_MAX_PAGE_SIZE,
   NOTE_SEARCH_MAX_LENGTH,
   NOTE_TAG_LIMIT,
@@ -23,6 +24,7 @@ describe('notes constants', () => {
   it('locks the cross-package contract values', () => {
     expect(NOTE_DEFAULT_PAGE_SIZE).toBe(30);
     expect(NOTE_MAX_PAGE_SIZE).toBe(100);
+    expect(NOTE_MAX_PAGE).toBe(10000);
     expect(NOTE_TAG_LIMIT).toBe(100);
     expect(NOTE_EXPORT_MAX_ITEMS).toBe(5000);
     expect(NOTE_ANALYSIS_MAX_NOTES).toBe(300);
@@ -80,6 +82,11 @@ describe('notes filter contract', () => {
     expect(noteFiltersSchema.safeParse({ type: 'bookmark' }).success).toBe(false);
     expect(noteFiltersSchema.safeParse({ type: 'note' }).success).toBe(true);
   });
+
+  it('rejects NUL bytes in free-text filters', () => {
+    expect(noteFiltersSchema.safeParse({ q: 'a\u0000b' }).success).toBe(false);
+    expect(noteFiltersSchema.safeParse({ tag: 'a\u0000b' }).success).toBe(false);
+  });
 });
 
 describe('notes list query', () => {
@@ -99,6 +106,7 @@ describe('notes list query', () => {
     expect(noteListQuerySchema.safeParse({ pageSize: '101' }).success).toBe(false);
     expect(noteListQuerySchema.safeParse({ pageSize: '0' }).success).toBe(false);
     expect(NOTE_MAX_PAGE_SIZE).toBe(100);
+    expect(NOTE_MAX_PAGE).toBe(10000);
   });
 
   it('applies the same date-range rule as the filter schema', () => {

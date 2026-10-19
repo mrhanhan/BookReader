@@ -257,7 +257,10 @@ it('caps the export and says so', () => {
 });
 
 it('escapes markdown-significant note lines and collapses the book title', () => {
-  const row = noteRow({ noteText: '## 伪造书名\n---\n* 列表\n> 引用' });
+  const row = noteRow({
+    noteText: '## 伪造书名\n---\n* 列表\n> 引用\n```js\n代码',
+    tags: ['换\n行'],
+  });
   row.book = { id: 'book-id', title: '第一行\n第二行', author: '作者', format: 'pdf' };
 
   const markdown = buildNotesMarkdown({
@@ -275,6 +278,9 @@ it('escapes markdown-significant note lines and collapses the book title', () =>
   expect(markdown).toContain('\\* 列表');
   expect(markdown).toContain('\\> 引用');
   expect(markdown).not.toContain('\n## 伪造书名');
+  expect(markdown).toContain('\\```js');
+  // A tag with an embedded newline cannot split the tag line.
+  expect(markdown).toContain('标签：#换 行');
 });
 
 it('sets a UTF-8 filename in content-disposition', async () => {

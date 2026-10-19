@@ -629,6 +629,10 @@ it('survives a malformed request target without leaking it', async () => {
 
   // Node's HTTP parser accepts this target, but `new URL` rejects it.
   expect(redactRequestUrl('//[bad/x?token=secret-value')).toBe('[unparseable-url]');
+  // Note search terms and tags are private too; harmless filters remain.
+  expect(
+    redactRequestUrl('/api/notes?q=%E7%8B%90%E7%8B%B8&tag=%E7%A7%81%E4%BA%BA&bookId=b1&page=2'),
+  ).toBe('/api/notes?bookId=b1&page=2');
 
   const port = Number(new URL(url).port);
   await new Promise<void>((resolve, reject) => {

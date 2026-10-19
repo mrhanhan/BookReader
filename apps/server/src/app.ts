@@ -137,15 +137,19 @@ export interface BuildAppOptions {
 }
 
 /**
- * Removes every `token` query parameter from a URL before it is logged.
- * Parsing rather than pattern matching handles percent-encoded names such as
- * `%74oken=` and duplicate occurrences. Malformed request targets (Node passes
- * them through) must never reach the logger as exceptions or raw text.
+ * Removes secret and private query parameters from a URL before it is logged.
+ * Notes search terms (`q`) and tags identify what somebody is reading, so they
+ * never enter request logs. Parsing rather than pattern matching handles
+ * percent-encoded names such as `%74oken=` and duplicate occurrences.
+ * Malformed request targets (Node passes them through) must never reach the
+ * logger as exceptions or raw text.
  */
 export function redactRequestUrl(url: string): string {
   try {
     const parsed = new URL(url, 'http://localhost');
-    parsed.searchParams.delete('token');
+    for (const name of ['token', 'q', 'tag']) {
+      parsed.searchParams.delete(name);
+    }
     return `${parsed.pathname}${parsed.search}`;
   } catch {
     return '[unparseable-url]';
@@ -184,7 +188,11 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
     genReqId: () => deps.ids.newId(),
   });
 
-  app.register(cors, { origin: deps.config.corsOrigins });
+  app.register(cors, {
+    origin: deps.config.corsOrigins,
+    // Native shells load from another origin and need the export filename.
+    exposedHeaders: ['Content-Disposition'],
+  });
 
   // Cover uploads accept a single image capped at 5 MiB; the service checks
   // the bytes themselves before anything is stored.
