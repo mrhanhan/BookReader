@@ -3,6 +3,7 @@ export * from './constants';
 export * from './errors';
 export * from './ids';
 export * from './locators';
+export * from './notes';
 export * from './schemas/auth';
 export * from './schemas/books';
 export * from './schemas/categories';
