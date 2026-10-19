@@ -21,6 +21,7 @@ import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
 import { registerNoteAnalysisRoutes } from './notes/analysis-routes';
 import { registerNotesRoutes } from './notes/routes';
+import { registerStatsRoutes } from './stats/routes';
 import { registerReadingRoutes } from './reading/routes';
 import type { StorageService } from './storage/types';
 import type { SyncHub } from './sync/hub';
@@ -209,6 +210,7 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
   registerReadingRoutes(app, deps);
   registerNotesRoutes(app, deps);
   registerNoteAnalysisRoutes(app, deps);
+  registerStatsRoutes(app, deps);
   registerSyncRoutes(
     app,
     deps,
