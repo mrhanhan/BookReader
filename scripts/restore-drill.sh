@@ -44,7 +44,9 @@ Checks:
   - core table counts restored from the dump must not be lower than the
     recorded counts (extra rows are only noted);
   - the minio/ mirror file count and byte total must match the
-    manifest-<timestamp>.txt values exactly.
+    manifest-<timestamp>.txt values exactly;
+  - every object key referenced by a non-deleted book in the restored
+    database must exist in the minio/ mirror.
 
 A PASS/FAIL summary is written to $BACKUP_ROOT/drills/<timestamp>.log.
 EOF
@@ -92,6 +94,7 @@ LOG_FILE="$DRILL_DIR/$DRILL_TS.log"
 STATUS=PASS
 DB_CREATED=0
 ACTUAL_COUNTS=""
+OBJECT_KEYS=""
 
 log() { printf '[drill] %s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 record() { printf '%s\n' "$*" >>"$LOG_FILE"; printf '%s\n' "$*"; }
@@ -163,6 +166,58 @@ check_minio() {
   return 0
 }
 
+# Row counts and mirror totals can agree while the objects the database points
+# at are gone: a renamed object, or one object lost while an unrelated one
+# appears, leaves both the per-table counts and the mirror totals unchanged.
+# Resolve every object key the restored books reference and require the mirror
+# to hold it.
+check_objects() {
+  local total=0 missing=0 key
+  if [ ! -d "$MINIO_DIR" ]; then
+    fail_check "minio mirror is missing: $MINIO_DIR"
+    return 0
+  fi
+  OBJECT_KEYS="$(mktemp)"
+  if ! compose exec -T postgres psql -U bookr -d "$DRILL_DB" -At -v ON_ERROR_STOP=1 \
+    <<'SQL' >"$OBJECT_KEYS" 2>>"$LOG_FILE"
+SELECT key
+FROM (
+  SELECT file_key AS key FROM books WHERE deleted_at IS NULL
+  UNION SELECT cover_key FROM books WHERE deleted_at IS NULL
+  UNION SELECT text_layer_key FROM books WHERE deleted_at IS NULL
+  UNION SELECT reflow_key FROM books WHERE deleted_at IS NULL
+  UNION SELECT epub_key FROM books WHERE deleted_at IS NULL
+) AS objects
+WHERE key IS NOT NULL AND key <> ''
+ORDER BY 1;
+SQL
+  then
+    fail_check "could not list the object keys referenced by the restored database"
+    return 0
+  fi
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    total=$((total + 1))
+    # A directory where a file is expected is just as broken as a missing one.
+    if [ -f "$MINIO_DIR/$key" ]; then
+      continue
+    fi
+    missing=$((missing + 1))
+    if [ "$missing" -le 10 ]; then
+      fail_check "object referenced by the restored database is missing from the mirror: $key"
+    fi
+  done <"$OBJECT_KEYS"
+  if [ "$missing" -gt 10 ]; then
+    fail_check "and $((missing - 10)) more referenced objects are missing from the mirror"
+  fi
+  if [ "$total" -eq 0 ]; then
+    note "referenced object keys: none (the restored library is empty)"
+  elif [ "$missing" -eq 0 ]; then
+    note "referenced object keys: $total present in the mirror"
+  fi
+  return 0
+}
+
 finish() {
   record "log: $LOG_FILE"
   if [ "$STATUS" = PASS ]; then
@@ -188,6 +243,7 @@ cleanup() {
     fi
   fi
   [ -z "$ACTUAL_COUNTS" ] || rm -f "$ACTUAL_COUNTS"
+  [ -z "$OBJECT_KEYS" ] || rm -f "$OBJECT_KEYS"
   exit "$rc"
 }
 
@@ -326,6 +382,15 @@ if [ "$LATEST_DUMP_SELECTED" = 1 ]; then
   check_minio
 else
   note "skipped strict check: $DUMP_BASENAME is not the latest dump; the accumulated minio/ mirror only matches the newest export"
+fi
+
+record "objects referenced by the restored database:"
+if [ "$LATEST_DUMP_SELECTED" != 1 ]; then
+  note "skipped strict check: $DUMP_BASENAME is not the latest dump; the accumulated minio/ mirror only matches the newest export"
+elif [ "$IMPORT_OK" != 1 ]; then
+  note "skipped: the dump could not be imported, so the referenced object keys are unknown"
+else
+  check_objects
 fi
 
 finish

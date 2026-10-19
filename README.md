@@ -284,9 +284,10 @@ cd /srv/bookr
 2. 在 `postgres` 服务内创建临时库 `bookr_drill_<UTC时间戳>`，把 dump 导入其中。
 3. 在临时库统计核心表行数，与 `counts-*.txt` 逐项比较：恢复后的行数少于备份时记录的行数即 FAIL；多出仅作提示（计数在 dump 前采集，两次统计之间的新增写入属正常）。
 4. 对比 `minio/` 镜像的文件数与总字节是否与 `manifest-<时间戳>.txt` 的 `minio_files` / `minio_bytes` 完全一致。该严格比较仅在演练最新 dump 时执行；用 `--dump` 显式演练历史备份时跳过并提示（`minio/` 目录总是累积到最新导出）。
-5. 输出 `PASS`/`FAIL` 摘要并写入 `/srv/bookr/backups/drills/<UTC时间戳>.log`；默认删除临时库，`--keep` 保留。
+5. 从临时库读出所有未删除图书引用的对象键（`file_key`、`cover_key`、`text_layer_key`、`reflow_key`、`epub_key`），逐个确认对象在备份镜像 `minio/` 中确实存在：行数与镜像总量吻合、但单个对象缺失的备份同样判为 FAIL（缺失键逐条列出，超过 10 条时折叠为一条汇总）。与上一项一致，该严格校验仅在演练最新 dump 时执行。
+6. 输出 `PASS`/`FAIL` 摘要并写入 `/srv/bookr/backups/drills/<UTC时间戳>.log`；默认删除临时库，`--keep` 保留。
 
-通过标准：8 张核心表（`users`、`books`、`reading_progress`、`annotations`、`bookmarks`、`reading_sessions`、`daily_stats`、`categories`）恢复后的行数不少于记录值（正常应相等）；演练最新 dump 时，MinIO 对象数与总字节还须和 manifest 完全一致。任何一项不满足即判定 FAIL 并以非 0 退出。
+通过标准：8 张核心表（`users`、`books`、`reading_progress`、`annotations`、`bookmarks`、`reading_sessions`、`daily_stats`、`categories`）恢复后的行数不少于记录值（正常应相等）；演练最新 dump 时，MinIO 对象数与总字节还须和 manifest 完全一致，且数据库引用的对象在备份镜像中确实存在。任何一项不满足即判定 FAIL 并以非 0 退出。
 
 演练后清理：
 
