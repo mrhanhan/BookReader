@@ -11,6 +11,7 @@ import type {
   CategoryDto,
   Locator,
   MeDto,
+  NoteDto,
 } from '@bookr/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '@testing-library/react';
@@ -68,6 +69,50 @@ export function book(overrides: Partial<BookDto> & Pick<BookDto, 'id' | 'title'>
     updatedAt: new Date(now - 2 * DAY_MS).toISOString(),
     deletedAt: null,
     ...overrides,
+  };
+}
+
+/**
+ * One notes-library fixture. The defaults describe a note in the CS:APP book
+ * so a plain `note()` renders the same card in every suite.
+ */
+export function note(overrides: Partial<NoteDto> = {}): NoteDto {
+  const now = Date.now();
+  return {
+    id: 'note-1',
+    book: {
+      id: 'book-csapp',
+      title: '深入理解计算机系统',
+      author: 'Randal E. Bryant',
+      format: 'pdf',
+    },
+    type: 'note',
+    color: 'yellow',
+    locator: { kind: 'pdf', page: 12, percent: 0.4 },
+    selectedText: '程序的运行',
+    noteText: '指令与数据的边界',
+    tags: ['方法论'],
+    revision: 1,
+    createdAt: new Date(now - 3 * DAY_MS).toISOString(),
+    updatedAt: new Date(now - DAY_MS).toISOString(),
+    ...overrides,
+  };
+}
+
+/** Narrows a note fixture to the annotation shape returned by the REST API. */
+function annotationFromNote(item: NoteDto) {
+  return {
+    id: item.id,
+    bookId: item.book.id,
+    type: item.type,
+    color: item.color,
+    locator: item.locator,
+    selectedText: item.selectedText,
+    noteText: item.noteText,
+    tags: item.tags,
+    revision: item.revision,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
   };
 }
 
@@ -202,6 +247,22 @@ function createFixtureState() {
     // keep seeing empty lists until a test seeds or creates its own.
     annotations: [] as AnnotationDto[],
     bookmarks: [] as BookmarkDto[],
+    // The notes library spans books; its fixtures stay separate from the
+    // per-book annotation list so reader suites still start empty.
+    notes: [
+      note({ id: 'note-1' }),
+      note({
+        id: 'note-2',
+        type: 'highlight',
+        color: 'green',
+        locator: { kind: 'pdf', page: 7, percent: 0.2 },
+        selectedText: '计算机系统是由硬件和软件组成的',
+        noteText: null,
+        tags: ['方法论'],
+        createdAt: new Date(now - 5 * DAY_MS).toISOString(),
+        updatedAt: new Date(now - 2 * DAY_MS).toISOString(),
+      }),
+    ] as NoteDto[],
     // Monotonic ids: deleting an item must not let its id be reused.
     nextIds: { annotation: 0, bookmark: 0 },
   };
@@ -251,6 +312,43 @@ function listBooksFromUrl(url: string): {
 
   const page = Number(params.get('page') ?? 1);
   const pageSize = Number(params.get('pageSize') ?? 24);
+  const start = (page - 1) * pageSize;
+  return { items: items.slice(start, start + pageSize), total: items.length, page, pageSize };
+}
+
+/** Mirrors the server's filter, sort and pagination rules for the notes library. */
+function listNotesFromUrl(url: string): {
+  items: NoteDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+} {
+  const params = new URL(url).searchParams;
+  const search = params.get('q')?.trim() ?? '';
+  const bookId = params.get('bookId');
+  const tag = params.get('tag');
+  const type = params.get('type');
+  const from = params.get('from');
+
+  let items = fixtures.notes.filter((item) => {
+    if (
+      search &&
+      !matchesText(item.selectedText, search) &&
+      !matchesText(item.noteText, search)
+    ) {
+      return false;
+    }
+    if (bookId && item.book.id !== bookId) return false;
+    if (tag && !item.tags.includes(tag)) return false;
+    if (type && item.type !== type) return false;
+    if (from && item.updatedAt.slice(0, 10) < from) return false;
+    return true;
+  });
+
+  items = [...items].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+
+  const page = Number(params.get('page') ?? 1);
+  const pageSize = Number(params.get('pageSize') ?? 30);
   const start = (page - 1) * pageSize;
   return { items: items.slice(start, start + pageSize), total: items.length, page, pageSize };
 }
@@ -429,7 +527,34 @@ export const handlers = [
     const found = fixtures.annotations.find(
       (item) => item.id === params.annotationId && item.bookId === params.id,
     );
-    if (!found) return error(404, 'NOT_FOUND', 'Annotation not found');
+    if (!found) {
+      // Notes-library fixtures are not reader annotations; answer their REST
+      // edits so the page can exercise its edit path.
+      const target = fixtures.notes.find(
+        (item) => item.id === params.annotationId && item.book.id === params.id,
+      );
+      if (!target) return error(404, 'NOT_FOUND', 'Annotation not found');
+
+      if (
+        target.type === 'note' &&
+        input.noteText !== undefined &&
+        (input.noteText === null || input.noteText.trim() === '')
+      ) {
+        return error(400, 'VALIDATION_FAILED', 'noteText is required for a note');
+      }
+
+      const conflict = input.revision !== undefined && input.revision !== target.revision;
+      if (input.color !== undefined) target.color = input.color;
+      if (input.noteText !== undefined) {
+        target.noteText = input.noteText === null || input.noteText.trim() === ''
+          ? null
+          : input.noteText.trim();
+      }
+      if (input.tags !== undefined) target.tags = input.tags;
+      target.revision += 1;
+      target.updatedAt = new Date().toISOString();
+      return HttpResponse.json({ annotation: annotationFromNote(target), conflict });
+    }
 
     // Mirrors the server: a note can never be patched to a blank note text.
     if (
@@ -456,8 +581,16 @@ export const handlers = [
     const index = fixtures.annotations.findIndex(
       (item) => item.id === params.annotationId && item.bookId === params.id,
     );
-    if (index === -1) return error(404, 'NOT_FOUND', 'Annotation not found');
-    fixtures.annotations.splice(index, 1);
+    if (index !== -1) {
+      fixtures.annotations.splice(index, 1);
+      return new HttpResponse(null, { status: 204 });
+    }
+
+    const noteIndex = fixtures.notes.findIndex(
+      (item) => item.id === params.annotationId && item.book.id === params.id,
+    );
+    if (noteIndex === -1) return error(404, 'NOT_FOUND', 'Annotation not found');
+    fixtures.notes.splice(noteIndex, 1);
     return new HttpResponse(null, { status: 204 });
   }),
 
@@ -534,6 +667,29 @@ export const handlers = [
     fixtures.categories.push(created);
     return HttpResponse.json(created, { status: 201 });
   }),
+
+  // Cross-book notes library. Filters and paging mirror the server so tests
+  // can watch the URL without stubbing the whole response.
+  http.get('/api/notes', ({ request }) => HttpResponse.json(listNotesFromUrl(request.url))),
+  http.get('/api/notes/tags', () => {
+    const counts = new Map<string, number>();
+    for (const item of fixtures.notes) {
+      for (const tag of item.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+    return HttpResponse.json({
+      items: [...counts.entries()].map(([tag, count]) => ({ tag, count })),
+    });
+  }),
+  http.get(
+    '/api/notes/export',
+    () =>
+      new HttpResponse('# 笔记库\n', {
+        headers: {
+          'content-type': 'text/markdown; charset=utf-8',
+          'content-disposition': `attachment; filename="notes.md"; filename*=UTF-8''${encodeURIComponent('笔记库.md')}`,
+        },
+      }),
+  ),
 
   http.get('/api/admin/members', () => HttpResponse.json({ items: fixtures.members })),
   http.patch('/api/admin/members/:id', async ({ params, request }) => {
