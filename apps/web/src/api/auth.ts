@@ -1,4 +1,4 @@
-import type { AuthTokens, MeDto } from '@bookr/shared';
+import type { AuthTokens, MeDto, ProfileUpdateDto } from '@bookr/shared';
 import { apiFetch, clearTokens, getTokens, postJson, setTokens } from './client';
 
 export interface LoginInput {
@@ -30,6 +30,15 @@ export async function register(input: RegisterInput): Promise<MeDto> {
 
 export function fetchCurrentUser(): Promise<MeDto> {
   return apiFetch<MeDto>('/api/auth/me');
+}
+
+/** Saves the statistics timezone; the server rebuilds daily aggregates. */
+export function updateTimezone(timezone: string): Promise<ProfileUpdateDto> {
+  return apiFetch<ProfileUpdateDto>('/api/auth/me', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timezone }),
+  });
 }
 
 export async function logout(): Promise<void> {

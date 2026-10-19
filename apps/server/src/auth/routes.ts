@@ -1,9 +1,18 @@
-import { ERROR_CODES, loginSchema, refreshSchema, registerSchema, type MeDto } from '@bookr/shared';
+import {
+  ERROR_CODES,
+  loginSchema,
+  refreshSchema,
+  registerSchema,
+  updateProfileSchema,
+  type MeDto,
+  type ProfileUpdateDto,
+} from '@bookr/shared';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import type { AppDeps, Clock } from '../app';
 import { books, uploadSessions, users } from '../db/schema';
 import { AppError } from '../errors';
+import { rebuildDailyStats } from '../stats/aggregate';
 import { deviceInfoOf } from './device';
 import { makeRequireAuth } from './guards';
 import { loginUser, logoutSession, refreshSession, registerUser } from './service';
@@ -215,4 +224,21 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
       libraryQuotaBytes: deps.config.libraryQuotaBytes,
     };
   });
+
+  /**
+   * Changes the statistics timezone. Daily aggregates are re-bucketed in the
+   * new zone before the response, so the stats page never shows a day counted
+   * in the previous zone.
+   */
+  app.patch(
+    '/api/auth/me',
+    { preHandler: makeRequireAuth(deps) },
+    async (request): Promise<ProfileUpdateDto> => {
+      const { timezone } = updateProfileSchema.parse(request.body);
+      const userId = request.user!.id;
+      await deps.db.update(users).set({ timezone }).where(eq(users.id, userId));
+      await rebuildDailyStats(deps.db, userId, timezone, deps.clock.now());
+      return { timezone };
+    },
+  );
 }

@@ -31,7 +31,7 @@ const tokens: AuthTokens = {
   expiresIn: 900,
 };
 
-const reader: MeDto = {
+export const reader: MeDto = {
   id: 'user-reader',
   username: 'reader',
   displayName: '读者',
@@ -425,6 +425,10 @@ export const handlers = [
   http.post('/api/auth/refresh', () => HttpResponse.json(tokens)),
   http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })),
   http.get('/api/auth/me', () => HttpResponse.json(reader)),
+  http.patch('/api/auth/me', async ({ request }) => {
+    const body = (await request.json()) as { timezone?: string };
+    return HttpResponse.json({ timezone: body.timezone ?? reader.timezone });
+  }),
   http.get('/api/stats', () => HttpResponse.json(readingStats())),
 
   // Settings renders the AI section in several suites, so the defaults stay

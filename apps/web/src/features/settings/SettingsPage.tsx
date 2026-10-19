@@ -3,12 +3,15 @@ import type { AiUsageDto } from '@bookr/shared';
 import { Button } from '@bookr/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchAiUsage, setAiEnabled } from '../../api/ai';
+import { updateTimezone } from '../../api/auth';
+import { statsQueryKey } from '../../api/stats';
 import { useAuth } from '../../app/auth';
 import { formatDateTime } from '../../lib/format';
 import { useSync } from '../../sync/SyncProvider';
 import { DeviceList } from './DeviceList';
 import { OfflineCachePanel } from './OfflineCachePanel';
 import { SyncStatusBadge } from './SyncStatusBadge';
+import { TIMEZONE_OPTIONS } from './timezones';
 
 /** Verbatim privacy promise shown with the AI switch. */
 const AI_PRIVACY_NOTE =
@@ -112,6 +115,93 @@ function AiSettingsSection() {
   );
 }
 
+
+/** Statistics timezone; saving rebuilds the user's daily aggregates. */
+export function TimezoneSettingsSection() {
+  const { user, refreshUser } = useAuth();
+  const queryClient = useQueryClient();
+  // The attempted value stays visible after a failure so the user can retry
+  // without reselecting it.
+  const [pending, setPending] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const mutation = useMutation({
+    mutationFn: updateTimezone,
+    onSuccess: async () => {
+      setPending(null);
+      setSaved(true);
+      try {
+        await refreshUser();
+      } catch {
+        // The next verified profile fetch will catch up.
+      }
+      await queryClient.invalidateQueries({ queryKey: statsQueryKey });
+    },
+    onError: () => setSaved(false),
+  });
+
+  const current = pending ?? user?.timezone ?? 'Asia/Shanghai';
+  const options = TIMEZONE_OPTIONS.some((option) => option.value === current)
+    ? TIMEZONE_OPTIONS
+    : [...TIMEZONE_OPTIONS, { value: current, label: current }];
+
+  return (
+    <section
+      aria-labelledby="settings-timezone-title"
+      className="rounded-lg border border-border bg-surface/80 p-5"
+    >
+      <h2 id="settings-timezone-title" className="font-serif text-lg text-ink">
+        阅读统计
+      </h2>
+      <p className="mt-1 text-xs text-muted">
+        统计按此时区划分自然日，跨时区旅行不会重复计时。
+      </p>
+
+      <label className="mt-4 flex flex-col gap-1 text-sm text-ink">
+        <span className="text-xs tracking-wide text-muted">统计时区</span>
+        <select
+          aria-label="统计时区"
+          value={current}
+          disabled={mutation.isPending}
+          onChange={(event) => {
+            const next = event.target.value;
+            setSaved(false);
+            setPending(next);
+            mutation.mutate(next);
+          }}
+          className="min-h-11 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:max-w-xs"
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label} · {option.value}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {saved && !mutation.isPending ? (
+        <p role="status" className="mt-2 text-xs text-accent">
+          已保存
+        </p>
+      ) : null}
+      {mutation.isError ? (
+        <p role="alert" className="mt-2 text-xs text-highlight">
+          时区保存失败，请重试
+        </p>
+      ) : null}
+      {mutation.isError && pending !== null ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="mt-2"
+          onClick={() => mutation.mutate(pending)}
+        >
+          重试
+        </Button>
+      ) : null}
+    </section>
+  );
+}
+
 /** Account settings: sync state, offline copies, AI companion and signed-in devices. */
 export function SettingsPage() {
   const { state, syncNow } = useSync();
@@ -184,6 +274,7 @@ export function SettingsPage() {
         ) : null}
       </section>
 
+      <TimezoneSettingsSection />
       <AiSettingsSection />
       <OfflineCachePanel />
       <DeviceList />
