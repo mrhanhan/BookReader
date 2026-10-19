@@ -83,6 +83,52 @@ it('soft-deletes, hides from the shelf, lists in trash and restores', async () =
   expect(logs.every((log) => log.target === book.id)).toBe(true);
 });
 
+it('paginates the trash newest deletion first', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const user = await seedUser('member');
+  const headers = await authHeader(user);
+  await seedBook({
+    uploadedBy: user.id,
+    title: '最早删的',
+    deletedAt: new Date('2026-10-01T00:00:00Z'),
+  });
+  await seedBook({
+    uploadedBy: user.id,
+    title: '中间删的',
+    deletedAt: new Date('2026-10-05T00:00:00Z'),
+  });
+  await seedBook({
+    uploadedBy: user.id,
+    title: '最晚删的',
+    deletedAt: new Date('2026-10-09T00:00:00Z'),
+  });
+
+  const first = await app.inject({
+    method: 'GET',
+    url: '/api/trash?page=1&pageSize=2',
+    headers,
+  });
+  expect(first.statusCode).toBe(200);
+  expect(first.json()).toMatchObject({
+    total: 3,
+    page: 1,
+    pageSize: 2,
+    items: [{ title: '最晚删的' }, { title: '中间删的' }],
+  });
+
+  const second = await app.inject({
+    method: 'GET',
+    url: '/api/trash?page=2&pageSize=2',
+    headers,
+  });
+  expect(second.json()).toMatchObject({
+    total: 3,
+    page: 2,
+    items: [{ title: '最早删的' }],
+  });
+});
+
 it('refuses to restore a book whose content was re-uploaded while trashed', async () => {
   await resetDb();
   const app = await buildTestApp();

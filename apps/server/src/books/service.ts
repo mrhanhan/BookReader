@@ -18,7 +18,7 @@ import {
   findCategoriesForBooks,
   findUploaderNames,
   listBooksPage,
-  listDeletedBooks,
+  listDeletedBooksPage,
   purgeBooksDeletedBefore,
 } from './repo';
 
@@ -364,8 +364,19 @@ export async function restoreBook(
 }
 
 /** Everything currently in the trash, shared by all members. */
-export async function listTrash(deps: AppDeps, viewerId: string): Promise<BookDto[]> {
-  return toBookDtos(deps, await listDeletedBooks(deps.db), viewerId);
+export async function listTrash(
+  deps: AppDeps,
+  viewerId: string,
+  page = 1,
+  pageSize = 30,
+): Promise<{ items: BookDto[]; total: number; page: number; pageSize: number }> {
+  const { rows, total } = await listDeletedBooksPage(deps.db, { page, pageSize });
+  return {
+    items: await toBookDtos(deps, rows, viewerId),
+    total,
+    page,
+    pageSize,
+  };
 }
 
 interface DetectedImage {

@@ -30,6 +30,12 @@ import {
 
 const bookIdParamsSchema = z.object({ id: z.uuid() });
 
+/** Trash pagination: the same bounds as the shelf list. */
+const trashQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(30),
+});
+
 /** Registers the shared bookshelf and trash endpoints. */
 export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
   const requireAuth = makeRequireAuth(deps);
@@ -77,7 +83,8 @@ export function registerBookRoutes(app: FastifyInstance, deps: AppDeps): void {
   });
 
   app.get('/api/trash', { preHandler: requireAuth }, async (request) => {
-    return { items: await listTrash(deps, request.user!.id) };
+    const { page, pageSize } = trashQuerySchema.parse(request.query);
+    return listTrash(deps, request.user!.id, page, pageSize);
   });
 
   // Reflow packs are shared with every member like the book itself, but only

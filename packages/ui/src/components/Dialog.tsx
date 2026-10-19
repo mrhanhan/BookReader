@@ -48,6 +48,10 @@ export function Dialog({ open, onClose, title, children, footer, className }: Di
       }}
       className={cn(
         'm-auto w-[min(32rem,calc(100vw-2rem))] rounded-lg border border-border bg-surface p-0 text-ink shadow-xl',
+        'max-h-[calc(100dvh-2rem)] overflow-y-auto',
+        // Phones get a bottom sheet: full width, anchored to the bottom edge,
+        // so long forms stay reachable with one thumb.
+        'max-sm:mb-0 max-sm:w-full max-sm:max-w-none max-sm:rounded-b-none max-sm:border-x-0 max-sm:border-b-0 max-sm:max-h-[min(90dvh,calc(100dvh-0.5rem))]',
         className,
       )}
     >

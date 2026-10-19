@@ -116,19 +116,19 @@ it('requests the next page and renders its books', async () => {
   renderWithProviders(<RouterProvider router={router} />);
 
   expect(await screen.findByText('第一页的书')).toBeInTheDocument();
-  expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '加载更多' })).toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole('button', { name: '下一页' }));
+  await userEvent.click(screen.getByRole('button', { name: '加载更多' }));
 
   expect(await screen.findByText('第二页的书')).toBeInTheDocument();
+  expect(screen.getByText('第一页的书')).toBeInTheDocument();
   expect(lastUrl).toContain('page=2');
-  expect(screen.getByText('第 2 / 2 页')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled();
+  expect(await screen.findByText('书架已到底')).toBeInTheDocument();
 
-  // Changing a filter returns to the first page.
+  // Changing a filter restarts the scroll list at the first page.
   await userEvent.selectOptions(screen.getByLabelText('格式'), 'epub');
   expect(await screen.findByText('第一页的书')).toBeInTheDocument();
+  expect(screen.queryByText('第二页的书')).not.toBeInTheDocument();
   expect(lastUrl).toContain('page=1');
   expect(lastUrl).toContain('format=epub');
 });

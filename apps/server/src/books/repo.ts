@@ -132,6 +132,26 @@ export async function listDeletedBooks(db: Database): Promise<BookRow[]> {
     .orderBy(desc(books.deletedAt), desc(books.id));
 }
 
+/** One page of trashed books, newest deletion first, plus the full count. */
+export async function listDeletedBooksPage(
+  db: Database,
+  input: { page: number; pageSize: number },
+): Promise<{ rows: BookRow[]; total: number }> {
+  const where = isNotNull(books.deletedAt);
+  const [counted] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(books)
+    .where(where);
+  const rows = await db
+    .select()
+    .from(books)
+    .where(where)
+    .orderBy(desc(books.deletedAt), desc(books.id))
+    .limit(input.pageSize)
+    .offset((input.page - 1) * input.pageSize);
+  return { rows, total: Number(counted?.total ?? 0) };
+}
+
 /** Storage keys of a row removed by the trash purge. */
 export interface PurgedBook {
   id: string;

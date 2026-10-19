@@ -1,10 +1,10 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { BookDto } from '@bookr/shared';
 import { Button, Dialog, EmptyState } from '@bookr/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Link } from 'react-router';
-import { BOOKS_QUERY_KEY, useBooks, useDeleteBook, useRetryConversion } from '../../api/books';
+import { BOOKS_QUERY_KEY, useDeleteBook, useInfiniteBooks, useRetryConversion } from '../../api/books';
 import { useCategories } from '../../api/categories';
 import { fetchReaderFile } from '../../api/reading';
 import { fetchReflowFile } from '../../api/reflow';
@@ -73,13 +73,12 @@ export function BookshelfPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const queryClient = useQueryClient();
 
-  const booksQuery = useBooks({
+  const booksQuery = useInfiniteBooks({
     query: filters.query,
     format: filters.format || undefined,
     status: filters.status || undefined,
     categoryId: filters.categoryId || undefined,
     sort: filters.sort,
-    page: filters.page,
     pageSize: filters.pageSize,
   });
   const categoriesQuery = useCategories();
@@ -263,10 +262,11 @@ export function BookshelfPage() {
   // A complete, unfiltered first page is the whole truth for this account, so
   // rows missing from it (deleted or trashed elsewhere) are pruned.
   useEffect(() => {
-    const data = booksQuery.data;
-    if (!data || userId === null) return;
-    const items = data.items;
-    const completeShelf = !filtersActive && data.page === 1 && data.total <= data.pageSize;
+    const firstPage = booksQuery.data?.pages[0];
+    if (!firstPage || userId === null) return;
+    const items = firstPage.items;
+    const completeShelf =
+      !filtersActive && firstPage.page === 1 && firstPage.total <= firstPage.pageSize;
     let cancelled = false;
 
     void (async () => {
@@ -314,13 +314,14 @@ export function BookshelfPage() {
       .map(bookFromCachedRow);
     return [...visible.map(bookFromShelfSnapshot), ...cachedOnly];
   }, [cachedFileIds, cachedShelfRows, offlineRows]);
+  const pages = booksQuery.data?.pages;
+  const serverBooks = useMemo(() => pages?.flatMap((page) => page.items) ?? [], [pages]);
   const usingCachedShelf =
-    booksQuery.data === undefined &&
+    pages === undefined &&
     fallbackBooks !== undefined &&
     (booksQuery.isError || !online);
-  const books = booksQuery.data?.items ?? (usingCachedShelf ? (fallbackBooks ?? []) : []);
-  const total = booksQuery.data?.total ?? (usingCachedShelf ? books.length : 0);
-  const totalPages = usingCachedShelf ? 1 : Math.max(1, Math.ceil(total / filters.pageSize));
+  const books = pages ? serverBooks : (usingCachedShelf ? (fallbackBooks ?? []) : []);
+  const total = pages?.[0]?.total ?? (usingCachedShelf ? books.length : 0);
 
   // Prefer the refetched shelf entry so a reflow upload/removal is visible when
   // the dialog is reopened; the snapshot only covers a book filtered off-page.
@@ -328,14 +329,30 @@ export function BookshelfPage() {
     (editingBookId ? books.find((item) => item.id === editingBookId) : undefined) ??
     (editSnapshot && editSnapshot.id === editingBookId ? editSnapshot : null);
 
-  // Deleting the last book on a trailing page leaves the shelf past its end.
+  // Scroll pagination: load the next page when the sentinel nears the viewport.
+  // Browsers without IntersectionObserver fall back to the visible button.
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (!booksQuery.data) return;
-    const lastPage = Math.max(1, Math.ceil(booksQuery.data.total / filters.pageSize));
-    if (filters.page > lastPage) {
-      setFilters((current) => ({ ...current, page: lastPage }));
-    }
-  }, [booksQuery.data, filters.page, filters.pageSize]);
+    const node = loadMoreRef.current;
+    if (!node || !booksQuery.hasNextPage || booksQuery.isFetchingNextPage) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void booksQuery.fetchNextPage();
+        }
+      },
+      { rootMargin: '400px 0px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [
+    booksQuery.fetchNextPage,
+    booksQuery.hasNextPage,
+    booksQuery.isFetchingNextPage,
+    books.length,
+  ]);
 
   return (
     <section className="flex flex-col gap-6">
@@ -345,8 +362,10 @@ export function BookshelfPage() {
           <p className="mt-1 text-sm text-muted">和家人共享的藏书都在这里。</p>
         </div>
         <div className="flex items-center gap-3">
-          {booksQuery.data ? (
-            <p className="text-xs tracking-widest text-muted">共 {booksQuery.data.total} 本</p>
+          {pages ? (
+            <p className="text-xs tracking-widest text-muted">
+              共 {total} 本{books.length < total ? ` · 已显示 ${books.length}` : ''}
+            </p>
           ) : null}
           <Button onClick={() => setUploadOpen(true)}>上传图书</Button>
         </div>
@@ -475,28 +494,22 @@ export function BookshelfPage() {
         </div>
       )}
 
-      {!booksQuery.isPending && !booksQuery.isError && books.length > 0 && totalPages > 1 ? (
-        <nav aria-label="书架分页" className="flex items-center justify-center gap-4 pt-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={filters.page <= 1}
-            onClick={() => setFilters({ ...filters, page: filters.page - 1 })}
-          >
-            上一页
-          </Button>
-          <p className="text-xs tracking-widest text-muted">
-            第 {filters.page} / {totalPages} 页
-          </p>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={filters.page >= totalPages}
-            onClick={() => setFilters({ ...filters, page: filters.page + 1 })}
-          >
-            下一页
-          </Button>
-        </nav>
+      {!booksQuery.isPending && !booksQuery.isError && books.length > 0 ? (
+        <div className="flex flex-col items-center gap-2 pt-2">
+          <div ref={loadMoreRef} aria-hidden="true" className="h-px w-full" />
+          {booksQuery.hasNextPage ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={booksQuery.isFetchingNextPage}
+              onClick={() => void booksQuery.fetchNextPage()}
+            >
+              加载更多
+            </Button>
+          ) : (
+            <p className="text-[11px] tracking-[0.24em] text-muted">书架已到底</p>
+          )}
+        </div>
       ) : null}
 
       {editingBook ? (

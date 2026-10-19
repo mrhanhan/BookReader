@@ -22,8 +22,10 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
+    // `VITE_DEV_API_ORIGIN` lets a dev build point at the local Compose stack
+    // (http://localhost:8180) while the default keeps the usual server port.
     proxy: {
-      '/api': 'http://localhost:3000',
+      '/api': process.env.VITE_DEV_API_ORIGIN ?? 'http://localhost:3000',
     },
   },
   test: {

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, EmptyState } from '@bookr/ui';
 import { useRestoreBook, useTrash } from '../../api/books';
 import { useAuth } from '../../app/auth';
@@ -24,7 +24,29 @@ export function TrashPage() {
     });
   }
 
-  const books = trashQuery.data ?? [];
+  const books = trashQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node || !trashQuery.hasNextPage || trashQuery.isFetchingNextPage) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void trashQuery.fetchNextPage();
+        }
+      },
+      { rootMargin: '300px 0px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [
+    books.length,
+    trashQuery.fetchNextPage,
+    trashQuery.hasNextPage,
+    trashQuery.isFetchingNextPage,
+  ]);
 
   return (
     <section className="flex flex-col gap-6">
@@ -134,6 +156,24 @@ export function TrashPage() {
           })}
         </ul>
       )}
+
+      {!trashQuery.isPending && !trashQuery.isError && books.length > 0 ? (
+        <div className="flex flex-col items-center gap-2">
+          <div ref={loadMoreRef} aria-hidden="true" className="h-px w-full" />
+          {trashQuery.hasNextPage ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={trashQuery.isFetchingNextPage}
+              onClick={() => void trashQuery.fetchNextPage()}
+            >
+              加载更多
+            </Button>
+          ) : (
+            <p className="text-[11px] tracking-[0.24em] text-muted">回收站已到底</p>
+          )}
+        </div>
+      ) : null}
 
       {toast ? <Toast message={toast} onDismiss={dismissToast} /> : null}
     </section>
