@@ -12,6 +12,7 @@ import type {
   Locator,
   MeDto,
   NoteDto,
+  ReadingStatsDto,
 } from '@bookr/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '@testing-library/react';
@@ -68,6 +69,51 @@ export function book(overrides: Partial<BookDto> & Pick<BookDto, 'id' | 'title'>
     createdAt: new Date(now - 7 * DAY_MS).toISOString(),
     updatedAt: new Date(now - 2 * DAY_MS).toISOString(),
     deletedAt: null,
+    ...overrides,
+  };
+}
+
+
+/** Local `YYYY-MM-DD` for `daysAgo` days before today. */
+function statsDate(daysAgo: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Statistics fixture: three qualified days ending today, twelve minutes read
+ * today, a 3h30 top book and two finished books. Values are chosen to render
+ * distinctly in cards and chart labels.
+ */
+export function readingStats(overrides: Partial<ReadingStatsDto> = {}): ReadingStatsDto {
+  const daily = Array.from({ length: 30 }, (_, index) => {
+    const daysAgo = 29 - index;
+    const today = daysAgo === 0;
+    return {
+      date: statsDate(daysAgo),
+      activeSeconds: today ? 720 : daysAgo < 3 ? 600 : 0,
+      qualified: today || daysAgo === 1 || daysAgo === 2,
+    };
+  });
+  return {
+    timezone: 'Asia/Shanghai',
+    today: statsDate(0),
+    streakDays: 3,
+    effectiveDays: 9,
+    todaySeconds: 720,
+    weekSeconds: 2_400,
+    monthSeconds: 5_400,
+    finishedBooks: 2,
+    topBook: {
+      id: 'book-csapp',
+      title: '深入理解计算机系统',
+      author: 'Randal E. Bryant',
+      activeSeconds: 12_600,
+    },
+    daily,
     ...overrides,
   };
 }
@@ -379,6 +425,7 @@ export const handlers = [
   http.post('/api/auth/refresh', () => HttpResponse.json(tokens)),
   http.post('/api/auth/logout', () => new HttpResponse(null, { status: 204 })),
   http.get('/api/auth/me', () => HttpResponse.json(reader)),
+  http.get('/api/stats', () => HttpResponse.json(readingStats())),
 
   // Settings renders the AI section in several suites, so the defaults stay
   // permissive: AI on, configured, with fresh quotas.
