@@ -173,8 +173,11 @@ check_minio() {
 # to hold it.
 check_objects() {
   local total=0 missing=0 key
+  # check_minio() already fails on a missing mirror. Repeating that FAIL here
+  # would record the same fact twice, and skipping the loop keeps one FAIL per
+  # referenced key from piling up on top of it.
   if [ ! -d "$MINIO_DIR" ]; then
-    fail_check "minio mirror is missing: $MINIO_DIR"
+    note "skipped: the minio mirror is missing; see the check above"
     return 0
   fi
   OBJECT_KEYS="$(mktemp)"
