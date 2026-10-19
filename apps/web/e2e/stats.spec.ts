@@ -93,8 +93,15 @@ test('counts a qualified day and draws the thirty-day chart', async ({ page, req
 
   await pushSession(request, headers, bookId, session(shanghaiDate(0), 1_200));
 
+  // Phones are the primary target: the page must not scroll sideways at 360px.
+  await page.setViewportSize({ width: 360, height: 800 });
   await page.goto('/stats');
   expect(await page.getByRole('heading', { name: '统计' })).toBeVisible();
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
 
   const streak = (await page.getByRole('region', { name: '连续阅读' }).textContent()) ?? '';
   expect(streak).toContain('1');
