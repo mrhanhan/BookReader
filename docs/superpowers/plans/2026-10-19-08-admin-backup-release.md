@@ -1463,7 +1463,7 @@ git commit -m "test(e2e): cover admin console and PWA; document acceptance"
 | UI | 同上 | 1 个测试文件 / 2 条通过 |
 | 合计单元/集成 | — | **1039 条通过**；turbo typecheck `7 successful, 7 total` |
 | E2E | `pnpm --filter @bookr/web exec playwright test` | **9 个 spec / 21 条用例全部通过**（48.4s） |
-| 原生配置 | `pnpm check:native` | 6/6 项 OK |
+| 原生配置 | `pnpm check:native` | 6/6 项 OK（该次交付早于第 7 项 WiX 本地化检查，现为 7/7） |
 | Compose | `docker compose ps` | postgres/minio/server/web 四个服务均为 healthy |
 | 探针 | `curl -fsS http://localhost:8180/healthz`、`/readyz` | 均 200；`/readyz` 返回 `{"status":"ok","checks":{"database":"ok","storage":"ok"}}` |
 
