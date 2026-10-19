@@ -12,7 +12,9 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "dev": "turbo run dev",
-    "check:native": "node scripts/check-native-config.mjs"
+    "check:native": "node scripts/check-native-config.mjs",
+    "build:android": "bash scripts/build-android.sh",
+    "build:desktop": "bash scripts/build-desktop.sh"
   },
   "devDependencies": {
     "turbo": "^2.5.0"

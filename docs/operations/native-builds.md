@@ -7,19 +7,20 @@
 
 以下位置必须保持一致：
 
-| 位置 | 字段 |
-| --- | --- |
-| `apps/desktop/package.json` | `version` |
-| `apps/desktop/src-tauri/Cargo.toml` | `[package] version` |
-| `apps/mobile/package.json` | `version` |
-| `apps/desktop/src-tauri/tauri.conf.json` | `version` |
-| `apps/mobile/android/app/build.gradle` | `versionName`、`versionCode` |
+| 位置 | 字段 | 校验方式 |
+| --- | --- | --- |
+| `apps/desktop/package.json` | `version` | `pnpm check:native` |
+| `apps/mobile/package.json` | `version` | `pnpm check:native` |
+| `apps/desktop/src-tauri/tauri.conf.json` | `version` | `pnpm check:native` |
+| `apps/mobile/android/app/build.gradle` | `versionName`、`versionCode` | `pnpm check:native`（`versionCode` 手动核对） |
+| `apps/desktop/src-tauri/Cargo.toml` | `[package] version` | 手动核对 |
 
 `versionCode` 是 Android 的单调递增整数，每次向应用商店提交都必须加大；`versionName` 使用语义化版本。
 
 升级步骤：
 
-1. 修改上述四个 `version` 字段为同一新版本（例如 `0.3.0`）。
+1. 修改上述三个由 `check:native` 校验的 `version` 字段为同一新版本（例如 `0.3.0`），
+   并手动同步 `apps/desktop/src-tauri/Cargo.toml` 的 `[package] version`。
 2. 将 `build.gradle` 的 `versionName` 改为同一版本，并把 `versionCode` 加 1。
 3. 运行 `pnpm check:native`，六项检查全部 OK 后再构建。
 4. 更新更新日志。

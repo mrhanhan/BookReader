@@ -101,4 +101,3 @@ app/src/main/res/xml/config.xml
 
 # Release signing material: never commit the keystore or its passwords.
 keystore.properties
-*.jks

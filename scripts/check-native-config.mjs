@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXPECTED_APP_ID = 'com.bookr.reader';
 const EXPECTED_ICONS = ['icon.ico', '32x32.png', '128x128.png', '128x128@2x.png'];
+const REQUIRED_IGNORES = ['keystore.properties', '*.jks', '*.keystore'];
 
 const failedChecks = [];
 
@@ -17,6 +18,11 @@ function readText(relPath) {
 
 function readJson(relPath) {
   return JSON.parse(readText(relPath));
+}
+
+// 剔除 // 与 /* */ 注释，避免正则命中注释掉的配置行。
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
 function describeVersion(label, value) {
@@ -61,6 +67,12 @@ runCheck(1, TOTAL, '版本号一致', (errors) => {
   const mobile = readJson('apps/mobile/package.json').version;
   const tauri = readJson('apps/desktop/src-tauri/tauri.conf.json').version;
 
+  for (const [label, value] of Object.entries({ desktop, mobile, tauri })) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      errors.push(`${label} 的 version 缺失或不是非空字符串`);
+    }
+  }
+
   if (desktop !== mobile) {
     errors.push(
       `apps/desktop/package.json (${desktop}) 与 apps/mobile/package.json (${mobile}) 版本不一致`,
@@ -95,7 +107,7 @@ runCheck(2, TOTAL, '应用标识一致', (errors) => {
 
 // 3. Android applicationId / versionName 与服务端契约（capacitor、mobile package.json）一致。
 runCheck(3, TOTAL, 'Android 标识与版本', (errors) => {
-  const gradle = readText('apps/mobile/android/app/build.gradle');
+  const gradle = stripComments(readText('apps/mobile/android/app/build.gradle'));
   const appId = readCapacitorAppId();
   const mobileVersion = readJson('apps/mobile/package.json').version;
 
@@ -126,17 +138,18 @@ runCheck(4, TOTAL, '签名材料不入库', (errors) => {
     throw new Error(`${gitignorePath} 不存在`);
   }
 
-  const ignored = readText(gitignorePath)
+  const patterns = readText(gitignorePath)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line !== '' && !line.startsWith('#'))
-    .some((line) => line.replace(/^\/+/, '') === 'keystore.properties');
+    .map((line) => line.replace(/^\/+/, ''));
 
-  if (!ignored) {
-    errors.push(`${gitignorePath} 未忽略 keystore.properties`);
+  const missing = REQUIRED_IGNORES.filter((pattern) => !patterns.includes(pattern));
+  if (missing.length > 0) {
+    errors.push(`${gitignorePath} 未忽略：${missing.join(', ')}`);
   }
 
-  return ignored ? 'keystore.properties 已忽略' : '';
+  return missing.length === 0 ? `${REQUIRED_IGNORES.join(', ')} 均已忽略` : '';
 });
 
 // 5. 桌面打包所需图标齐全。
