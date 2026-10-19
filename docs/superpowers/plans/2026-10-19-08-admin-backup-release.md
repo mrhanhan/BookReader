@@ -1502,6 +1502,7 @@ b19ce00 feat(web): add admin settings, audit and backup screens
 ce6e9c3 test(e2e): cover admin console and PWA; document acceptance
 5754660 fix(e2e,docs): address Task 9 review findings
 cf5e7c0 fix(ops,server,web): close final admin/backup review findings
+85b4e95 fix(server): probe readiness with a bucket list request
 ```
 
 ### 最终审查修复（final fix）
@@ -1514,8 +1515,10 @@ cf5e7c0 fix(ops,server,web): close final admin/backup review findings
 - 注册页 403 FORBIDDEN 显示“注册暂未开放，请联系管理员”，不再被通用无权限文案吞掉。
 - 备份页横幅不再写死 24 小时；`scripts/lib/heartbeat.sh` 先转义反斜杠并清理控制字符；
   审计页补齐 7 个动作标签。
-- `S3Storage.head` 只把缺失对象当作 `null`，`NoSuchBucket` 会让 `/readyz` 返回 503；
-  monitor tick 失败记录错误名，启动时记录心跳 token 与 webhook 是否配置（仅布尔值）。
+- `/readyz` 的存储探针改用新增的 `StorageService.checkBucket()`（`ListObjectsV2` GET
+  请求）：缺失桶会明确返回 `NoSuchBucket` 并让探针返回 503；`head` 保持对象级
+  404→`null` 语义。monitor tick 失败记录错误名，启动时记录心跳 token 与 webhook 是否
+  配置（仅布尔值）。
 
 修复后最终验证：
 
@@ -1527,6 +1530,11 @@ cf5e7c0 fix(ops,server,web): close final admin/backup review findings
 | `docker compose up -d --build` + 进程内环境检查 | 四服务 healthy；`{"token":false,"webhook":false,"stale":"24","interval":"300000"}`（本机 `.env` 未启用两个通道，默认值正确传入） |
 | `curl -fsS http://localhost:8180/readyz` | 200 `{"status":"ok","checks":{"database":"ok","storage":"ok"}}` |
 | `pnpm --filter @bookr/web exec playwright test` | **9 spec / 21 条全部通过**（48.4s） |
+
+复验补充（`85b4e95`）：第一次修复误以为 `HeadObject` 会返回 `NoSuchBucket`；实际上
+HEAD 响应无 body，SDK 只给出 `NotFound`/404，特判是死代码。现改为 `checkBucket()` +
+`ListObjectsV2` 探测桶本身，`head` 恢复对象级 404→`null`。复验：服务端 55 文件 /
+387 条通过、typecheck 7/7、compose 重建后 `/readyz` 返回 200。
 
 ### 遗留项
 
