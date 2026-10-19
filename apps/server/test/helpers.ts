@@ -8,6 +8,8 @@ import {
   type BookFormat,
   type BookStatus,
   type Locator,
+  type NoteAnalysisKind,
+  type NoteAnalysisStatus,
   type Role,
 } from '@bookr/shared';
 import { eq } from 'drizzle-orm';
@@ -32,6 +34,7 @@ import {
   devices,
   invites,
   libraries,
+  noteAnalyses,
   readingProgress,
   reflowUploads,
   uploadSessions,
@@ -40,6 +43,7 @@ import {
   type BookmarkRow,
   type BookRow,
   type MetadataStatus,
+  type NoteAnalysisRow,
   type ReadingProgressRow,
 } from '../src/db/schema';
 import { FakeJobQueue } from '../src/jobs/fake';
@@ -331,6 +335,46 @@ export async function seedBookmark(input: SeedBookmarkInput): Promise<BookmarkRo
 
   if (!row) {
     throw new Error('seedBookmark could not insert a bookmark');
+  }
+  return row;
+}
+
+/** Fields accepted by `seedNoteAnalysis`; everything but the owner has a default. */
+export interface SeedNoteAnalysisInput {
+  userId: string;
+  kind?: NoteAnalysisKind;
+  status?: NoteAnalysisStatus;
+  title?: string;
+  content?: string;
+  noteCount?: number;
+  analyzedCount?: number;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+/** Inserts an analysis row directly, defaulting to a finished themes analysis. */
+export async function seedNoteAnalysis(
+  input: SeedNoteAnalysisInput,
+): Promise<NoteAnalysisRow> {
+  const noteCount = input.noteCount ?? 1;
+  const [row] = await testDb
+    .insert(noteAnalyses)
+    .values({
+      userId: input.userId,
+      kind: input.kind ?? 'themes',
+      status: input.status ?? 'complete',
+      title: input.title ?? '主题归纳',
+      scope: {},
+      noteCount,
+      analyzedCount: input.analyzedCount ?? noteCount,
+      content: input.content ?? '分析正文',
+      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
+    })
+    .returning();
+
+  if (!row) {
+    throw new Error('seedNoteAnalysis could not insert an analysis');
   }
   return row;
 }

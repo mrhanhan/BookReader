@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppDeps } from '../app';
 import { makeRequireAuth } from '../auth/guards';
 import { createReplySink, executeChat, prepareChat } from './chat';
+import { SSE_HEADERS } from './sse';
 import {
   getAiUsage,
   getThreadDetail,
@@ -15,14 +16,6 @@ import {
 const bookParamsSchema = z.object({ id: z.uuid() });
 const threadParamsSchema = z.object({ id: z.uuid() });
 const aiToggleSchema = z.object({ enabled: z.boolean() });
-
-/** Streaming responses must not be buffered by proxies or browsers. */
-const SSE_HEADERS = {
-  'content-type': 'text/event-stream',
-  'cache-control': 'no-cache, no-transform',
-  connection: 'keep-alive',
-  'x-accel-buffering': 'no',
-} as const;
 
 /** Registers the caller-scoped AI thread, usage and preference endpoints. */
 export function registerAiRoutes(app: FastifyInstance, deps: AppDeps): void {

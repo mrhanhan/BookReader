@@ -19,6 +19,7 @@ import type { Database } from './db/client';
 import { registerDeviceRoutes } from './devices/routes';
 import { AppError, defaultMessageFor } from './errors';
 import type { JobQueue } from './jobs/types';
+import { registerNoteAnalysisRoutes } from './notes/analysis-routes';
 import { registerNotesRoutes } from './notes/routes';
 import { registerReadingRoutes } from './reading/routes';
 import type { StorageService } from './storage/types';
@@ -199,6 +200,7 @@ export function buildApp(deps: AppDeps, options: BuildAppOptions = {}): FastifyI
   registerBookRoutes(app, deps);
   registerReadingRoutes(app, deps);
   registerNotesRoutes(app, deps);
+  registerNoteAnalysisRoutes(app, deps);
   registerSyncRoutes(
     app,
     deps,

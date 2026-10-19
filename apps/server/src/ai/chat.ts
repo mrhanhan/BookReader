@@ -12,10 +12,10 @@ import {
 import { and, eq, isNull } from 'drizzle-orm';
 import type { ServerResponse } from 'node:http';
 import type { AppDeps } from '../app';
-import { aiThreads, books, users } from '../db/schema';
+import { aiThreads, books } from '../db/schema';
 import { AppError } from '../errors';
+import { requireAiActor, requireAiConfig } from './availability';
 import { assemblePrompt, estimateTokens } from './context';
-import { readAiConfig } from './config';
 import { PROMPT_VERSION } from './prompts';
 import {
   findThreadRow,
@@ -32,6 +32,7 @@ import {
   type QuotaReservation,
   type QuotaSnapshot,
 } from './quota';
+import { writeSseFrame } from './sse';
 import type { AiChatMessage, AiClient, AiTokenUsage } from './types';
 
 /** Provider failure copy shown to the reader; upstream text never leaks. */
@@ -86,10 +87,6 @@ function threadTitle(body: AiChatRequest): string {
   return `${prefix}${source.slice(0, 40)}`.slice(0, AI_THREAD_TITLE_MAX_LENGTH);
 }
 
-function abortError(): DOMException {
-  return new DOMException('Aborted', 'AbortError');
-}
-
 function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
@@ -105,27 +102,8 @@ export async function prepareChat(
   bookId: string,
   body: AiChatRequest,
 ): Promise<PreparedChat> {
-  const [user] = await deps.db
-    .select({
-      aiEnabled: users.aiEnabled,
-      timezone: users.timezone,
-      dailyLimit: users.aiDailyTokenLimit,
-      monthlyLimit: users.aiMonthlyTokenLimit,
-    })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-  if (!user) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND);
-  }
-  if (!user.aiEnabled) {
-    throw new AppError(403, ERROR_CODES.AI_DISABLED);
-  }
-
-  const aiConfig = await readAiConfig(deps);
-  if (!aiConfig) {
-    throw new AppError(503, ERROR_CODES.AI_NOT_CONFIGURED, { reason: 'missing_config' });
-  }
+  const actor = await requireAiActor(deps, userId);
+  const aiConfig = await requireAiConfig(deps);
 
   const [book] = await deps.db
     .select({ id: books.id, title: books.title, author: books.author })
@@ -168,11 +146,11 @@ export async function prepareChat(
     contextTokenBudget: deps.config.ai.contextTokenBudget,
   });
 
-  const limits: QuotaLimits = { daily: user.dailyLimit, monthly: user.monthlyLimit };
+  const limits: QuotaLimits = actor.limits;
   const now = deps.clock.now();
   const reservation = await reserveQuota(deps.db, {
     userId,
-    timezone: user.timezone,
+    timezone: actor.timezone,
     estimate: assembled.promptTokens + AI_MAX_OUTPUT_TOKENS,
     limits,
     now,
@@ -229,7 +207,7 @@ export async function prepareChat(
       messages: assembled.messages,
       promptTokens: assembled.promptTokens,
       reservation,
-      timezone: user.timezone,
+      timezone: actor.timezone,
       limits,
     };
   } catch (error) {
@@ -242,7 +220,8 @@ export async function prepareChat(
   }
 }
 
-function failurePayload(error: unknown): AiStreamErrorPayload {
+/** Fixed user-facing copy for a provider failure; upstream text never leaks. */
+export function failurePayload(error: unknown): AiStreamErrorPayload {
   const timeout = error instanceof Error && /timed out/i.test(error.message);
   return {
     code: timeout ? ERROR_CODES.AI_TIMEOUT : ERROR_CODES.AI_UPSTREAM_FAILED,
@@ -377,46 +356,12 @@ export async function executeChat(
   }
 }
 
-/** Writes one SSE frame, waiting for drain when the socket applies backpressure. */
-async function writeFrame(
-  raw: ServerResponse,
-  event: string,
-  data: unknown,
-  onBackpressure?: () => void,
-): Promise<void> {
-  if (raw.writableEnded || raw.destroyed) {
-    throw abortError();
-  }
-  const frame = `event: ${event}
-data: ${JSON.stringify(data)}
-
-`;
-  if (raw.write(frame)) return;
-
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      onBackpressure?.();
-      reject(new Error('AI stream backpressure timed out'));
-    }, 5_000);
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      raw.removeListener('drain', onDrain);
-    };
-    const onDrain = (): void => {
-      cleanup();
-      resolve();
-    };
-    raw.once('drain', onDrain);
-  });
-}
-
 /** Builds the SSE sink for a hijacked response; backpressure aborts upstream. */
 export function createReplySink(raw: ServerResponse, onBackpressure?: () => void): ChatSink {
   return {
-    meta: (meta) => writeFrame(raw, 'meta', meta, onBackpressure),
-    delta: (text) => writeFrame(raw, 'delta', { text }, onBackpressure),
-    done: (done) => writeFrame(raw, 'done', done, onBackpressure),
-    error: (payload) => writeFrame(raw, 'error', payload, onBackpressure),
+    meta: (meta) => writeSseFrame(raw, 'meta', meta, onBackpressure),
+    delta: (text) => writeSseFrame(raw, 'delta', { text }, onBackpressure),
+    done: (done) => writeSseFrame(raw, 'done', done, onBackpressure),
+    error: (payload) => writeSseFrame(raw, 'error', payload, onBackpressure),
   };
 }
