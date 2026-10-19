@@ -1463,7 +1463,7 @@ git commit -m "test(e2e): cover admin console and PWA; document acceptance"
 | UI | 同上 | 1 个测试文件 / 2 条通过 |
 | 合计单元/集成 | — | **1039 条通过**；turbo typecheck `7 successful, 7 total` |
 | E2E | `pnpm --filter @bookr/web exec playwright test` | **9 个 spec / 21 条用例全部通过**（48.4s） |
-| 原生配置 | `pnpm check:native` | 6/6 项 OK（该次交付早于第 7 项 WiX 本地化检查，现为 7/7） |
+| 原生配置 | `pnpm check:native` | 6/6 项 OK |
 | Compose | `docker compose ps` | postgres/minio/server/web 四个服务均为 healthy |
 | 探针 | `curl -fsS http://localhost:8180/healthz`、`/readyz` | 均 200；`/readyz` 返回 `{"status":"ok","checks":{"database":"ok","storage":"ok"}}` |
 
@@ -1539,17 +1539,31 @@ HEAD 响应无 body，SDK 只给出 `NotFound`/404，特判是死代码。现改
 
 ### 遗留项
 
-- **Android 发布包未在本机构建**：本机没有 JDK（`java` 不在 PATH），`pnpm build:android`
-  无法执行，`apps/mobile/android/app/build/outputs/apk/release/` 下没有 APK。发布配置、
-  签名忽略规则与脚本已就绪，`pnpm check:native` 通过；需在安装 JDK 21 与 Android SDK
-  的机器上按 `docs/operations/native-builds.md` 构建。
-- **桌面安装包未在本机构建**：本机虽已有 Rust，但没有产出
-  `apps/desktop/src-tauri/target/release/bundle/`。需在具备 MSVC Build Tools 与
-  WebView2 的 Windows 机器上执行 `VITE_API_BASE_URL=... pnpm build:desktop`。
-- **恢复演练未在开发机执行**：`scripts/restore-drill.sh` 依赖 Linux/GNU 工具与真实的
-  `backups/` 数据；按运维要求每季度在服务器上执行，并把 `PASS` 日志填入验收清单。
-- **三端界面走查与性能计时**：13.1 的 10 秒打开、13.4 的 3 秒首字、13.9 的三端截图
-  需要人工执行，结果列在 `docs/operations/acceptance-checklist.md` 中待填。
+交付后的收口轮已闭合前四条，下面逐条写明当时的判断为何不成立或已推进到哪一步。
+
+- **Android 发布包（已产出）**：交付时记的是「本机没有 JDK，`java` 不在 PATH」。实际
+  本机装有 JDK 21（`~/.jdks/ms-21.0.8`；Android Studio 自带的 jbr 已损坏、
+  `S:\Program Files\Android\jdk` 只有 8，所以必须显式指定），Android SDK 的
+  platforms 34/35/36 也在。`pnpm build:android` 产出 release 未签名包 5,591,507 字节与
+  可侧载 debug 包 6,744,827 字节；`aapt2` 核对 `com.bookr.reader` / versionCode 2 /
+  versionName 0.2.0 / targetSdk 35。发布签名仍需 owner 自己生成 keystore，仓库不提供。
+- **桌面安装包（已产出）**：MSVC 在 S 盘的 Visual Studio 18（所以 `where link` 找不到它，
+  不代表缺失），Rust 1.98 可正常链接。`pnpm build:desktop` 产出 NSIS 4,214,296 字节与
+  MSI 5,156,864 字节。过程中发现并修复一个真实缺陷：`tauri.conf.json` 未声明
+  `bundle.windows.wix.language`，WiX 按 `en-US` 生成 1252 代码页的 `locale.wxl`，
+  中文产品名触发 26 处 `LGHT0311`，**MSI 完全打不出来**；补 `zh-CN` 后通过，并新增
+  `check:native` 第 7 项防回归。
+- **恢复演练（已在开发机执行）**：真实导出后演练 **PASS**（临时库
+  `bookr_drill_20261019t145304z`：546 users / 318 reading_progress / 396 annotations /
+  168 bookmarks，MinIO 镜像 1070 文件 · 53,073,181 字节与 manifest 完全一致，演练后临时
+  库自动删除）。同时补上对象级校验：原演练只比对行数与镜像总量，**单个被引用对象缺失
+  仍会 PASS**；现在逐个校验 `books` 的五个对象键，缺失即 FAIL。生产季度演练仍需在
+  服务器上执行。
+- **三端界面走查**：Web 端已在 360×800 与 1440×900 下采集 26 张截图（仓库外归档）并实测
+  指标——11 个页面均无整页横向溢出、真实封面全部加载；发现 1 个 important（360px 下
+  阅读器「全屏」按钮仅 9% 可见）与 6 个 minor 缺陷，已记入验收清单 13.9。Windows 与
+  Android 安装包已产出但**尚未在真机走查**；13.1 的 10 秒打开与 13.4 的 3 秒首字仍为
+  人工计时项。
 - **E2E 偶发**：一次较早的完整运行中 `ai.spec.ts › honours the settings toggle` 在第一次
   尝试失败、重试后通过；随后单独运行该 spec 与最终完整运行均 4/4、21/21 通过。该用例
   不改动本任务文件，后续若再次出现应结合 `test-results/` 的 trace 排查。
