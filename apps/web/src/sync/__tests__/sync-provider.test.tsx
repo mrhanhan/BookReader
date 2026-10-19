@@ -248,6 +248,80 @@ describe('SyncProvider', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['books'] });
   });
 
+  it('does not refetch reading queries for a session heartbeat echo', async () => {
+    setTokens(tokens);
+    let pullCalls = 0;
+    server.use(
+      http.get('/api/sync/snapshot', () =>
+        HttpResponse.json({
+          cursor: 0,
+          progress: [],
+          annotations: [],
+          bookmarks: [],
+          settings: null,
+        }),
+      ),
+      http.get('/api/sync/pull', ({ request }) => {
+        pullCalls += 1;
+        const since = Number(new URL(request.url).searchParams.get('since') ?? '0');
+        return HttpResponse.json({
+          changes: [],
+          cursor: Number.isFinite(since) ? since : 0,
+          hasMore: false,
+          reset: false,
+        });
+      }),
+      http.post('/api/sync/push', async ({ request }) => {
+        const body = (await request.json()) as { changes: SyncPushChange[] };
+        return HttpResponse.json({
+          applied: body.changes.map((change, index) => ({
+            revision: index + 1,
+            entityType: change.entityType,
+            entityId: change.entityId,
+            op: change.op,
+            payload: change.payload,
+            clientUpdatedAt: change.clientUpdatedAt,
+            serverUpdatedAt: T1,
+          })),
+          skipped: [],
+          rejected: [],
+          cursor: body.changes.length,
+        });
+      }),
+    );
+
+    const handle: { current: ProbeHandle | null } = { current: null };
+    const { queryClient } = renderWithProviders(
+      <SyncProvider>
+        <Probe
+          onReady={(next) => {
+            handle.current = next;
+          }}
+        />
+      </SyncProvider>,
+    );
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    await waitFor(() => expect(pullCalls).toBeGreaterThan(0));
+    await handle.current?.sync.repo.saveReadingSession(USER, {
+      id: '0198f0c0-0000-7000-8000-0000000000bb',
+      bookId: BOOK,
+      startedAt: T1,
+      endedAt: T1,
+      activeSeconds: 30,
+      pagesRead: 1,
+    });
+    await act(async () => {
+      await handle.current?.sync.syncNow('test');
+    });
+
+    await waitFor(() => expect(handle.current?.sync.state.pending).toBe(0));
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['annotations'] });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['bookmarks'] });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['progress'] });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['books'] });
+  });
+
   it('resolves the sync wait immediately when the engine starts offline', async () => {
     setTokens(tokens);
     // Offline opens must not burn the reader's timeout before showing the

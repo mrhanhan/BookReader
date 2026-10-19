@@ -135,6 +135,31 @@ describe('reading clock', () => {
     });
   });
 
+  it('restarts the session when the device clock jumps backwards', () => {
+    const { clock, tickAt } = setup();
+
+    clock.activity(0);
+    expect(tickAt(30_000).snapshot?.activeSeconds).toBe(30);
+
+    // NTP moves the wall clock back ten seconds.
+    const jump = tickAt(20_000);
+    expect(jump.closed).toEqual({
+      startedAt: 0,
+      endedAt: 30_000,
+      activeSeconds: 30,
+      pagesRead: 0,
+    });
+    expect(clock.current()?.startedAt).toBe(20_000);
+
+    const next = tickAt(50_000);
+    expect(next.snapshot).toEqual({
+      startedAt: 20_000,
+      endedAt: 50_000,
+      activeSeconds: 30,
+      pagesRead: 0,
+    });
+  });
+
   it('close returns the final snapshot and clears the session', () => {
     const { clock } = setup();
 

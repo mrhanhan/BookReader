@@ -471,11 +471,6 @@ export async function cleanupTrash(deps: AppDeps): Promise<number> {
   const affectedUsers = await listSessionUserIdsForPurge(deps.db, cutoff);
   const purged = await purgeBooksDeletedBefore(deps.db, cutoff);
 
-  for (const userId of affectedUsers) {
-    const timezone = await readUserTimezone(deps.db, userId);
-    await rebuildDailyStats(deps.db, userId, timezone, deps.clock.now());
-  }
-
   for (const book of purged) {
     const keys = [book.fileKey, book.coverKey, book.epubKey, book.textLayerKey, book.reflowKey].filter(
       (key): key is string => key !== null,
@@ -486,6 +481,13 @@ export async function cleanupTrash(deps: AppDeps): Promise<number> {
       // object, and retrying every key keeps the sweep moving.
       await deps.storage.delete(key).catch(() => undefined);
     }
+  }
+
+  // Rebuild aggregates only after the objects are removed: rows are already
+  // gone, so a rebuild failure must not leak files that no later sweep sees.
+  for (const userId of affectedUsers) {
+    const timezone = await readUserTimezone(deps.db, userId);
+    await rebuildDailyStats(deps.db, userId, timezone, deps.clock.now());
   }
 
   return purged.length;

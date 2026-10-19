@@ -154,6 +154,20 @@ export function createReadingClock(options: ReadingClockOptions = {}): ReadingCl
         return {};
       }
 
+      // A backwards device-clock correction (NTP or manual) would make the
+      // session end before it began and invalidate every later heartbeat, so
+      // close the old-clock session at its last known instant and restart on
+      // the new clock.
+      if (at < session.lastTickAt) {
+        const closed = snapshotOf(session.lastTickAt);
+        resetSession();
+        lastActivityAt = at;
+        if (visible && focused) {
+          startSession(at);
+        }
+        return closed.activeSeconds > 0 ? { closed } : {};
+      }
+
       if (canCount(at)) {
         const boundary = (lastActivityAt ?? at) + idleMs;
         const countedUntil = Math.min(at, boundary);
@@ -191,6 +205,8 @@ export function createReadingClock(options: ReadingClockOptions = {}): ReadingCl
       if (session === null) {
         return null;
       }
+      // Never let a backwards clock make the end precede the last tick.
+      at = Math.max(at, session.lastTickAt);
       // Include the time since the last tick; unload paths call `close`
       // directly and must not lose up to thirty seconds of reading.
       if (canCount(at)) {

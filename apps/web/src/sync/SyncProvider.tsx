@@ -96,6 +96,11 @@ export function SyncProvider({ children, createEngine, createRepo }: SyncProvide
       if (event?.type !== 'applied') {
         return;
       }
+      // Reading-session heartbeats are write-only: the reader keeps its own
+      // local copy, and refetching every query on each beat would be waste.
+      if (event.entityType === 'reading_session') {
+        return;
+      }
       void queryClient.invalidateQueries({ queryKey: ['annotations'] });
       void queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
       void queryClient.invalidateQueries({ queryKey: ['progress'] });
