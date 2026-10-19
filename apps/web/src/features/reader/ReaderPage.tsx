@@ -309,6 +309,10 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
   }, [engineFactory]);
 
   const [engine, setEngine] = useState<ReaderEngine | null>(null);
+  // Which book the installed engine was created for. A book change installs a
+  // replacement engine in an effect, so one render still holds the previous
+  // engine; linked-note jumps must not navigate that stale instance.
+  const engineOwnerRef = useRef<{ engine: ReaderEngine; bookId: string } | null>(null);
 
   const [source, setSource] = useState<ReaderSource | null>(null);
   const [loadFailure, setLoadFailure] = useState<string | null>(null);
@@ -383,6 +387,8 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
   sourceRef.current = source;
   const bookIdRef = useRef<string | null>(bookId);
   bookIdRef.current = bookId;
+  // The book + note pair whose linked-note jump has already been performed.
+  const noteJumpedRef = useRef<string | null>(null);
   // Concurrent switch clicks share one signing request per side instead of
   // racing each other; a second click awaits the first result.
   const refreshInFlightRef = useRef<
@@ -618,8 +624,12 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
   useEffect(() => {
     if (!bookId || !sourceReady || !mode) return;
     const created = engineFactoryRef.current(mode);
+    engineOwnerRef.current = { engine: created, bookId };
     setEngine(created);
     return () => {
+      if (engineOwnerRef.current?.engine === created) {
+        engineOwnerRef.current = null;
+      }
       setEngine(null);
       try {
         void Promise.resolve(created.destroy()).catch(() => {});
@@ -660,6 +670,7 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     setBookmarkDialog(null);
     setToast(null);
     readyRef.current = false;
+    noteJumpedRef.current = null;
   }, [bookId]);
 
   // Connectivity follows the browser's own events; the source resolver keeps
@@ -1144,13 +1155,17 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
       ? requestedNoteId
       : null;
   // Scope the "already handled" marker to the book so a later navigation to a
-  // different book (or another note) still jumps.
+  // different book (or another note) still jumps. A book change clears it in
+  // the per-book reset effect above.
   const noteJumpKey =
     bookId !== null && noteTargetId !== null ? `${bookId}:${noteTargetId}` : null;
-  const noteJumpedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (noteJumpKey === null || !engine || status !== 'ready' || !annotations) return;
+    // The render that changes `bookId` still holds the previous book's engine
+    // until the replacement is installed; never navigate that stale instance.
+    const owner = engineOwnerRef.current;
+    if (owner === null || owner.engine !== engine || owner.bookId !== bookId) return;
     // A mode switch remaps the position through the open effect; the same id
     // must not pull the reader back to the note's locator again.
     if (noteJumpedRef.current === noteJumpKey) return;
@@ -1167,7 +1182,16 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
       noteJumpedRef.current = noteJumpKey;
       showToast(NOTE_MISSING_MESSAGE);
     }
-  }, [annotations, annotationsQuery.isSuccess, engine, noteJumpKey, noteTargetId, showToast]);
+  }, [
+    annotations,
+    annotationsQuery.isSuccess,
+    bookId,
+    engine,
+    noteJumpKey,
+    noteTargetId,
+    showToast,
+    status,
+  ]);
 
   useEffect(() => {
     if (!engine) return;
