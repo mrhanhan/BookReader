@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { locatorSchema } from './locators';
 import { ANNOTATION_COLORS, MAX_TAGS, MAX_TAG_LENGTH } from './schemas/reading';
+import { syncReadingSessionPayloadSchema } from './stats';
 
 /** Entity kinds carried by the sync protocol, in the order clients register them. */
 export const SYNC_ENTITY_TYPES = [
@@ -8,6 +9,7 @@ export const SYNC_ENTITY_TYPES = [
   'annotation',
   'bookmark',
   'reader_settings',
+  'reading_session',
 ] as const;
 
 export type SyncEntityType = (typeof SYNC_ENTITY_TYPES)[number];
@@ -226,6 +228,8 @@ export function syncPayloadSchemaFor(entityType: SyncEntityType) {
       return syncBookmarkPayloadSchema;
     case 'reader_settings':
       return syncSettingsPayloadSchema;
+    case 'reading_session':
+      return syncReadingSessionPayloadSchema;
     default:
       throw new Error('Unknown sync entity type');
   }

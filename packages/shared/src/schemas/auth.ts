@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidTimeZone } from '../stats';
 
 /** Username rule shared by registration and login. */
 const usernameSchema = z.string().regex(/^[a-zA-Z0-9_]{3,32}$/);
@@ -18,6 +19,20 @@ export const loginSchema = z.object({
 export const refreshSchema = z.object({
   refreshToken: z.string().min(32),
 });
+
+export const updateProfileSchema = z.object({
+  timezone: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .refine(isValidTimeZone, { message: 'invalid timezone' }),
+});
+
+/** Fields the current user may change on their profile. */
+export interface ProfileUpdateDto {
+  timezone: string;
+}
 
 /** Member permission level. */
 export type Role = 'admin' | 'member';
