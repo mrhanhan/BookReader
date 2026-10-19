@@ -158,6 +158,8 @@ export function NoteAnalysisPanel({
 
   function startAnalysis(): void {
     if (!online) return;
+    // A saved-detail request still in flight must not overwrite the new stream.
+    savedToken.current += 1;
     setSaved(null);
     setSavedLoading(false);
     setOpenError(null);
@@ -197,6 +199,9 @@ export function NoteAnalysisPanel({
     try {
       await api.remove(id);
       if (!mounted.current) return;
+      // Discard a detail response that was already loading the deleted row.
+      savedToken.current += 1;
+      setSavedLoading(false);
       if (saved?.id === id) setSaved(null);
       await refreshHistory();
     } catch (error) {
