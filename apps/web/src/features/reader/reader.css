@@ -113,8 +113,43 @@
 
 .reader-chrome-bottom {
   bottom: 0;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--reader-border);
+}
+
+.reader-chrome-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.reader-nav {
+  justify-content: space-between;
+}
+
+.reader-utils {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.reader-zoom {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.reader-zoom-value {
+  min-width: 3.4em;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  text-align: center;
 }
 
 .reader-chrome button {
@@ -670,6 +705,21 @@ figure[data-state='failed'] canvas {
   border: 0;
 }
 
+@media (min-width: 641px) {
+  .reader-chrome-bottom {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .reader-nav,
+  .reader-utils {
+    flex: 0 0 auto;
+    gap: 14px;
+  }
+}
+
 @media (max-width: 640px) {
   .reader-chrome-top {
     flex-wrap: wrap;
@@ -682,16 +732,33 @@ figure[data-state='failed'] canvas {
     text-align: left;
   }
 
+  /* A single scrollable rail keeps every action reachable without wrapping
+     the title row or squeezing buttons into unreadable vertical text. */
   .reader-actions {
-    flex-wrap: wrap;
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .reader-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .reader-actions button {
+    flex: 0 0 auto;
+  }
+
+  /* 44px targets for the chrome while it is overlaid on the book. */
+  .reader-chrome button {
+    min-height: 2.75rem;
+    padding: 0.5rem 0.75rem;
   }
 
   .reader-sync {
     display: none;
-  }
-
-  .reader-page-label {
-    order: -1;
   }
 
   .bookr-reflow {

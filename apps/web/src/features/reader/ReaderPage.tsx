@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Link, useParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -60,6 +60,8 @@ import { readLocalProgress } from './progressStore';
 import { isInteractiveTarget } from './interactions';
 import { useReaderProgress } from './useReaderProgress';
 import { useReadingMode } from './useReadingMode';
+import { useReaderGestures } from './useReaderGestures';
+import type { ReaderSwipeHandlers, ReaderZoomHandlers } from './useReaderGestures';
 import { ReaderContent } from './ReaderContent';
 import { ReaderChrome } from './ReaderChrome';
 import type { ReaderPanelName } from './ReaderChrome';
@@ -99,6 +101,11 @@ const CHROME_HIDE_DELAY_MS = 2_500;
  * earlier.
  */
 const FIRST_SYNC_WAIT_MS = 1_500;
+/**
+ * Gesture zoom applies live but writes to the local repository only after the
+ * gesture has been quiet this long, so a pinch cannot flood IndexedDB.
+ */
+const SETTINGS_PERSIST_DELAY_MS = 400;
 
 export interface ReaderPageProps {
   /** Tests inject a recording fake; the route uses the real factory. */
@@ -391,12 +398,10 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
   const userIdRef = useRef<string | null>(userId);
   userIdRef.current = userId;
 
-  const changeSettings = useCallback(
-    (next: ReaderSettings) => {
-      const merged = mergeReaderSettings(next);
-      settingsRef.current = merged;
-      setSettings(merged);
-      engine?.setSettings(merged);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const persistSettings = useCallback(
+    (merged: ReaderSettings) => {
       const currentUserId = userIdRef.current;
       if (!currentUserId) return;
 
@@ -408,7 +413,52 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
         .then(() => requestSync('settings'))
         .catch(() => undefined);
     },
-    [engine, repo, requestSync],
+    [repo, requestSync],
+  );
+
+  /**
+   * Applies settings to the live view immediately. Persistence is separate so
+   * a zoom gesture can update on every move and still write only once when it
+   * settles (see `persistTimerRef`).
+   */
+  const applySettings = useCallback(
+    (next: ReaderSettings, persist: boolean) => {
+      const merged = mergeReaderSettings(next);
+      settingsRef.current = merged;
+      setSettings(merged);
+      engine?.setSettings(merged);
+
+      if (persistTimerRef.current !== null) {
+        clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+      if (persist) {
+        persistSettings(merged);
+        return;
+      }
+      persistTimerRef.current = setTimeout(() => {
+        persistTimerRef.current = null;
+        // Read the latest value: several transient changes may have landed.
+        persistSettings(settingsRef.current);
+      }, SETTINGS_PERSIST_DELAY_MS);
+    },
+    [engine, persistSettings],
+  );
+
+  const changeSettings = useCallback(
+    (next: ReaderSettings) => applySettings(next, true),
+    [applySettings],
+  );
+
+  // A pending transient write must not fire after the reader is gone.
+  useEffect(
+    () => () => {
+      if (persistTimerRef.current !== null) {
+        clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = null;
+      }
+    },
+    [],
   );
 
   /**
@@ -950,6 +1000,86 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     if (engine) ignoreRejection(() => engine.next());
   }, [engine]);
 
+  // ---- zoom and touch gestures -------------------------------------------
+
+  /**
+   * Effective scale of the original PDF view. A numeric setting is already
+   * the render scale; fit modes take the engine's computed scale, which is the
+   * only source that accounts for the viewport and crop.
+   */
+  const zoomBaseScale = useCallback((): number => {
+    const zoom = settingsRef.current.pdf.zoom;
+    if (typeof zoom === 'number') return zoom;
+    const engineScale = engineRef.current?.currentScale?.();
+    return typeof engineScale === 'number' && Number.isFinite(engineScale) && engineScale > 0
+      ? engineScale
+      : 1;
+  }, []);
+
+  const zoomHandlers = useMemo<ReaderZoomHandlers | null>(() => {
+    if (mode !== 'pdf') return null;
+
+    const applyZoom = (scale: number, persist: boolean): void => {
+      const latest = settingsRef.current;
+      applySettings({ ...latest, pdf: { ...latest.pdf, zoom: scale } }, persist);
+    };
+
+    return {
+      baseScale: zoomBaseScale,
+      // Live feedback only; the deferred persist in `applySettings` writes
+      // the settled value once the gesture stops.
+      onZoom: (scale) => applyZoom(scale, false),
+      onZoomEnd: (scale) => applyZoom(scale, false),
+    };
+  }, [applySettings, mode, zoomBaseScale]);
+
+  const handleDoubleTap = useCallback((): void => {
+    if (mode !== 'pdf') return;
+    // `mergeReaderSettings` clamps numeric zoom to the supported range.
+    const zoom = zoomBaseScale() > 1.5 ? 'fit-width' : 2;
+    const latest = settingsRef.current;
+    applySettings({ ...latest, pdf: { ...latest.pdf, zoom } }, true);
+  }, [applySettings, mode, zoomBaseScale]);
+
+  const swipeEnabled =
+    mode === 'epub'
+      ? settings.epub.flow === 'paginated'
+      : mode === 'pdf'
+        ? settings.pdf.mode === 'single' || settings.pdf.mode === 'double'
+        : false;
+
+  const swipeHandlers = useMemo<ReaderSwipeHandlers | null>(
+    () =>
+      mode === null
+        ? null
+        : {
+            enabled: swipeEnabled && panel === null && !dialogOpen,
+            onNext: goNext,
+            onPrevious: goPrevious,
+          },
+    [dialogOpen, goNext, goPrevious, mode, panel, swipeEnabled],
+  );
+
+  useReaderGestures({
+    targetRef: contentRef,
+    zoom: zoomHandlers,
+    swipe: swipeHandlers,
+    onDoubleTap: zoomHandlers ? handleDoubleTap : undefined,
+  });
+
+  /** Chrome/keyboard zoom is an explicit choice and persists immediately. */
+  const zoomTo = useCallback(
+    (zoom: ReaderSettings['pdf']['zoom']): void => {
+      const latest = settingsRef.current;
+      applySettings({ ...latest, pdf: { ...latest.pdf, zoom } }, true);
+    },
+    [applySettings],
+  );
+
+  const zoomIn = useCallback(() => zoomTo(zoomBaseScale() * 1.2), [zoomBaseScale, zoomTo]);
+  const zoomOut = useCallback(() => zoomTo(zoomBaseScale() / 1.2), [zoomBaseScale, zoomTo]);
+  const zoomReset = useCallback(() => zoomTo('fit-width'), [zoomTo]);
+
   const seekPercent = useCallback(
     (value: number) => {
       if (engine) ignoreRejection(() => engine.goToPercent(value));
@@ -1277,6 +1407,14 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
 
+      // Zoom shortcuts only exist for the original PDF view and must not fire
+      // through a panel or dialog.
+      const canZoom =
+        zoomHandlers !== null
+        && status === 'ready'
+        && panelRef.current === null
+        && !dialogOpenRef.current;
+
       switch (event.key) {
         case 'ArrowLeft':
         case 'PageUp':
@@ -1321,11 +1459,39 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
           if (dialogOpenRef.current) break;
           setPanel(null);
           break;
+        case '+':
+        case '=':
+          if (!canZoom) break;
+          event.preventDefault();
+          zoomIn();
+          break;
+        case '-':
+        case '_':
+          if (!canZoom) break;
+          event.preventDefault();
+          zoomOut();
+          break;
+        case '0':
+          if (!canZoom) break;
+          event.preventDefault();
+          zoomReset();
+          break;
         default:
           break;
       }
     },
-    [goNext, goPrevious, openBookmarkDialog, revealChrome, status, togglePanel],
+    [
+      goNext,
+      goPrevious,
+      openBookmarkDialog,
+      revealChrome,
+      status,
+      togglePanel,
+      zoomHandlers,
+      zoomIn,
+      zoomOut,
+      zoomReset,
+    ],
   );
 
   useEffect(() => {
@@ -1469,6 +1635,7 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
       : currentLocator?.kind === 'reflow'
         ? currentLocator.sourcePage
         : 1;
+  const zoomPercent = mode === 'pdf' ? Math.round(zoomBaseScale() * 100) : null;
   const fatalMessage = loadFailure ?? engineFailure;
 
   if (!book) {
@@ -1546,6 +1713,10 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
               onNext={goNext}
               onSeekPercent={seekPercent}
               onJumpPage={jumpToPage}
+              zoomPercent={zoomPercent}
+              onZoomIn={zoomIn}
+              onZoomOut={zoomOut}
+              onZoomReset={zoomReset}
               onActivity={revealChrome}
             />
           ) : null}

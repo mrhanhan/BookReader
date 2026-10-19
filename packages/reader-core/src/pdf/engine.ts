@@ -425,6 +425,10 @@ export class PdfReaderEngine implements ReaderEngine {
     return this.pdfLocatorNow();
   }
 
+  currentScale(): number {
+    return this.scale;
+  }
+
   async getTextContext(
     scope: ReaderContextScope,
     maxChars: number = DEFAULT_CONTEXT_MAX_CHARS,
