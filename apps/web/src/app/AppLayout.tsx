@@ -42,7 +42,7 @@ export function AppLayout() {
           {/* Phones get a second, horizontally scrollable paper-tab row. */}
           <nav
             aria-label="主导航"
-            className="-mx-1 order-3 flex w-full items-center gap-1 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 sm:pb-0"
+            className="-mx-1 order-3 flex w-full items-center gap-1 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 sm:pb-0"
           >
             {navItems.map((item) => (
               <NavLink

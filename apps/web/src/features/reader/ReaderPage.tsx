@@ -1067,6 +1067,11 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
     onDoubleTap: zoomHandlers ? handleDoubleTap : undefined,
   });
 
+  // EPUB content lives in an iframe whose touches never reach the parent
+  // container, so the bridge below reads the current swipe state from a ref.
+  const iframeSwipeRef = useRef<ReaderSwipeHandlers | null>(swipeHandlers);
+  iframeSwipeRef.current = swipeHandlers;
+
   /** Chrome/keyboard zoom is an explicit choice and persists immediately. */
   const zoomTo = useCallback(
     (zoom: ReaderSettings['pdf']['zoom']): void => {
@@ -1579,13 +1584,50 @@ export function ReaderPage({ engineFactory = createReaderEngine, aiApi }: Reader
       };
       const onKeyDown = (event: KeyboardEvent): void => handleKeyDown(event);
 
+      // Swipe-to-turn inside the EPUB iframe. The parent gesture hook cannot
+      // see these touches because the frame owns its own document.
+      let touchStart: { x: number; y: number; at: number } | null = null;
+      const onTouchStart = (event: TouchEvent): void => {
+        if (event.touches.length !== 1) {
+          touchStart = null;
+          return;
+        }
+        const touch = event.touches[0];
+        touchStart = touch
+          ? { x: touch.clientX, y: touch.clientY, at: Date.now() }
+          : null;
+      };
+      const onTouchEnd = (event: TouchEvent): void => {
+        const start = touchStart;
+        touchStart = null;
+        const swipe = iframeSwipeRef.current;
+        if (!start || !swipe?.enabled) return;
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (Date.now() - start.at > 800) return;
+        if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
+        try {
+          if (win?.getSelection()?.toString()) return;
+        } catch {
+          // A lost realm cannot report a selection; treat it as a swipe.
+        }
+        if (dx > 0) swipe.onPrevious();
+        else swipe.onNext();
+      };
+
       win.addEventListener('pointermove', onPointerMove);
       win.addEventListener('click', onClick, true);
       win.addEventListener('keydown', onKeyDown, true);
+      win.addEventListener('touchstart', onTouchStart, { passive: true });
+      win.addEventListener('touchend', onTouchEnd);
       record.detach = () => {
         win?.removeEventListener('pointermove', onPointerMove);
         win?.removeEventListener('click', onClick, true);
         win?.removeEventListener('keydown', onKeyDown, true);
+        win?.removeEventListener('touchstart', onTouchStart);
+        win?.removeEventListener('touchend', onTouchEnd);
       };
     };
 
