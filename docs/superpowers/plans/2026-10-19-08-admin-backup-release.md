@@ -1506,7 +1506,7 @@ test(e2e): cover admin console and PWA; document acceptance   # Task 9 收尾提
 
 - **Android 发布包未在本机构建**：本机没有 JDK（`java` 不在 PATH），`pnpm build:android`
   无法执行，`apps/mobile/android/app/build/outputs/apk/release/` 下没有 APK。发布配置、
-  签名忽略规则与脚本已就绪，`pnpm check:native` 通过；需在安装 JDK 17+ 与 Android SDK
+  签名忽略规则与脚本已就绪，`pnpm check:native` 通过；需在安装 JDK 21 与 Android SDK
   的机器上按 `docs/operations/native-builds.md` 构建。
 - **桌面安装包未在本机构建**：本机虽已有 Rust，但没有产出
   `apps/desktop/src-tauri/target/release/bundle/`。需在具备 MSVC Build Tools 与

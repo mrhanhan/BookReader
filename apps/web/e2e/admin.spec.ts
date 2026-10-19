@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 import { adminAuth, loginAs } from './helpers';
 
 const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'admin';
@@ -20,9 +20,22 @@ function isoWithOffset(date: Date): string {
 
 /**
  * Registration must be left open even when an assertion fails: the other
- * specs mint invites and register fresh readers.
+ * specs mint invites and register fresh readers. The API is restored first so
+ * a broken settings page cannot poison the rest of the suite; the UI path is
+ * only a fallback for an unavailable admin API.
  */
-async function restoreRegistration(page: Page): Promise<void> {
+async function restoreRegistration(page: Page, request: APIRequestContext): Promise<void> {
+  try {
+    const headers = await adminAuth(request);
+    const restored = await request.patch('/api/admin/settings', {
+      headers,
+      data: { registrationEnabled: true },
+    });
+    if (restored.status() === 200) return;
+  } catch {
+    // Fall through to the UI path below.
+  }
+
   await page.goto('/admin/settings');
   const registration = page.getByLabel('允许新成员注册');
   await expect(registration).toBeVisible();
@@ -35,6 +48,7 @@ async function restoreRegistration(page: Page): Promise<void> {
 
 test('disables registration, persists it and records the change in the audit log', async ({
   page,
+  request,
 }) => {
   await signInAsAdmin(page);
 
@@ -62,7 +76,7 @@ test('disables registration, persists it and records the change in the audit log
     // The audit ledger is newest first; the save above is the latest entry.
     await expect(page.locator('tbody tr').first()).toContainText('修改系统设置');
   } finally {
-    await restoreRegistration(page);
+    await restoreRegistration(page, request);
   }
 });
 
@@ -101,7 +115,10 @@ test('shows server export and backup PC heartbeats on the backup status page', a
   const successRow = page
     .locator('tbody tr')
     .filter({ hasText: '服务器导出' })
-    .filter({ hasText: '成功' });
+    .filter({ hasText: '成功' })
+    // The report table renders `message`, so this binds the row to the
+    // heartbeat posted above rather than to an earlier run.
+    .filter({ hasText: 'E2E server export' });
   await expect(successRow.first()).toBeVisible();
 
   const failureFinished = new Date();

@@ -100,7 +100,7 @@ keyPassword=<key 密码>
 
 ### 构建 APK
 
-前置条件：JDK 17+、Android SDK（`ANDROID_HOME` 或 `apps/mobile/android/local.properties` 中的 `sdk.dir`）。
+前置条件：JDK 21、Android SDK（`ANDROID_HOME` 或 `apps/mobile/android/local.properties` 中的 `sdk.dir`）。
 
 ```bash
 VITE_API_BASE_URL=https://bookr.example.com pnpm build:android

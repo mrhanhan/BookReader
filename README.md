@@ -634,7 +634,7 @@ E2E 与本地演示可设置 `AI_FAKE_PROVIDER=1`，服务端用确定性的假�
 - 成员列表显示显示名、用户名、角色、状态与上传用量；可停用/启用成员、重置密码
   （会立即撤销其在所有设备上的登录）、调整上传配额。
 - AI 配额：为每位成员单独开关 AI 伴读，并设置每日/每月 token 上限；留空表示不修改。
-- 邀请码：生成一枚一次性邀请码（默认 12 小时有效），复制后交给新成员；未使用的邀请码
+- 邀请码：生成一枚一次性邀请码（默认 72 小时有效），复制后交给新成员；未使用的邀请码
   可撤销。每枚邀请码只能启用一位成员。
 - 存储用量：共享书库总量、每位成员用量与最大的 10 本书。
 
@@ -766,7 +766,7 @@ WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost`
 - Web 端可安装为 PWA：`manifest.webmanifest`、`display: standalone` 与三个 PNG 图标已经
   提供，安装入口由浏览器决定；iOS 仍使用「添加到主屏幕」，不提供推送。
 - 桌面安装包由 `pnpm build:desktop` 产出 NSIS/MSI，Android APK 由 `pnpm build:android`
-  产出；前者需要 Rust/MSVC/WebView2，后者需要 JDK 17+ 与 Android SDK。仓库只提供
+  产出；前者需要 Rust/MSVC/WebView2，后者需要 JDK 21 与 Android SDK。仓库只提供
   可复现的配置与脚本，**不附带已签名产物**；签名材料与证书不得入库。详见
   [`docs/operations/native-builds.md`](docs/operations/native-builds.md)。
 - 恢复演练（`scripts/restore-drill.sh`）恢复最近 dump 到临时库并核对行数与 MinIO manifest；
