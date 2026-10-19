@@ -1,7 +1,10 @@
+import { updateSystemSettingsSchema } from '@bookr/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AppDeps } from '../app';
+import { listAuditEntries } from '../audit/service';
 import { makeRequireAdmin, makeRequireAuth } from '../auth/guards';
+import { readSystemSettings, updateSystemSettings } from '../settings/service';
 import {
   MAX_INVITE_HOURS,
   createInvite,
@@ -15,6 +18,11 @@ import {
 const memberParamsSchema = z.object({ id: z.uuid() });
 
 const inviteParamsSchema = z.object({ code: z.string().min(1).max(64) });
+
+const auditQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(30),
+});
 
 const updateMemberSchema = z.object({
   isActive: z.boolean().optional(),
@@ -65,5 +73,23 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.get('/api/admin/storage', adminOnly, async () => {
     return storageOverview(deps);
+  });
+
+  app.get('/api/admin/settings', adminOnly, async () => {
+    const settings = await readSystemSettings(deps.db);
+    return {
+      registrationEnabled: settings.registrationEnabled,
+      defaultTimezone: settings.defaultTimezone,
+      updatedAt: settings.updatedAt?.toISOString() ?? null,
+    };
+  });
+
+  app.patch('/api/admin/settings', adminOnly, async (request) => {
+    const patch = updateSystemSettingsSchema.parse(request.body);
+    return updateSystemSettings(deps, request.user!.id, patch);
+  });
+
+  app.get('/api/admin/audit', adminOnly, async (request) => {
+    return listAuditEntries(deps, auditQuerySchema.parse(request.query));
   });
 }

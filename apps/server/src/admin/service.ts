@@ -67,7 +67,11 @@ export interface StorageOverview {
   totalBytes: number;
   usedBytes: number;
   perMember: Array<{ userId: string; displayName: string; usedBytes: number }>;
+  topBooks: Array<{ id: string; title: string; sizeBytes: number }>;
 }
+
+/** How many of the largest books the storage screen ranks. */
+const TOP_BOOKS_LIMIT = 10;
 
 const MEMBER_COLUMNS = {
   id: users.id,
@@ -402,14 +406,20 @@ export async function revokeInvite(deps: AppDeps, actorId: string, code: string)
   });
 }
 
-/** Total quota, live usage and the per-member breakdown for the admin screen. */
+/** Total quota, live usage, the per-member breakdown and the largest books. */
 export async function storageOverview(deps: AppDeps): Promise<StorageOverview> {
-  const [usage, members] = await Promise.all([
+  const [usage, members, largest] = await Promise.all([
     usageByUser(deps),
     deps.db
       .select({ id: users.id, displayName: users.displayName })
       .from(users)
       .orderBy(users.createdAt),
+    deps.db
+      .select({ id: books.id, title: books.title, size: books.size })
+      .from(books)
+      .where(isNull(books.deletedAt))
+      .orderBy(desc(books.size), books.createdAt)
+      .limit(TOP_BOOKS_LIMIT),
   ]);
 
   const perMember = members.map((member) => ({
@@ -422,5 +432,10 @@ export async function storageOverview(deps: AppDeps): Promise<StorageOverview> {
     totalBytes: deps.config.libraryQuotaBytes,
     usedBytes: perMember.reduce((sum, member) => sum + member.usedBytes, 0),
     perMember,
+    topBooks: largest.map((book) => ({
+      id: book.id,
+      title: book.title,
+      sizeBytes: book.size,
+    })),
   };
 }

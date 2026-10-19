@@ -4,6 +4,7 @@ import type { AppDeps } from '../app';
 import { auditLogs, devices, invites, users } from '../db/schema';
 import { AppError } from '../errors';
 import { getLibrary } from '../library/service';
+import { readSystemSettings } from '../settings/service';
 import { hashPassword, verifyPassword } from './password';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
@@ -96,6 +97,14 @@ export async function registerUser(deps: AppDeps, input: RegisterInput): Promise
   const refresh = newRefreshToken();
 
   const session = await deps.db.transaction(async (tx) => {
+    // The registration toggle is read inside the same transaction that locks
+    // and consumes the invite, so a concurrent "close registration" request
+    // cannot slip a new account in between the check and the insert.
+    const settings = await readSystemSettings(tx);
+    if (!settings.registrationEnabled) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, undefined, '注册暂未开放');
+    }
+
     const [invite] = await tx
       .select()
       .from(invites)
@@ -115,6 +124,9 @@ export async function registerUser(deps: AppDeps, input: RegisterInput): Promise
           username: input.username,
           passwordHash,
           displayName: input.displayName,
+          // The administrator's default timezone applies at signup; changing it
+          // later never rewrites existing accounts.
+          timezone: settings.defaultTimezone,
           // New registrations never choose their own role.
           role: 'member',
         })

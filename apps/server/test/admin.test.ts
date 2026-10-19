@@ -169,3 +169,17 @@ it('keeps trashed books in the reported storage usage until the purge', async ()
     expect.arrayContaining([expect.objectContaining({ id: member.id, usedBytes: 420 })]),
   );
 });
+
+it('ranks the ten largest live books', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  for (let index = 0; index < 12; index += 1) {
+    await seedBook({ uploadedBy: admin.id, title: `书${index}`, size: 100 + index });
+  }
+  await seedBook({ uploadedBy: admin.id, title: '回收站', size: 9_999, deletedAt: new Date() });
+  const body = (await app.inject({ method: 'GET', url: '/api/admin/storage', headers: await authHeader(admin) })).json();
+  expect(body.topBooks).toHaveLength(10);
+  expect(body.topBooks[0]).toEqual({ id: expect.any(String), title: '书11', sizeBytes: 111 });
+  expect(body.topBooks.some((book: { title: string }) => book.title === '回收站')).toBe(false);
+});
