@@ -447,7 +447,7 @@ PDF 的阅读进度、批注与书签接口同时接受 `pdf` 与 `reflow` 两�
 ### 15.1 配置服务商
 
 服务端默认使用 OpenAI 兼容协议，默认端点为 `https://api.deepseek.com/v1`，默认模型
-`deepseek-chat`（解释/总结/追问）与 `deepseek-reasoner`（预留给 P6 笔记分析）。API Key
+`deepseek-chat`（解释/总结/追问）与 `deepseek-reasoner`（笔记分析）。API Key
 以 AES-256-GCM 加密存于数据库，永不下发浏览器。两种配置方式：
 
 1. **首次启动引导**：在 `.env` 设置 `AI_API_KEY`（可同时设置 `AI_BASE_URL`、
@@ -484,7 +484,48 @@ E2E 与本地演示可设置 `AI_FAKE_PROVIDER=1`，服务端用确定性的假�
 （流式、配额、持久化路径不变）。**生产环境严禁设置该变量**；启动日志会打印警告，
 设置页会显示「当前使用本地假提供方（仅用于测试）」。
 
-## 16. 本地 PDF 预处理工具
+## 16. 笔记库与 AI 分析
+
+所有书上的划线、批注汇入一个按用户隔离的全局笔记库：`/notes`。笔记库以服务端为准，
+需要联网使用；离线时仍可阅读已缓存的书并在阅读器内记笔记，联网后由同步队列汇入。
+
+**检索与筛选**
+
+- 搜索 `q` 同时匹配划线原文与批注文字，按字面量比较（`%`、`_` 不作通配符）。
+- `bookId`、`tag`、`type`（`highlight` / `note`）、`from` / `to`（`YYYY-MM-DD`，按用户时区，
+  含首尾）可组合；缺失的筛选表示不限制。仅返回自己的、未删除的笔记，且书仍在书架上。
+- 列表按最近编辑倒序分页；页面滚动到底自动续页，另有「加载更多」按钮兜底。
+- 按书分组视图把当前已加载的笔记按书聚合；标签下拉来自 `/api/notes/tags`（按使用次数排序）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/notes` | 分页查询；返回 `{ items, total, page, pageSize }`，每条含书 id/书名/作者/格式 |
+| `GET` | `/api/notes/tags` | 返回 `{ items: [{ tag, count }] }` |
+| `GET` | `/api/notes/export` | 按同一组筛选导出 Markdown 附件，最多 5000 条 |
+| `POST` | `/api/notes/analyses` | 对当前筛选下的笔记做 AI 分析，SSE 流式返回 |
+| `GET` | `/api/notes/analyses` | 最近 20 条已完成/中断/失败的分析 |
+| `GET/DELETE` | `/api/notes/analyses/:id` | 读取或删除自己的分析记录（他人一律 404） |
+
+**导出**：每个书只出现一个 `## 《书名》 · 作者` 标题，笔记按创建时间排列，含位置、
+`> 划线原文`、批注、标签与 `*YYYY-MM-DD*`；批注中可能形成 Markdown 块的行首符号会被转义。
+文件名优先 `filename*=UTF-8`（如 `笔记-书名-20261019.md`），并提供 ASCII 回退。
+
+**AI 分析**
+
+- 三种方式：主题归纳、观点梳理、待办提取；默认使用 `AI_REASONER_MODEL`（默认
+  `deepseek-reasoner`），流式返回并保存为可回看的分析记录。
+- 只分析当前筛选范围内的笔记，最多取最近编辑的 300 条；上下文预算 24k tokens，
+  超出时保留较新的笔记并在提示词中说明。每条只发送书名、位置、划线（≤600 字）、
+  批注（≤400 字）、标签与日期，不发送整本书。
+- 沿用 P5 的 AI 开关、服务商配置与日/月 token 配额；空范围在预占配额前返回
+  `VALIDATION_FAILED`（`details.reason = "no_notes"`）。停止生成时已生成内容保存为
+  `interrupted`，上游失败保存为 `failed`，都不会丢失已生成文本。
+- 面板支持停止、回看历史、两步删除；移动端为底部抽屉，Esc 关闭，焦点在面板内循环。
+
+**跳回原文**：笔记卡片的「跳回原文」使用 `/books/:id/read?note=<annotationId>`；
+阅读器从本地批注解析定位器并闪烁高亮，找不到时提示一次并停留在上次位置。
+
+## 17. 本地 PDF 预处理工具
 
 源码在 `tools/pdf-preprocess`，完整说明（参数、包结构、质量报告字段与限制）见
 [`tools/pdf-preprocess/README.md`](tools/pdf-preprocess/README.md)。工具只在书籍所有者
@@ -521,7 +562,7 @@ bookr-preprocess scan.pdf --out scan.bookr.json --ocr always --ai-correct --repo
 服务端会校验包内 `source.sha256`、schema 版本与大小（≤32 MiB）；每本书最多一个包，
 重排包不计入书籍配额。
 
-## 17. 桌面端（Tauri 2）
+## 18. 桌面端（Tauri 2）
 
 源码在 `apps/desktop`，详见 `apps/desktop/README.md`。
 
@@ -540,7 +581,7 @@ VITE_API_BASE_URL=https://bookr.example.com pnpm --filter @bookr/desktop build
 服务端 `CORS_ORIGIN` 必须包含 `https://tauri.localhost` 与 `http://tauri.localhost`（macOS/Linux 构建还需追加 `tauri://localhost`）；
 预签名书籍 URL 的 `S3_PUBLIC_ENDPOINT` 必须是桌面端可达的地址。
 
-## 18. Android 端（Capacitor 7）
+## 19. Android 端（Capacitor 7）
 
 源码在 `apps/mobile`，原生工程 `apps/mobile/android` 已生成并提交，详见
 `apps/mobile/README.md`。
@@ -559,7 +600,7 @@ WebView 源为 `https://localhost`；`CORS_ORIGIN` 需包含 `https://localhost`
 `capacitor://localhost`。生产环境不开启明文 HTTP（`usesCleartextTraffic`），API 与
 预签名文件地址都必须是设备可达的 HTTPS 地址。
 
-## 19. 已知范围
+## 20. 已知范围
 
 - 桌面安装包（MSI/DMG/AppImage）、代码签名、自动更新、Android 签名与 APK/AAB 分发
   均由 **Plan 8** 负责；本仓库当前只提供可编译、可开发的原生外壳。
