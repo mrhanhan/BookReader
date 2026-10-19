@@ -48,6 +48,17 @@ _heartbeat_is_uint() {
   esac
 }
 
+# backup-export.sh exports MSYS_NO_PATHCONV=1 so container paths reach Docker
+# unchanged, which also stops Git Bash from translating /dev/null into the
+# Windows device. Windows curl then fails to open the path (exit 23) and the
+# report is silently lost, so pick the platform null device explicitly.
+_heartbeat_null_device() {
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    MINGW* | MSYS* | CYGWIN*) printf nul ;;
+    *) printf /dev/null ;;
+  esac
+}
+
 heartbeat_report() {
   local source="${1-}" status="${2-}" started="${3-}" finished="${4-}"
   local bytes_arg="${5-}" message="${6-}" disk_dir="${7-}"
@@ -131,14 +142,16 @@ heartbeat_report() {
   fi
 
   local -a curl_args=(
-    curl -sS --max-time 15 -o /dev/null -w '%{http_code}'
+    curl -sS --max-time 15 -o "$(_heartbeat_null_device)" -w '%{http_code}'
     -X POST -H 'Content-Type: application/json'
     -H "X-Backup-Token: ${BOOKR_BACKUP_TOKEN}"
   )
   curl_args+=(--data-binary "$payload" "$url")
 
-  if ! http_code="$("${curl_args[@]}" 2>/dev/null)"; then
-    _heartbeat_warn "POST $url failed; backup result unchanged"
+  local curl_exit=0
+  http_code="$("${curl_args[@]}" 2>/dev/null)" || curl_exit=$?
+  if [ "$curl_exit" -ne 0 ]; then
+    _heartbeat_warn "POST $url failed (curl exit $curl_exit); backup result unchanged"
     return 0
   fi
   case "$http_code" in
