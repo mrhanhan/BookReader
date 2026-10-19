@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_TAG_LENGTH } from '../schemas/reading';
 import {
+  NOTE_ANALYSIS_KINDS,
+  NOTE_ANALYSIS_MAX_NOTES,
+  NOTE_ANALYSIS_STATUSES,
+  NOTE_ANALYSIS_TITLE_MAX_LENGTH,
   NOTE_DEFAULT_PAGE_SIZE,
+  NOTE_EXPORT_MAX_ITEMS,
   NOTE_MAX_PAGE_SIZE,
   NOTE_SEARCH_MAX_LENGTH,
+  NOTE_TAG_LIMIT,
   noteAnalysisRequestSchema,
   noteFiltersSchema,
   noteListQuerySchema,
@@ -12,6 +18,19 @@ import {
 function issuePaths(result: ReturnType<typeof noteFiltersSchema.safeParse>): string[] {
   return result.success ? [] : result.error.issues.map((issue) => issue.path.join('.'));
 }
+
+describe('notes constants', () => {
+  it('locks the cross-package contract values', () => {
+    expect(NOTE_DEFAULT_PAGE_SIZE).toBe(30);
+    expect(NOTE_MAX_PAGE_SIZE).toBe(100);
+    expect(NOTE_TAG_LIMIT).toBe(100);
+    expect(NOTE_EXPORT_MAX_ITEMS).toBe(5000);
+    expect(NOTE_ANALYSIS_MAX_NOTES).toBe(300);
+    expect(NOTE_ANALYSIS_TITLE_MAX_LENGTH).toBe(80);
+    expect(NOTE_ANALYSIS_KINDS).toEqual(['themes', 'viewpoints', 'todos']);
+    expect(NOTE_ANALYSIS_STATUSES).toEqual(['streaming', 'complete', 'interrupted', 'failed']);
+  });
+});
 
 describe('notes filter contract', () => {
   it('accepts an empty filter object and trims search text', () => {
@@ -28,6 +47,16 @@ describe('notes filter contract', () => {
       expect(issue?.message).toBe('to must not be before from');
     }
     expect(noteFiltersSchema.safeParse({ from: '2026-10-19', to: '2026-10-19' }).success).toBe(true);
+  });
+
+  it('does not add a range issue when a bound is not a real date', () => {
+    const result = noteFiltersSchema.safeParse({ from: '2026-13-01', to: '2026-10-19' });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // Only the malformed `from` is at fault; `to` stays a valid field.
+      expect(result.error.issues.map((issue) => issue.path.join('.'))).toEqual(['from']);
+    }
   });
 
   it('caps the search term at 200 characters', () => {
@@ -57,7 +86,7 @@ describe('notes list query', () => {
   it('defaults list paging and coerces query strings', () => {
     expect(noteListQuerySchema.parse({})).toEqual({
       page: 1,
-      pageSize: NOTE_DEFAULT_PAGE_SIZE,
+      pageSize: 30,
     });
     expect(noteListQuerySchema.parse({ page: '2', pageSize: '50' })).toEqual({
       page: 2,

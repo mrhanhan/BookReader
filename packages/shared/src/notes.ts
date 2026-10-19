@@ -44,8 +44,28 @@ const noteFilterFields = {
   to: z.iso.date().optional(),
 };
 
+/** True only for a real calendar date in `YYYY-MM-DD` form (2026-02-30 fails). */
+function isIsoDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
 function checkDateRange(filters: { from?: string; to?: string }, ctx: z.RefinementCtx): void {
-  if (filters.from !== undefined && filters.to !== undefined && filters.from > filters.to) {
+  const { from, to } = filters;
+  // A malformed bound already fails its own field validation; comparing the
+  // raw strings here would additionally flag a valid `to` as out of range.
+  if (from === undefined || to === undefined) return;
+  if (!isIsoDate(from) || !isIsoDate(to)) return;
+  if (from > to) {
     ctx.addIssue({ code: 'custom', path: ['to'], message: 'to must not be before from' });
   }
 }
