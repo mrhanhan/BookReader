@@ -116,6 +116,8 @@ curl -fsS http://localhost:8180/healthz
 - `pg_dump -U bookr -d bookr`（plain SQL）压缩为 `/srv/bookr/backups/db/bookr-<UTC时间戳>.sql.gz`，保留 30 天。
 - 通过一次性容器（复用 MinIO 镜像自带的 `mc`）把 `bookr` 桶镜像到 `/srv/bookr/backups/minio/`。
 - 写入 `manifest-<时间戳>.txt`（含 dump 大小与 SHA-256）并更新 `manifest.txt`。
+- dump 成功后写入 `counts-<时间戳>.txt`（8 张核心表行数），供恢复演练对比。
+- 若设置了 `BOOKR_API_URL` 与 `BOOKR_BACKUP_TOKEN`，运行结束会向 `POST /api/admin/backup/heartbeat` 上报成功/失败心跳；上报失败只写日志警告，不影响备份自身的退出码。
 - 任一步失败即以非 0 退出。
 
 安装 cron（服务器）：
@@ -138,7 +140,7 @@ export RESTIC_PASSWORD_FILE="$HOME/.config/bookr/restic-password"
 ~/bin/pull-backup.sh
 ```
 
-行为：`rsync -az --delete-after` 镜像到 `~/bookr-backups/`，然后 `restic backup --tag bookr`，最后 `restic forget --tag bookr --keep-daily 30 --prune`。任一步失败退出码非 0，便于监控告警。
+行为：`rsync -az --delete-after` 镜像到 `~/bookr-backups/`，然后 `restic backup --tag bookr`，最后 `restic forget --tag bookr --keep-daily 30 --prune`。任一步失败退出码非 0，便于监控告警。运行结束向服务端上报 `backup-pc` 成功/失败心跳（使用 `BOOKR_API_URL` 与 `BOOKR_BACKUP_TOKEN`，上报失败不影响退出码）。
 
 Windows 任务计划可用：`wsl.exe -e bash -lc '~/bin/pull-backup.sh'`。建议服务器 03:15 导出、备份 PC 04:00 拉取。
 
@@ -251,6 +253,37 @@ curl -fsS http://localhost:8180/healthz
 - 恢复完成后重新配置服务器 cron（第 7.1 节），并让备份 PC 重新执行一次 `pull-backup.sh`，避免下一轮 `rsync --delete-after` 用到旧目录。
 - 确认无误后再删除 `/srv/bookr/restore`。
 
+### 7.5 恢复演练（每季度）
+
+`scripts/restore-drill.sh` 在服务器上把备份恢复到临时库并校验，**不会写入或删除生产 `bookr` 库**：
+
+```bash
+cd /srv/bookr
+./scripts/restore-drill.sh                 # 使用 db/ 下最新的 dump
+./scripts/restore-drill.sh --dump /srv/bookr/backups/db/bookr-20261019T031500Z.sql.gz
+./scripts/restore-drill.sh --keep          # 保留临时库供人工检查
+```
+
+行为：
+
+1. 选择 dump（默认最新 `bookr-*.sql.gz`），并要求同一时间戳的 `counts-*.txt` 存在；缺失即判定备份不完整。
+2. 在 `postgres` 服务内创建临时库 `bookr_drill_<UTC时间戳>`，把 dump 导入其中。
+3. 在临时库统计核心表行数，与 `counts-*.txt` 逐项比较：恢复后的行数少于备份时记录的行数即 FAIL；多出仅作提示（dump 之后生产库仍会继续写入）。
+4. 对比 `minio/` 镜像的文件数与总字节是否与 `manifest-<时间戳>.txt` 的 `minio_files` / `minio_bytes` 完全一致。
+5. 输出 `PASS`/`FAIL` 摘要并写入 `/srv/bookr/backups/drills/<UTC时间戳>.log`；默认删除临时库，`--keep` 保留。
+
+通过标准：8 张核心表（`users`、`books`、`reading_progress`、`annotations`、`bookmarks`、`reading_sessions`、`daily_stats`、`categories`）恢复后的行数不少于记录值（正常应相等），且 MinIO 对象数与总字节和 manifest 完全一致。任何一项不满足即判定 FAIL 并以非 0 退出。
+
+演练后清理：
+
+- 默认自动删除临时库；脚本异常中断时可手动执行：
+  ```bash
+  cd /srv/bookr
+  docker compose exec postgres psql -U bookr -d postgres \
+    -c 'DROP DATABASE IF EXISTS bookr_drill_<时间戳> WITH (FORCE);'
+  ```
+- 用 `--keep` 保留的临时库在检查完后用上面的命令删除。
+- 保留 `drills/*.log` 作为季度演练记录；日志只含表名与行数，不含书籍正文或笔记内容。
 
 ## 8. 磁盘阈值
 
@@ -307,6 +340,14 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | `AI_CONTEXT_TOKEN_BUDGET` | 否 | 每次请求的上下文 token 预算，默认 8000 |
 | `AI_REQUEST_TIMEOUT_MS` | 否 | 上游请求超时，默认 60000 |
 | `AI_FAKE_PROVIDER` | 否 | `1` 启用本地假提供方；仅限 E2E/演示，生产禁用 |
+| `BACKUP_TOKEN` | 否 | 备份脚本心跳的共享密钥，至少 32 字符；脚本端通过同值的 `BOOKR_BACKUP_TOKEN` 发送。未配置时该通道关闭，管理员 JWT 仍可调用心跳接口 |
+| `BOOKR_API_URL` | 否 | 备份脚本上报心跳的服务端地址，默认 `http://127.0.0.1:8180`；在备份 PC 上需改为可访问的服务器地址 |
+| `BOOKR_BACKUP_TOKEN` | 否 | 备份脚本发送的 `X-Backup-Token`，须与服务端 `BACKUP_TOKEN` 一致 |
+| `ALERT_WEBHOOK_URL` | 否 | 备份失败/备份机静默/磁盘不足时投递告警的 Webhook（仅 `http:`/`https:`）；留空不发送 |
+| `DISK_ALERT_FREE_BYTES` | 否 | 备份卷剩余空间告警阈值（字节），默认 `10737418240`（10 GiB） |
+| `BACKUP_STALE_HOURS` | 否 | 超过多少小时没有成功备份即告警，默认 24，范围 1–168 |
+| `MONITOR_INTERVAL_MS` | 否 | 服务端监控循环间隔（毫秒），默认 300000，范围 60000–3600000 |
+| `BOOKR_HEARTBEAT_DRY_RUN` | 否 | 备份脚本侧调试用；设为 `1` 时只打印心跳 JSON 不发送 |
 
 `DATABASE_URL`、`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`TRUST_PROXY` 由 compose 固定为容器网络内的值，无需在 `.env` 覆盖；`S3_PUBLIC_ENDPOINT` 必须是用户浏览器能解析的地址。
 
