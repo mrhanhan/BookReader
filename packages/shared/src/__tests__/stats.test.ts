@@ -101,6 +101,25 @@ describe('syncReadingSessionPayloadSchema', () => {
     expect(syncReadingSessionPayloadSchema.safeParse(payload({ pagesRead: -1 })).success).toBe(false);
   });
 
+  it('accepts ISO timestamps with a timezone offset', () => {
+    const result = syncReadingSessionPayloadSchema.safeParse(
+      payload({
+        startedAt: '2026-10-18T20:00:00+08:00',
+        endedAt: '2026-10-18T20:30:00+08:00',
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects local timestamps without a timezone', () => {
+    expect(
+      syncReadingSessionPayloadSchema.safeParse(payload({ startedAt: '2026-10-18T08:00:00' })).success,
+    ).toBe(false);
+    expect(
+      syncReadingSessionPayloadSchema.safeParse(payload({ endedAt: '2026-10-18T08:30:00' })).success,
+    ).toBe(false);
+  });
+
   it('rejects non-ISO timestamps', () => {
     expect(
       syncReadingSessionPayloadSchema.safeParse(payload({ startedAt: '2026-10-18 08:00:00' })).success,

@@ -32,8 +32,8 @@ const WALL_CLOCK_TOLERANCE_SECONDS = 5;
 export const syncReadingSessionPayloadSchema: z.ZodType<ReadingSessionPayload> = z
   .object({
     bookId: z.uuid(),
-    startedAt: z.iso.datetime(),
-    endedAt: z.iso.datetime(),
+    startedAt: z.iso.datetime({ offset: true }),
+    endedAt: z.iso.datetime({ offset: true }),
     activeSeconds: z.number().int().min(0).max(READING_SESSION_MAX_ACTIVE_SECONDS),
     pagesRead: z.number().int().min(0).max(READING_SESSION_MAX_PAGES),
   })
