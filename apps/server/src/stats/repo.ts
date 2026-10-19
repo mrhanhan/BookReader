@@ -1,4 +1,4 @@
-import { and, eq, gt, gte, lt, lte } from 'drizzle-orm';
+import { and, eq, gt, lt } from 'drizzle-orm';
 import type { Database, Transaction } from '../db/client';
 import {
   dailyStats,
@@ -138,56 +138,4 @@ export async function deleteDailyStat(
 /** Clears a user's aggregate before a full rebuild. */
 export async function deleteAllDailyStats(tx: Transaction, userId: string): Promise<void> {
   await tx.delete(dailyStats).where(eq(dailyStats.userId, userId));
-}
-
-/** Rows of one user's aggregate within an inclusive local-date range. */
-export async function listDailyStatsBetween(
-  db: Database | Transaction,
-  userId: string,
-  from: string,
-  to: string,
-) {
-  return db
-    .select()
-    .from(dailyStats)
-    .where(
-      and(
-        eq(dailyStats.userId, userId),
-        // `local_date` is a calendar label; lexical comparison is chronological.
-        gte(dailyStats.localDate, from),
-        lte(dailyStats.localDate, to),
-      ),
-    );
-}
-
-/** Local dates with a qualified day, newest first. */
-export async function listQualifiedDates(
-  db: Database | Transaction,
-  userId: string,
-) {
-  return db
-    .select({ localDate: dailyStats.localDate })
-    .from(dailyStats)
-    .where(and(eq(dailyStats.userId, userId), eq(dailyStats.qualified, true)))
-    .orderBy(dailyStats.localDate);
-}
-
-/** Sum of active seconds within a local-date range; absent rows sum to zero. */
-export async function sumActiveSeconds(
-  db: Database | Transaction,
-  userId: string,
-  from: string,
-  to: string,
-): Promise<number> {
-  const rows = await listDailyStatsBetween(db, userId, from, to);
-  return rows.reduce((total, row) => total + row.activeSeconds, 0);
-}
-
-/** Total qualified days for one user. */
-export async function countQualifiedDays(
-  db: Database | Transaction,
-  userId: string,
-): Promise<number> {
-  const rows = await listQualifiedDates(db, userId);
-  return rows.length;
 }
