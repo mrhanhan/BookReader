@@ -349,7 +349,7 @@ MinIO 控制台（9201）与 S3 API（9200）不经过 Caddy；如无跨机需�
 | `DISK_ALERT_FREE_BYTES` | 否 | 备份卷剩余空间告警阈值（字节），默认 `10737418240`（10 GiB） |
 | `BACKUP_STALE_HOURS` | 否 | 超过多少小时没有成功备份即告警，默认 24，范围 1–168 |
 | `MONITOR_INTERVAL_MS` | 否 | 服务端监控循环间隔（毫秒），默认 300000，范围 60000–3600000 |
-| `BOOKR_HEARTBEAT_DRY_RUN` | 否 | 备份脚本侧调试用；设为 `1` 时只打印心跳 JSON 不发送 |
+| `BACKUP_HEARTBEAT_DRY_RUN` | 否 | 备份脚本侧调试用；设为 `1` 时只打印心跳 JSON 不发送 |
 
 `DATABASE_URL`、`S3_ENDPOINT`、`S3_REGION`、`S3_BUCKET`、`TRUST_PROXY` 由 compose 固定为容器网络内的值，无需在 `.env` 覆盖；`S3_PUBLIC_ENDPOINT` 必须是用户浏览器能解析的地址。
 

@@ -242,7 +242,14 @@ if [ ! -f "$DUMP_FILE" ]; then
 fi
 # The minio/ mirror is shared by every export and accumulates the newest
 # objects, so it can only be compared strictly against the newest dump.
-if [ -n "$LATEST_DUMP" ] && [ "$DUMP_FILE" = "$LATEST_DUMP" ]; then
+# Canonicalise both paths first: `--dump` may use a relative path or a
+# symlink while `ls` returns an absolute path for the same file.
+DUMP_REAL="$(readlink -f -- "$DUMP_FILE" 2>/dev/null || printf '%s' "$DUMP_FILE")"
+LATEST_DUMP_REAL=""
+if [ -n "$LATEST_DUMP" ]; then
+  LATEST_DUMP_REAL="$(readlink -f -- "$LATEST_DUMP" 2>/dev/null || printf '%s' "$LATEST_DUMP")"
+fi
+if [ -n "$LATEST_DUMP_REAL" ] && [ "$DUMP_REAL" = "$LATEST_DUMP_REAL" ]; then
   LATEST_DUMP_SELECTED=1
 else
   LATEST_DUMP_SELECTED=0
