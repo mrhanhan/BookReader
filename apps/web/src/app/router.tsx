@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { AdminSettingsPage } from '../features/admin/AdminSettingsPage';
 import { AuditPage } from '../features/admin/AuditPage';
 import { BackupsPage } from '../features/admin/BackupsPage';
+import { CategoriesPage } from '../features/admin/CategoriesPage';
 import { MembersPage } from '../features/admin/MembersPage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RegisterPage } from '../features/auth/RegisterPage';
@@ -88,6 +89,14 @@ export const routes: RouteObject[] = [
             element: (
               <RequireAdmin>
                 <MembersPage />
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'admin/categories',
+            element: (
+              <RequireAdmin>
+                <CategoriesPage />
               </RequireAdmin>
             ),
           },

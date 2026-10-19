@@ -1,4 +1,5 @@
 import { ERROR_CODES } from '@bookr/shared';
+import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { bookCategories } from '../src/db/schema';
 import { authHeader, buildTestApp, resetDb, seedBook, seedUser, testDb } from './helpers';
@@ -175,3 +176,176 @@ it(
   },
   15_000,
 );
+
+it('reorders every category of the library in one admin request', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  const headers = await authHeader(admin);
+  const created = [];
+  for (const name of ['甲', '乙', '丙']) {
+    created.push(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/categories',
+          headers,
+          payload: { name, color: '#5B6B8C' },
+        })
+      ).json(),
+    );
+  }
+
+  const reordered = await app.inject({
+    method: 'PUT',
+    url: '/api/categories/order',
+    headers,
+    payload: { ids: [created[2]!.id, created[0]!.id, created[1]!.id] },
+  });
+  expect(reordered.statusCode).toBe(204);
+
+  const list = await app.inject({ method: 'GET', url: '/api/categories', headers });
+  expect(list.json().items.map((item: { name: string }) => item.name)).toEqual(['丙', '甲', '乙']);
+});
+
+it('rejects a reorder with duplicate ids', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  const headers = await authHeader(admin);
+  const category = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/categories',
+      headers,
+      payload: { name: '历史', color: '#8C5A3B' },
+    })
+  ).json();
+
+  const response = await app.inject({
+    method: 'PUT',
+    url: '/api/categories/order',
+    headers,
+    payload: { ids: [category.id, category.id] },
+  });
+  expect(response.statusCode).toBe(400);
+});
+
+it('rejects a reorder from members', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const member = await seedUser('member');
+  const headers = await authHeader(member);
+  const category = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/categories',
+      headers,
+      payload: { name: '历史', color: '#8C5A3B' },
+    })
+  ).json();
+
+  const response = await app.inject({
+    method: 'PUT',
+    url: '/api/categories/order',
+    headers,
+    payload: { ids: [category.id] },
+  });
+  expect(response.statusCode).toBe(403);
+});
+
+it('returns 404 when a reorder names a category from another library', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  const headers = await authHeader(admin);
+  const category = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/categories',
+      headers,
+      payload: { name: '历史', color: '#8C5A3B' },
+    })
+  ).json();
+
+  const response = await app.inject({
+    method: 'PUT',
+    url: '/api/categories/order',
+    headers,
+    payload: { ids: [category.id, randomUUID()] },
+  });
+  expect(response.statusCode).toBe(404);
+});
+
+it('rejects a reorder that omits existing categories', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  const headers = await authHeader(admin);
+  const first = (
+    await app.inject({
+      method: 'POST',
+      url: '/api/categories',
+      headers,
+      payload: { name: '历史', color: '#8C5A3B' },
+    })
+  ).json();
+  await app.inject({
+    method: 'POST',
+    url: '/api/categories',
+    headers,
+    payload: { name: '小说', color: '#5B6B8C' },
+  });
+
+  const response = await app.inject({
+    method: 'PUT',
+    url: '/api/categories/order',
+    headers,
+    payload: { ids: [first.id] },
+  });
+  expect(response.statusCode).toBe(400);
+});
+
+it('places a category created after a reorder at the end of the list', async () => {
+  await resetDb();
+  const app = await buildTestApp();
+  const admin = await seedUser('admin');
+  const headers = await authHeader(admin);
+  const created = [];
+  for (const name of ['甲', '乙', '丙']) {
+    created.push(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/categories',
+          headers,
+          payload: { name, color: '#5B6B8C' },
+        })
+      ).json(),
+    );
+  }
+
+  await app.inject({
+    method: 'PUT',
+    url: '/api/categories/order',
+    headers,
+    payload: { ids: [created[2]!.id, created[0]!.id, created[1]!.id] },
+  });
+
+  // The column default of 0 would tie this with 丙 and reshuffle the list.
+  const added = await app.inject({
+    method: 'POST',
+    url: '/api/categories',
+    headers,
+    payload: { name: '丁', color: '#5B6B8C' },
+  });
+  expect(added.statusCode).toBe(201);
+
+  const list = await app.inject({ method: 'GET', url: '/api/categories', headers });
+  expect(list.json().items.map((item: { name: string }) => item.name)).toEqual([
+    '丙',
+    '甲',
+    '乙',
+    '丁',
+  ]);
+});

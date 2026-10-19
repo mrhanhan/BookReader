@@ -17,3 +17,14 @@ export const createCategorySchema = z.object({
 export const updateCategorySchema = createCategorySchema
   .extend({ sortOrder: z.number().int().min(0) })
   .partial();
+
+export const reorderCategoriesSchema = z.object({
+  ids: z
+    .array(z.uuid())
+    .min(1)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'Category ids must be unique',
+    }),
+});
+
+export type ReorderCategoriesInput = z.infer<typeof reorderCategoriesSchema>;

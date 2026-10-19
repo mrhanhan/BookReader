@@ -1,9 +1,10 @@
 import { cn } from '@bookr/ui';
 import { NavLink } from 'react-router';
 
-/** The four administration sections, in task order. */
+/** The five administration sections, in task order. */
 const ADMIN_TABS = [
   { to: '/admin/members', label: '成员' },
+  { to: '/admin/categories', label: '分类' },
   { to: '/admin/settings', label: '设置' },
   { to: '/admin/audit', label: '审计' },
   { to: '/admin/backups', label: '备份' },
