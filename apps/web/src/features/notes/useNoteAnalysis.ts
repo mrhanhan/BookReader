@@ -135,6 +135,10 @@ export function useNoteAnalysis(
     setAnalyzedCount(null);
 
     void (async () => {
+      // A well-behaved transport throws when the stream ends without a
+      // terminal frame. Fakes (and future transports) may resolve instead, so
+      // settle the UI rather than leaving it stuck on `streaming`.
+      let settled = false;
       try {
         await api.stream(
           { kind: requestKind, filters: requestFilters },
@@ -150,16 +154,19 @@ export function useNoteAnalysis(
             },
             onDone() {
               if (!isCurrent()) return;
+              settled = true;
               setStatus('complete');
             },
             onError(payload) {
               if (!isCurrent()) return;
+              settled = true;
               setError(payload.message);
               setStatus('failed');
             },
           },
           { signal: controller.signal },
         );
+        if (isCurrent() && !settled) setStatus('complete');
       } catch (caught) {
         if (!isCurrent()) return;
         if (isAbortError(caught)) {

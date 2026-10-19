@@ -32,6 +32,15 @@ const OFFLINE_HINT = '离线时无法使用 AI 分析';
 const IDLE_HINT = '选择一种分析方式，然后开始分析。';
 const INTERRUPTED_HINT = '已停止，已生成的部分已保存';
 
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+
 /**
  * The notes page's AI analysis drawer: a right-side panel on desktop and a
  * bottom sheet on phones. It streams one analysis at a time and keeps the
@@ -46,12 +55,19 @@ export function NoteAnalysisPanel({
   const [history, setHistory] = useState<NoteAnalysisSummaryDto[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [saved, setSaved] = useState<NoteAnalysisDto | null>(null);
+  const [savedLoading, setSavedLoading] = useState(false);
   const mounted = useRef(true);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  // Opening B while A is in flight must discard A's late response.
+  const savedToken = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
+    headingRef.current?.focus();
     return () => {
       mounted.current = false;
     };
@@ -99,7 +115,42 @@ export function NoteAnalysisPanel({
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const panel = panelRef.current;
+      if (!panel) return;
+      const focusables = Array.from(
+        panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      );
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!first || !last) {
+        // Nothing interactive is left (for example while everything is busy).
+        event.preventDefault();
+        return;
+      }
+
+      const active = document.activeElement;
+      const inside = active instanceof Node && panel.contains(active);
+      if (!inside) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
+      if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (
+        event.shiftKey &&
+        (active === first || active === headingRef.current)
+      ) {
+        event.preventDefault();
+        last.focus();
+      }
     }
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
@@ -108,19 +159,32 @@ export function NoteAnalysisPanel({
   function startAnalysis(): void {
     if (!online) return;
     setSaved(null);
+    setSavedLoading(false);
+    setOpenError(null);
     setPendingDelete(null);
     analysis.run();
   }
 
   async function openSaved(id: string): Promise<void> {
+    const token = savedToken.current + 1;
+    savedToken.current = token;
     setPendingDelete(null);
+    setOpenError(null);
+    // Clear the previous detail immediately so a slow response cannot leave
+    // another analysis's text looking like the one just clicked.
+    setSaved(null);
+    setSavedLoading(true);
+
     try {
       const detail = await api.get(id);
-      if (!mounted.current) return;
+      if (!mounted.current || savedToken.current !== token) return;
       setSaved(detail);
+      setOpenError(null);
     } catch (error) {
-      if (!mounted.current) return;
-      setHistoryError(messageForApiError(error));
+      if (!mounted.current || savedToken.current !== token) return;
+      setOpenError(messageForApiError(error));
+    } finally {
+      if (mounted.current && savedToken.current === token) setSavedLoading(false);
     }
   }
 
@@ -142,7 +206,7 @@ export function NoteAnalysisPanel({
   }
 
   const displayStatus = saved ? saved.status : analysis.status;
-  const displayContent = saved ? saved.content : analysis.content;
+  const displayContent = savedLoading ? '' : saved ? saved.content : analysis.content;
   const displayError = saved ? null : analysis.error;
 
   return (
@@ -153,6 +217,7 @@ export function NoteAnalysisPanel({
         className="fixed inset-0 z-30 bg-ink/25"
       />
       <aside
+        ref={panelRef}
         role="complementary"
         aria-label="AI 笔记分析"
         className={[
@@ -164,7 +229,13 @@ export function NoteAnalysisPanel({
         ].join(' ')}
       >
         <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-          <h2 className="font-serif text-lg text-ink">AI 笔记分析</h2>
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            className="font-serif text-lg text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            AI 笔记分析
+          </h2>
           <Button variant="ghost" size="sm" onClick={onClose}>
             关闭
           </Button>
@@ -217,7 +288,20 @@ export function NoteAnalysisPanel({
           ) : null}
 
           <section aria-label="分析内容" className="flex flex-col gap-2">
-            {displayContent === '' && displayStatus === 'idle' ? (
+            {openError ? (
+              <p
+                role="alert"
+                className="rounded-md border border-highlight/30 bg-highlight/10 px-3 py-2 text-sm text-highlight"
+              >
+                {openError}
+              </p>
+            ) : null}
+            {savedLoading ? (
+              <p role="status" className="text-sm text-muted">
+                正在加载分析…
+              </p>
+            ) : null}
+            {!savedLoading && displayContent === '' && displayStatus === 'idle' ? (
               <p className="text-sm text-muted">{IDLE_HINT}</p>
             ) : null}
             <div
@@ -273,37 +357,41 @@ export function NoteAnalysisPanel({
                 {history.map((item) => (
                   <li
                     key={item.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-paper/60 px-3 py-2"
+                    className="rounded-md border border-border bg-paper/60 px-3 py-1"
                   >
                     <button
                       type="button"
                       disabled={analysis.running}
                       onClick={() => void openSaved(item.id)}
-                      className="min-w-0 flex-1 truncate text-left text-sm text-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60"
+                      className="block w-full truncate py-2 text-left text-sm text-ink underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60 [@media(pointer:coarse)]:min-h-11"
                     >
                       {item.title}
                     </button>
-                    <span className="text-[11px] text-muted">
-                      {formatDateTime(item.createdAt)}
-                    </span>
-                    {pendingDelete === item.id ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={analysis.running}
-                        onClick={() => setPendingDelete(null)}
-                      >
-                        取消
-                      </Button>
-                    ) : null}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={analysis.running}
-                      onClick={() => void remove(item.id)}
-                    >
-                      {pendingDelete === item.id ? '确认删除' : '删除'}
-                    </Button>
+                    <div className="flex items-center justify-between gap-2 pb-1">
+                      <span className="text-[11px] text-muted">
+                        {formatDateTime(item.createdAt)}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {pendingDelete === item.id ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={analysis.running}
+                            onClick={() => setPendingDelete(null)}
+                          >
+                            取消
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={analysis.running}
+                          onClick={() => void remove(item.id)}
+                        >
+                          {pendingDelete === item.id ? '确认删除' : '删除'}
+                        </Button>
+                      </div>
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -37,6 +37,17 @@ export function NotesPage({ analysisApi }: NotesPageProps = {}) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const online = useOnlineStatus();
+  // Closing the analysis drawer must hand focus back to the control that
+  // opened it, whichever path closed the drawer.
+  const analysisTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const analysisWasOpen = useRef(false);
+
+  useEffect(() => {
+    if (analysisWasOpen.current && !analysisOpen) {
+      analysisTriggerRef.current?.focus();
+    }
+    analysisWasOpen.current = analysisOpen;
+  }, [analysisOpen]);
 
   const noteFilters = useMemo<NoteFilters>(() => toNoteFilters(filters), [filters]);
   const notesQuery = useNotesList(noteFilters);
@@ -148,14 +159,15 @@ export function NotesPage({ analysisApi }: NotesPageProps = {}) {
           <p className="mt-1 text-sm text-muted">你写在所有书里的划线与批注</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
+          <button
+            ref={analysisTriggerRef}
+            type="button"
             aria-expanded={analysisOpen}
             onClick={() => setAnalysisOpen((open) => !open)}
+            className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-border bg-transparent px-3 py-1.5 text-xs font-medium tracking-wide whitespace-nowrap text-ink transition hover:bg-ink/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [@media(pointer:coarse)]:min-h-11"
           >
             分析笔记
-          </Button>
+          </button>
           <Button
             variant="ghost"
             size="sm"
